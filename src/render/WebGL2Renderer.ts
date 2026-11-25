@@ -25,6 +25,7 @@ import {
   type SimState,
 } from '../contracts';
 import {
+  BUILTIN_HERO_HEAD_ANCHORS,
   buildProceduralAtlas,
   resolveSpriteRegion,
   type ProceduralAtlasData,
@@ -53,7 +54,16 @@ import {
   getBiomeVisualTheme,
   type BiomeVisualTheme,
 } from './ParallaxBackdrop';
-import { AtmosphereParticles } from './AtmosphereParticles';
+import {
+  AtmosphereParticles,
+  BURST_KIND_GIB,
+  BURST_KIND_WOOD,
+  SLASH_STYLE_FIRE,
+  SLASH_STYLE_HEAVY,
+  SLASH_STYLE_THRUST,
+  SLASH_STYLE_TWIN,
+  SLASH_STYLE_WHIP,
+} from './AtmosphereParticles';
 
 const MAX_QUADS = 4096;
 const FLOATS_PER_VERT = 12; // pos(2), uv(2), color(4), params(4)
@@ -69,6 +79,7 @@ const CLEAR_NORMAL = new Float32Array([0.5, 0.5, 1.0, 0]);
 interface CustomGpuAtlasPage {
   diffuseTex: WebGLTexture;
   normalTex: WebGLTexture;
+  emissiveTex: WebGLTexture | null;
   width: number;
   height: number;
 }
@@ -76,7 +87,13 @@ interface CustomGpuAtlasPage {
 interface BiomeAtlasCache {
   backWalls: LibGdxRegion[];
   floorStamps: LibGdxRegion[];
+  floorStampLeft: LibGdxRegion[];
+  floorStampRight: LibGdxRegion[];
+  floorStampLeftRight: LibGdxRegion[];
   groundCaps: LibGdxRegion[];
+  groundLeft: LibGdxRegion[];
+  groundRight: LibGdxRegion[];
+  groundFoliage: LibGdxRegion[];
   ceilingCaps: LibGdxRegion[];
   oneWays: LibGdxRegion[];
   oneWayLeft: LibGdxRegion | null;
@@ -87,6 +104,7 @@ interface BiomeAtlasCache {
   exitDoors: LibGdxRegion[];
   floorJunk: LibGdxRegion[];
   wallJunk: LibGdxRegion[];
+  biomeProps: LibGdxRegion[];
   // Common-atlas prop direct lookups (cached once on load — zero per-frame Map lookups!)
   ladder: LibGdxRegion | null;
   brasero: LibGdxRegion | null;
@@ -106,6 +124,12 @@ interface BiomeAtlasCache {
   healFlaskBack: LibGdxRegion | null;
   teleportAltar: LibGdxRegion | null;
   flagMetaObject: LibGdxRegion | null;
+  // fxCommon direct lookups (cached once on load)
+  exitDoorGodray: LibGdxRegion | null;
+  fxCell: LibGdxRegion | null;
+  coinLarge: LibGdxRegion | null;
+  fxGibWood: LibGdxRegion[];
+  fxGibs: LibGdxRegion[];
 }
 
 interface CustomGpuAtlas {
@@ -150,17 +174,40 @@ const ENEMY_CUSTOM_ATLAS: Record<string, string> = {
 
 const RE_BACK_WALL = /^backWall(_?\d+)?$/;
 const RE_FLOOR_STAMP = /^floorStamp_\d+$/;
+const RE_FLOOR_STAMP_LEFT = /^floorStampLeft_\d+$/;
+const RE_FLOOR_STAMP_RIGHT = /^floorStampRight_\d+$/;
+const RE_FLOOR_STAMP_LR = /^floorStampLeftRight_\d+$/;
 const RE_ALT_FLOOR_STAMP = /^(stoneWall|floorStampLeft|floorStampRight)_\d+$/;
 const RE_GROUND_CAP = /^ground_\d+$/;
+const RE_GROUND_LEFT = /^(ground_left_\d+|bridgeTopLeft)$/;
+const RE_GROUND_RIGHT = /^(ground_right_\d+|bridgeTopRight)$/;
+const RE_GROUND_FOLIAGE = /^groundFoliage_\d+$/;
 const RE_CEILING_CAP = /^ceiling_\d+$/;
+const RE_BIOME_PROP = /^(crenelLeft|crenelRight|crenel_\d+|pipeCorner.*|bridgeTop_\d+)$/;
 const RE_ARCH_REGION =
   /^(archeSmall(_\d+)?|archeParallax_\d+|bridgeArch|alcovePillar|alcove_\d+|alcoveBench|columnTile3_\d+)$/;
+
+const UNPARRIABLE_BOSS_ATTACKS = new Set<string>([
+  'leapSlam',
+  'shockwave',
+  'roarAura',
+  'telluricSlam',
+  'superSlam',
+  'dropBanners',
+  'addWave',
+]);
 
 function buildBiomeAtlasCache(loaded: LoadedCustomAtlas): BiomeAtlasCache {
   const backWalls: LibGdxRegion[] = [];
   const floorStamps: LibGdxRegion[] = [];
+  const floorStampLeft: LibGdxRegion[] = [];
+  const floorStampRight: LibGdxRegion[] = [];
+  const floorStampLeftRight: LibGdxRegion[] = [];
   const altFloorStamps: LibGdxRegion[] = [];
   const groundCaps: LibGdxRegion[] = [];
+  const groundLeft: LibGdxRegion[] = [];
+  const groundRight: LibGdxRegion[] = [];
+  const groundFoliage: LibGdxRegion[] = [];
   const ceilingCaps: LibGdxRegion[] = [];
   const woodOneWays: LibGdxRegion[] = [];
   const stoneOneWays: LibGdxRegion[] = [];
@@ -173,6 +220,9 @@ function buildBiomeAtlasCache(loaded: LoadedCustomAtlas): BiomeAtlasCache {
   const exitDoors: LibGdxRegion[] = [];
   const floorJunk: LibGdxRegion[] = [];
   const wallJunk: LibGdxRegion[] = [];
+  const biomeProps: LibGdxRegion[] = [];
+  const fxGibWood: LibGdxRegion[] = [];
+  const fxGibs: LibGdxRegion[] = [];
 
   const seen = new Set<LibGdxRegion>();
   for (const reg of loaded.atlas.regions.values()) {
@@ -184,12 +234,31 @@ function buildBiomeAtlasCache(loaded: LoadedCustomAtlas): BiomeAtlasCache {
       backWalls.push(reg);
     } else if (RE_FLOOR_STAMP.test(name) && reg.w === 24 && reg.h === 24) {
       floorStamps.push(reg);
+    } else if (RE_FLOOR_STAMP_LEFT.test(name) && reg.w === 24 && reg.h === 24) {
+      floorStampLeft.push(reg);
+      altFloorStamps.push(reg);
+    } else if (RE_FLOOR_STAMP_RIGHT.test(name) && reg.w === 24 && reg.h === 24) {
+      floorStampRight.push(reg);
+      altFloorStamps.push(reg);
+    } else if (RE_FLOOR_STAMP_LR.test(name) && reg.w === 24 && reg.h === 24) {
+      floorStampLeftRight.push(reg);
+      altFloorStamps.push(reg);
     } else if (RE_ALT_FLOOR_STAMP.test(name) && reg.w === 24 && reg.h === 24) {
       altFloorStamps.push(reg);
-    } else if (RE_GROUND_CAP.test(name) && reg.w === 24 && reg.h > 0 && reg.h <= 8) {
+    } else if (RE_GROUND_CAP.test(name) && reg.w === 24 && reg.h > 0 && reg.h <= 10) {
       groundCaps.push(reg);
-    } else if (RE_CEILING_CAP.test(name) && reg.w === 24 && reg.h > 0 && reg.h <= 8) {
+    } else if (RE_GROUND_LEFT.test(name) && reg.w > 0 && reg.w <= 32 && reg.h > 0 && reg.h <= 24) {
+      groundLeft.push(reg);
+    } else if (RE_GROUND_RIGHT.test(name) && reg.w > 0 && reg.w <= 32 && reg.h > 0 && reg.h <= 24) {
+      groundRight.push(reg);
+    } else if (RE_GROUND_FOLIAGE.test(name) && reg.w > 0 && reg.h > 0 && reg.w <= 48 && reg.h <= 24) {
+      groundFoliage.push(reg);
+    } else if (RE_CEILING_CAP.test(name) && reg.w === 24 && reg.h > 0 && reg.h <= 10) {
       ceilingCaps.push(reg);
+    }
+
+    if (RE_BIOME_PROP.test(name) && reg.w >= 8 && reg.h >= 8 && reg.w <= 64 && reg.h <= 64) {
+      biomeProps.push(reg);
     }
 
     // Authentic Dead Cells horizontal timber/stone one-way ledges (NEVER ladderPlatform chain hooks!)
@@ -234,6 +303,11 @@ function buildBiomeAtlasCache(loaded: LoadedCustomAtlas): BiomeAtlasCache {
     ) {
       wallJunk.push(reg);
     }
+    if (/^fxGibWood\d+$/.test(name)) {
+      fxGibWood.push(reg);
+    } else if (/^fxGib\d+$/.test(name)) {
+      fxGibs.push(reg);
+    }
   }
 
   const byName = (a: LibGdxRegion, b: LibGdxRegion): number =>
@@ -241,13 +315,22 @@ function buildBiomeAtlasCache(loaded: LoadedCustomAtlas): BiomeAtlasCache {
 
   backWalls.sort(byName);
   floorStamps.sort(byName);
+  floorStampLeft.sort(byName);
+  floorStampRight.sort(byName);
+  floorStampLeftRight.sort(byName);
   altFloorStamps.sort(byName);
   groundCaps.sort(byName);
+  groundLeft.sort(byName);
+  groundRight.sort(byName);
+  groundFoliage.sort(byName);
   ceilingCaps.sort(byName);
   arches.sort(byName);
   banners.sort(byName);
   floorJunk.sort(byName);
   wallJunk.sort(byName);
+  biomeProps.sort(byName);
+  fxGibWood.sort(byName);
+  fxGibs.sort(byName);
 
   woodOneWays.sort(byName);
   stoneOneWays.sort(byName);
@@ -275,7 +358,13 @@ function buildBiomeAtlasCache(loaded: LoadedCustomAtlas): BiomeAtlasCache {
   return {
     backWalls,
     floorStamps,
+    floorStampLeft,
+    floorStampRight,
+    floorStampLeftRight,
     groundCaps,
+    groundLeft,
+    groundRight,
+    groundFoliage,
     ceilingCaps,
     oneWays,
     oneWayLeft,
@@ -286,6 +375,7 @@ function buildBiomeAtlasCache(loaded: LoadedCustomAtlas): BiomeAtlasCache {
     exitDoors,
     floorJunk,
     wallJunk,
+    biomeProps,
     ladder: regs.get('ladder') ?? null,
     brasero: regs.get('brasero') ?? null,
     torch: regs.get('torch') ?? null,
@@ -304,19 +394,34 @@ function buildBiomeAtlasCache(loaded: LoadedCustomAtlas): BiomeAtlasCache {
     healFlaskBack: regs.get('HealFlaskBack') ?? null,
     teleportAltar: regs.get('teleportAltar') ?? null,
     flagMetaObject: regs.get('flagMetaObject') ?? null,
+    exitDoorGodray: regs.get('exitDoorGodray') ?? null,
+    fxCell: regs.get('fxCell') ?? null,
+    coinLarge: regs.get('coinLarge') ?? null,
+    fxGibWood,
+    fxGibs,
   };
 }
 
 function pickScrollerLayerPaths(
   themeKey: string,
   paths: readonly string[]
-): { far: string | null; mid: string | null } {
-  const findFirst = (names: readonly string[], exclude?: string | null): string | null => {
+): {
+  far: string | null;
+  mid: string | null;
+  near: string | null;
+  overlay: string | null;
+  overlayAdditive: boolean;
+} {
+  const findFirst = (
+    names: readonly string[],
+    excludeA?: string | null,
+    excludeB?: string | null
+  ): string | null => {
     for (let n = 0; n < names.length; n++) {
       const target = names[n];
       for (let i = 0; i < paths.length; i++) {
         const p = paths[i];
-        if (exclude && p === exclude) continue;
+        if ((excludeA && p === excludeA) || (excludeB && p === excludeB)) continue;
         const base = (p.split('/').pop() ?? p).toLowerCase();
         if (base === target) return p;
       }
@@ -326,8 +431,12 @@ function pickScrollerLayerPaths(
 
   let far: string | null = null;
   let mid: string | null = null;
+  let near: string | null = null;
+  let overlay: string | null = null;
+  let overlayAdditive = false;
 
-  if (themeKey === 'prison') {
+  const keyLow = themeKey.toLowerCase();
+  if (keyLow === 'prison') {
     far = findFirst([
       'prisonstartscrollera.png',
       'prisonscrollera.png',
@@ -335,30 +444,54 @@ function pickScrollerLayerPaths(
       'archesmallbg_0.png',
     ]);
     mid = findFirst(
-      ['archesmallbg_0.png', 'archesmallfg_0.png', 'prisonscrollera.png', 'prisonstartscrollerb.png'],
+      ['archesmallbg_0.png', 'prisonscrollera.png', 'prisonstartscrollerb.png'],
       far
     );
-  } else if (themeKey === 'courtyard') {
+    near = findFirst(['archesmallfg_0.png', 'archesmallfg_1.png', 'prisonscrollerb.png'], far, mid);
+    overlay = findFirst(['fog.png'], far, mid);
+  } else if (keyLow === 'courtyard') {
     far = findFirst(['archesmallbg_0.png']);
     mid = findFirst(['archesmallfg_0.png'], far);
-  } else if (themeKey === 'sewers') {
+    overlay = findFirst(['fog.png'], far, mid);
+  } else if (keyLow === 'sewers') {
     far = findFirst(['archesmallbg_0.png', 'archesmallbg_1.png']);
     mid = findFirst(['archesmallfg_0.png', 'archesmallfg_1.png'], far);
-  } else if (themeKey === 'cliff') {
+    near = findFirst(['archesmallfg_2.png'], far, mid);
+    overlay = findFirst(['fog.png'], far, mid);
+  } else if (keyLow === 'cliff') {
     far = findFirst(['scrollerbg_0.png']);
-    mid = findFirst(['scrollerlayer1_0.png', 'scrollerlayer2_0.png'], far);
-  } else if (themeKey === 'castle') {
+    mid = findFirst(['scrollerlayer1_0.png'], far);
+    near = findFirst(['scrollerlayer2_0.png'], far, mid);
+    overlay = findFirst(['godray_0.png', 'glow0.png', 'godray_1.png'], far, mid);
+    overlayAdditive = Boolean(overlay);
+  } else if (keyLow === 'dookucastle' || keyLow === 'castle') {
     far = findFirst(['wallwindowscroller.png', 'archesmallbg_0.png']);
     mid = findFirst(['archesmallfg_0.png', 'archesmallbg_0.png'], far);
+    overlay = findFirst(['fog.png'], far, mid);
+  } else if (keyLow === 'ossuary') {
+    far = findFirst(['archebigbg0.png', 'archebigbg1.png', 'archesmallbg_0.png']);
+    mid = findFirst(['archesmallbg_0.png', 'archebigbg2.png'], far);
+    near = findFirst(['archebigfg.png', 'archesmallfg_0.png'], far, mid);
+    overlay = findFirst(['fog.png'], far, mid);
   }
 
   if (!far && paths.length > 0) {
-    far = paths.find((p) => !p.toLowerCase().includes('fog')) ?? paths[0];
+    far = paths.find((p) => !p.toLowerCase().includes('fog') && !p.toLowerCase().includes('godray')) ?? paths[0];
   }
   if (!mid && paths.length > 1) {
-    mid = paths.find((p) => p !== far && !p.toLowerCase().includes('fog')) ?? null;
+    mid =
+      paths.find(
+        (p) => p !== far && !p.toLowerCase().includes('fog') && !p.toLowerCase().includes('godray')
+      ) ?? null;
   }
-  return { far, mid };
+  if (!overlay) {
+    const fogPath = paths.find((p) => p.toLowerCase().includes('fog')) ?? null;
+    if (fogPath && fogPath !== far && fogPath !== mid && fogPath !== near) {
+      overlay = fogPath;
+      overlayAdditive = false;
+    }
+  }
+  return { far, mid, near, overlay, overlayAdditive };
 }
 
 async function decodeScrollerBlob(blob: Blob): Promise<ImageBitmap | HTMLImageElement | null> {
@@ -533,6 +666,9 @@ export class WebGL2Renderer implements RendererAPI {
   private uFogCol: WebGLUniformLocation | null = null;
   private uFogAcc: WebGLUniformLocation | null = null;
   private uFogDens: WebGLUniformLocation | null = null;
+  private uFogHasEmissive: WebGLUniformLocation | null = null;
+  private uFogEmissive: WebGLUniformLocation | null = null;
+  private uFogHeroZone: WebGLUniformLocation | null = null;
 
   private uBlurSrc: WebGLUniformLocation | null = null;
   private uBlurStep: WebGLUniformLocation | null = null;
@@ -543,6 +679,11 @@ export class WebGL2Renderer implements RendererAPI {
   private uCompDmgFlash: WebGLUniformLocation | null = null;
   private uCompParryFlash: WebGLUniformLocation | null = null;
   private uCompGradeTint: WebGLUniformLocation | null = null;
+  private uCompZoom: WebGLUniformLocation | null = null;
+  private uCompChromaSplit: WebGLUniformLocation | null = null;
+  private uCompCurse: WebGLUniformLocation | null = null;
+  private uCompLowHp: WebGLUniformLocation | null = null;
+  private uCompTime: WebGLUniformLocation | null = null;
 
   // Pre-allocated Light Uniform Buffers (ZERO per-frame allocs!)
   private readonly lightPosRadBuf = new Float32Array(MAX_ACTIVE_LIGHTS * 4);
@@ -553,6 +694,25 @@ export class WebGL2Renderer implements RendererAPI {
   private curCamY = 0;
   private customHeadOx = 0;
   private customHeadOy = -28;
+  private customWeaponOx = 12;
+  private customWeaponOy = -14;
+  private hasCustomWeaponBone = false;
+
+  // Visual-only state strictly outside SimState (ZERO SimState mutation!)
+  private heroNeckWorldX = 0;
+  private heroNeckWorldY = 0;
+  private hasHeroNeckWorld = false;
+  private zoomKick = 0;
+  private chromaKick = 0;
+  private smoothCurse = 0;
+  private smoothLowHp = 0;
+  private lastRenderElapsed = 0;
+  private lastCurseKills = 0;
+  private cursePopTimer = 0;
+  private readonly digitScratch = new Uint8Array(8);
+  private readonly telegraphUids = new Int32Array(16);
+  private readonly telegraphTimes = new Float32Array(16);
+  private telegraphCursor = 0;
 
   // Bound callback closures created once in constructor (zero per-frame closures!)
   private readonly emitVfxQuadBound = (
@@ -629,6 +789,152 @@ export class WebGL2Renderer implements RendererAPI {
     zHeight: number
   ): void => {
     this.addLight(worldX, worldY, radius, r, g, b, intensity, zHeight);
+  };
+
+  private readonly emitCustomSlashBound = (
+    style: number,
+    step: number,
+    progress01: number,
+    sx: number,
+    sy: number,
+    facing: number,
+    scale: number,
+    r: number,
+    g: number,
+    b: number,
+    alpha: number,
+    isCrit: boolean
+  ): boolean => {
+    if (this.settings.artPackMode !== 'custom' || !this.customPackStatus.available) {
+      return false;
+    }
+    const fxAtlas = this.customGpuAtlases.get('fxWeapon');
+    if (!fxAtlas) return false;
+
+    let candidates: readonly string[];
+    if (style === SLASH_STYLE_HEAVY) {
+      candidates =
+        step === 0
+          ? ['fxAtkBroadSwordA', 'fxHammerA', 'rFxAtkC']
+          : step === 1
+          ? ['fxAtkBroadSwordB', 'fxHammerB', 'rFxAtkC']
+          : ['fxAtkBroadSwordC', 'fxAtkBroadSwordA', 'fxHammerC'];
+    } else if (style === SLASH_STYLE_THRUST) {
+      candidates = ['fxSpearA', 'fxRapierA', 'fxDashSwordA', 'rFxAtkA'];
+    } else if (style === SLASH_STYLE_TWIN) {
+      candidates = step === 1 ? ['fxAtkBackstabberB', 'rFxAtkB'] : ['fxDashSwordA', 'rFxAtkA'];
+    } else if (style === SLASH_STYLE_WHIP) {
+      candidates = ['fxAtkWhipB', 'fxWhip'];
+    } else if (style === SLASH_STYLE_FIRE) {
+      candidates = ['fxFireballA', 'fxFireballB', 'fxFireballC'];
+    } else {
+      candidates =
+        step === 2
+          ? ['rFxAtkC', 'fxSwordAtkC', 'rFxAtkA']
+          : step === 1
+          ? ['rFxAtkB', 'FxSwordAtkB', 'rFxAtkA']
+          : ['rFxAtkA', 'FxSwordAtkA'];
+    }
+
+    let frames: LibGdxRegion[] | undefined;
+    for (let i = 0; i < candidates.length; i++) {
+      const c = candidates[i];
+      const f =
+        fxAtlas.loaded.atlas.animations.get(c) ??
+        fxAtlas.loaded.atlas.animations.get(c.toLowerCase());
+      if (f && f.length > 0) {
+        frames = f;
+        break;
+      }
+    }
+    if (!frames || frames.length === 0) return false;
+
+    const fIdx = Math.min(frames.length - 1, Math.floor(progress01 * frames.length));
+    const reg = frames[fIdx];
+    const page = fxAtlas.pages[reg.pageIndex];
+    if (!page) return false;
+
+    const baseScale = (style === SLASH_STYLE_HEAVY ? 0.68 : 0.62) * scale;
+    const dw = Math.min(118, reg.w * baseScale);
+    const dh = Math.min(86, reg.h * baseScale);
+    const ox = this.hasCustomWeaponBone ? this.customWeaponOx * 0.45 : facing * 4;
+    const oy = this.hasCustomWeaponBone ? (this.customWeaponOy + 14) * 0.45 : 0;
+    const x0 = Math.round(sx + ox - dw * 0.5);
+    const y0 = Math.round(sy + oy - dh * 0.5);
+
+    this.ensureTextures(page.diffuseTex, page.normalTex, page.emissiveTex ?? page.diffuseTex);
+    const u0 = reg.x / page.width;
+    const v0 = reg.y / page.height;
+    const u1 = (reg.x + reg.w) / page.width;
+    const v1 = (reg.y + reg.h) / page.height;
+    const cr = isCrit ? 1.0 : r * 0.45 + 0.55;
+    const cg = isCrit ? 0.94 : g * 0.45 + 0.55;
+    const cb = isCrit ? 0.55 : b * 0.45 + 0.55;
+    this.pushRawQuad(
+      x0,
+      y0,
+      x0 + dw,
+      y0 + dh,
+      u0,
+      v0,
+      u1,
+      v1,
+      cr,
+      cg,
+      cb,
+      alpha,
+      facing,
+      isCrit ? 0.45 : 0.15,
+      isCrit ? 1.5 : 1.28,
+      1.0
+    );
+    return true;
+  };
+
+  private readonly emitCustomDebrisBound = (
+    kind: number,
+    variant: number,
+    sx: number,
+    sy: number,
+    size: number,
+    r: number,
+    g: number,
+    b: number,
+    alpha: number,
+    angleRad: number
+  ): boolean => {
+    if (this.settings.artPackMode !== 'custom' || !this.customPackStatus.available) {
+      return false;
+    }
+    const fxCommon = this.customGpuAtlases.get('fxCommon');
+    if (!fxCommon) return false;
+    const list =
+      kind === BURST_KIND_WOOD
+        ? fxCommon.cache.fxGibWood
+        : kind === BURST_KIND_GIB
+        ? fxCommon.cache.fxGibs
+        : null;
+    if (!list || list.length === 0) return false;
+    const reg = list[variant % list.length];
+    const scale = (kind === BURST_KIND_WOOD ? 0.68 : 0.62) * size;
+    this.pushRotatedCustomRegion(
+      fxCommon,
+      reg,
+      sx,
+      sy,
+      Math.max(4, reg.w * scale),
+      Math.max(3, reg.h * scale),
+      r,
+      g,
+      b,
+      alpha,
+      1,
+      0,
+      0.08,
+      1.0,
+      angleRad
+    );
+    return true;
   };
 
   async init(canvas: HTMLCanvasElement, settings: RenderSettings): Promise<void> {
@@ -730,6 +1036,9 @@ export class WebGL2Renderer implements RendererAPI {
     this.uFogCol = gl.getUniformLocation(this.progFog, 'u_fogColor');
     this.uFogAcc = gl.getUniformLocation(this.progFog, 'u_accentColor');
     this.uFogDens = gl.getUniformLocation(this.progFog, 'u_fogDensity');
+    this.uFogHasEmissive = gl.getUniformLocation(this.progFog, 'u_hasEmissiveTex');
+    this.uFogEmissive = gl.getUniformLocation(this.progFog, 'u_emissiveTex');
+    this.uFogHeroZone = gl.getUniformLocation(this.progFog, 'u_heroLightZone');
 
     this.progBlur = compileProgram(gl, FULLSCREEN_VERT, BLUR_FRAG, 'BloomBlur');
     this.uBlurSrc = gl.getUniformLocation(this.progBlur, 'u_srcTex');
@@ -742,6 +1051,11 @@ export class WebGL2Renderer implements RendererAPI {
     this.uCompDmgFlash = gl.getUniformLocation(this.progComposite, 'u_damageFlash');
     this.uCompParryFlash = gl.getUniformLocation(this.progComposite, 'u_parryFlash');
     this.uCompGradeTint = gl.getUniformLocation(this.progComposite, 'u_gradeTint');
+    this.uCompZoom = gl.getUniformLocation(this.progComposite, 'u_zoom');
+    this.uCompChromaSplit = gl.getUniformLocation(this.progComposite, 'u_chromaSplit');
+    this.uCompCurse = gl.getUniformLocation(this.progComposite, 'u_curseIntensity');
+    this.uCompLowHp = gl.getUniformLocation(this.progComposite, 'u_lowHpPulse');
+    this.uCompTime = gl.getUniformLocation(this.progComposite, 'u_time');
   }
 
   private initGeometry(gl: WebGL2RenderingContext): void {
@@ -905,7 +1219,14 @@ export class WebGL2Renderer implements RendererAPI {
       for (const p of loaded.pages) {
         const dTex = this.uploadImageTexture(this.gl, p.diffuse);
         const nTex = p.normal ? this.uploadImageTexture(this.gl, p.normal) : this.texFlatNormal!;
-        pages.push({ diffuseTex: dTex, normalTex: nTex, width: p.width, height: p.height });
+        const eTex = p.emissive ? this.uploadImageTexture(this.gl, p.emissive) : null;
+        pages.push({
+          diffuseTex: dTex,
+          normalTex: nTex,
+          emissiveTex: eTex,
+          width: p.width,
+          height: p.height,
+        });
       }
       const cache = buildBiomeAtlasCache(loaded);
       this.customGpuAtlases.set(name, { loaded, pages, cache });
@@ -965,32 +1286,32 @@ export class WebGL2Renderer implements RendererAPI {
       this.ensureCustomAtlasLoaded(name);
     }
 
-    // Load 2-layer far + mid Custom Pack parallax scrollers directly via loader.fetchBlob!
+    // Load 4-layer Custom Pack parallax scrollers (`far`, `mid`, `near`, `overlay` godray/fog)!
     for (const scrollerKey of Object.keys(manifest.scrollers)) {
       if (this.customScrollersLoaded.has(scrollerKey)) continue;
       const paths = manifest.scrollers[scrollerKey];
       if (!paths || paths.length === 0) continue;
       this.customScrollersLoaded.add(scrollerKey);
 
-      const { far, mid } = pickScrollerLayerPaths(scrollerKey, paths);
-      if (far) {
-        void loader.fetchBlob(far).then(async (blob) => {
+      const { far, mid, near, overlay, overlayAdditive } = pickScrollerLayerPaths(scrollerKey, paths);
+      const loadLayer = (
+        path: string | null,
+        layer: 'far' | 'mid' | 'near' | 'overlay',
+        additive = false
+      ): void => {
+        if (!path) return;
+        void loader.fetchBlob(path).then(async (blob) => {
           if (!blob || !this.gl || !this.backdropPass) return;
           const img = await decodeScrollerBlob(blob);
           if (img && this.gl && this.backdropPass) {
-            this.backdropPass.uploadScrollerLayer(this.gl, scrollerKey, 'far', img);
+            this.backdropPass.uploadScrollerLayer(this.gl, scrollerKey, layer, img, additive);
           }
         });
-      }
-      if (mid) {
-        void loader.fetchBlob(mid).then(async (blob) => {
-          if (!blob || !this.gl || !this.backdropPass) return;
-          const img = await decodeScrollerBlob(blob);
-          if (img && this.gl && this.backdropPass) {
-            this.backdropPass.uploadScrollerLayer(this.gl, scrollerKey, 'mid', img);
-          }
-        });
-      }
+      };
+      loadLayer(far, 'far');
+      loadLayer(mid, 'mid');
+      loadLayer(near, 'near');
+      loadLayer(overlay, 'overlay', overlayAdditive);
     }
   }
 
@@ -1011,6 +1332,43 @@ export class WebGL2Renderer implements RendererAPI {
 
   ingestEvents(events: readonly SimEvent[], state: SimState): void {
     this.particles.ingestEvents(events, state);
+
+    // Visual-only impact camera zoom / chroma punch & telegraph spring timestamps (ZERO SimState mutation!)
+    for (let i = 0; i < events.length; i++) {
+      const ev = events[i];
+      switch (ev.type) {
+        case 'parrySuccess':
+          this.zoomKick = Math.max(this.zoomKick, 0.045);
+          this.chromaKick = Math.max(this.chromaKick, 0.0044);
+          break;
+        case 'critImpact':
+          this.zoomKick = Math.max(this.zoomKick, 0.028);
+          this.chromaKick = Math.max(this.chromaKick, 0.0018);
+          break;
+        case 'bossPhaseShift':
+          this.zoomKick = Math.max(this.zoomKick, 0.042);
+          this.chromaKick = Math.max(this.chromaKick, 0.0038);
+          break;
+        case 'playerDamaged':
+          this.chromaKick = Math.max(this.chromaKick, 0.0035);
+          break;
+        case 'doorSmash':
+          this.zoomKick = Math.max(this.zoomKick, 0.015);
+          break;
+        case 'diveSlamImpact':
+          this.zoomKick = Math.max(this.zoomKick, 0.024);
+          break;
+        case 'enemyTelegraph': {
+          const slot = this.telegraphCursor;
+          this.telegraphCursor = (slot + 1) & 15;
+          this.telegraphUids[slot] = ev.enemyUid;
+          this.telegraphTimes[slot] = this.lastRenderElapsed;
+          break;
+        }
+        default:
+          break;
+      }
+    }
   }
 
   getDrawCallCount(): number {
@@ -1254,7 +1612,7 @@ export class WebGL2Renderer implements RendererAPI {
   ): void {
     const page = gpuAtlas.pages[reg.pageIndex];
     if (!page) return;
-    this.ensureTextures(page.diffuseTex, page.normalTex, this.texBlackEmissive!);
+    this.ensureTextures(page.diffuseTex, page.normalTex, page.emissiveTex ?? this.texBlackEmissive!);
     const u0 = reg.x / page.width;
     const v0 = reg.y / page.height;
     const u1 = (reg.x + reg.w) / page.width;
@@ -1279,6 +1637,70 @@ export class WebGL2Renderer implements RendererAPI {
     );
   }
 
+  private pushRotatedCustomRegion(
+    gpuAtlas: CustomGpuAtlas,
+    reg: LibGdxRegion,
+    cx: number,
+    cy: number,
+    w: number,
+    h: number,
+    r: number,
+    g: number,
+    b: number,
+    a: number,
+    flipX: number,
+    flashMix: number,
+    emissiveBoost: number,
+    normalStrength: number,
+    angleRad: number
+  ): void {
+    const page = gpuAtlas.pages[reg.pageIndex];
+    if (!page) return;
+    this.ensureTextures(page.diffuseTex, page.normalTex, page.emissiveTex ?? this.texBlackEmissive!);
+    if (this.quadCount >= MAX_QUADS) this.flushBatch();
+    const o = this.quadCount * FLOATS_PER_QUAD;
+    const buf = this.vertexData;
+
+    const hw = w * 0.5;
+    const hh = h * 0.5;
+    const c = Math.cos(angleRad);
+    const s = Math.sin(angleRad);
+
+    const tlx = cx + (-hw * c - -hh * s);
+    const tly = cy + (-hw * s + -hh * c);
+    const trx = cx + (hw * c - -hh * s);
+    const try_ = cy + (hw * s + -hh * c);
+    const blx = cx + (-hw * c - hh * s);
+    const bly = cy + (-hw * s + hh * c);
+    const brx = cx + (hw * c - hh * s);
+    const bry = cy + (hw * s + hh * c);
+
+    const u0 = reg.x / page.width;
+    const v0 = reg.y / page.height;
+    const u1 = (reg.x + reg.w) / page.width;
+    const v1 = (reg.y + reg.h) / page.height;
+    const ua = flipX < 0 ? u1 : u0;
+    const ub = flipX < 0 ? u0 : u1;
+
+    buf[o] = tlx; buf[o + 1] = tly; buf[o + 2] = ua; buf[o + 3] = v0;
+    buf[o + 4] = r; buf[o + 5] = g; buf[o + 6] = b; buf[o + 7] = a;
+    buf[o + 8] = flipX; buf[o + 9] = flashMix; buf[o + 10] = emissiveBoost; buf[o + 11] = normalStrength;
+
+    buf[o + 12] = trx; buf[o + 13] = try_; buf[o + 14] = ub; buf[o + 15] = v0;
+    buf[o + 16] = r; buf[o + 17] = g; buf[o + 18] = b; buf[o + 19] = a;
+    buf[o + 20] = flipX; buf[o + 21] = flashMix; buf[o + 22] = emissiveBoost; buf[o + 23] = normalStrength;
+
+    buf[o + 24] = blx; buf[o + 25] = bly; buf[o + 26] = ua; buf[o + 27] = v1;
+    buf[o + 28] = r; buf[o + 29] = g; buf[o + 30] = b; buf[o + 31] = a;
+    buf[o + 32] = flipX; buf[o + 33] = flashMix; buf[o + 34] = emissiveBoost; buf[o + 35] = normalStrength;
+
+    buf[o + 36] = brx; buf[o + 37] = bry; buf[o + 38] = ub; buf[o + 39] = v1;
+    buf[o + 40] = r; buf[o + 41] = g; buf[o + 42] = b; buf[o + 43] = a;
+    buf[o + 44] = flipX; buf[o + 45] = flashMix; buf[o + 46] = emissiveBoost; buf[o + 47] = normalStrength;
+
+    this.quadCount++;
+  }
+
   private pushCustomRegionSliceX(
     gpuAtlas: CustomGpuAtlas,
     reg: LibGdxRegion,
@@ -1292,7 +1714,7 @@ export class WebGL2Renderer implements RendererAPI {
   ): void {
     const page = gpuAtlas.pages[reg.pageIndex];
     if (!page) return;
-    this.ensureTextures(page.diffuseTex, page.normalTex, this.texBlackEmissive!);
+    this.ensureTextures(page.diffuseTex, page.normalTex, page.emissiveTex ?? this.texBlackEmissive!);
     const u0 = (reg.x + reg.w * fracX0) / page.width;
     const v0 = reg.y / page.height;
     const u1 = (reg.x + reg.w * fracX1) / page.width;
@@ -1322,6 +1744,72 @@ export class WebGL2Renderer implements RendererAPI {
     this.pushQuad(reg, x, y, w, h, r, g, b, a, flipX, flashMix, emissiveBoost, normalStrength);
   }
 
+  /** Draws positive integer digits using `font:0..9` bitmap glyphs with ZERO heap allocations! */
+  private drawWorldDigits(
+    value: number,
+    cx: number,
+    cy: number,
+    r: number,
+    g: number,
+    b: number,
+    alpha: number,
+    scale = 0.85,
+    emissiveBoost = 0.75
+  ): void {
+    let v = Math.max(0, Math.floor(value));
+    let count = 0;
+    if (v === 0) {
+      this.digitScratch[0] = 0;
+      count = 1;
+    } else {
+      while (v > 0 && count < 8) {
+        this.digitScratch[count++] = v % 10;
+        v = Math.floor(v / 10);
+      }
+    }
+    const charW = 6 * scale;
+    const charH = 8 * scale;
+    const step = 5.5 * scale;
+    const startX = cx - ((count - 1) * step) * 0.5;
+    for (let i = 0; i < count; i++) {
+      const digit = this.digitScratch[count - 1 - i];
+      const key =
+        digit === 0
+          ? 'font:0'
+          : digit === 1
+          ? 'font:1'
+          : digit === 2
+          ? 'font:2'
+          : digit === 3
+          ? 'font:3'
+          : digit === 4
+          ? 'font:4'
+          : digit === 5
+          ? 'font:5'
+          : digit === 6
+          ? 'font:6'
+          : digit === 7
+          ? 'font:7'
+          : digit === 8
+          ? 'font:8'
+          : 'font:9';
+      this.emitVfxQuadBound(
+        key,
+        Math.round(startX + i * step),
+        Math.round(cy),
+        charW,
+        charH,
+        r,
+        g,
+        b,
+        alpha,
+        1,
+        0,
+        emissiveBoost
+      );
+    }
+  }
+
   /** Attempts to draw from a loaded Owned Custom Pack atlas, returning true on hit. */
   private tryDrawCustomPackSprite(
     atlasName: string,
@@ -1331,10 +1819,18 @@ export class WebGL2Renderer implements RendererAPI {
     anchorY: number,
     flipX: number,
     flashMix: number,
-    scaleOverride = 0.72
+    scaleOverride = 0.72,
+    tintR = 1,
+    tintG = 1,
+    tintB = 1,
+    alpha = 1,
+    emissiveBoost = 0
   ): boolean {
     this.customHeadOx = 0;
     this.customHeadOy = -26;
+    if (atlasName === 'beheaded') {
+      this.hasCustomWeaponBone = false;
+    }
     if (this.settings.artPackMode !== 'custom' || !this.customPackStatus.available) {
       return false;
     }
@@ -1372,7 +1868,8 @@ export class WebGL2Renderer implements RendererAPI {
       return false;
     }
 
-    this.ensureTextures(page.diffuseTex, page.normalTex, this.texBlackEmissive!);
+    // Bind extracted #ff00ff emissive mask texture when present (blazing eyes/cores on bosses & hero!)
+    this.ensureTextures(page.diffuseTex, page.normalTex, page.emissiveTex ?? this.texBlackEmissive!);
 
     const u0 = region.x / page.width;
     const v0 = region.y / page.height;
@@ -1385,30 +1882,55 @@ export class WebGL2Renderer implements RendererAPI {
 
     // Ground the trimmed sprite cleanly on anchorY (feet) and center horizontally on origW!
     const origW = region.origW > 0 ? region.origW : region.w;
-    const origH = region.origH > 0 ? region.origH : region.h;
     const centerOffX = (region.offsetX + region.w * 0.5 - origW * 0.5) * scale * flipX;
     const x0 = Math.round(anchorX + centerOffX - dw * 0.5);
     const y0 = Math.round(anchorY - dh);
 
-    this.pushRawQuad(x0, y0, x0 + dw, y0 + dh, u0, v0, u1, v1, 1, 1, 1, 1, flipX, flashMix, 0, 1.0);
+    this.pushRawQuad(
+      x0,
+      y0,
+      x0 + dw,
+      y0 + dh,
+      u0,
+      v0,
+      u1,
+      v1,
+      tintR,
+      tintG,
+      tintB,
+      alpha,
+      flipX,
+      flashMix,
+      emissiveBoost,
+      1.0
+    );
 
-    // Bone track lookup (`headBone` in Dead Cells beheaded_tracks.json)
+    // Bone track lookup (`headBone` & `weaponBone0` in Dead Cells beheaded_tracks.json)
     const frameKey = `${matchedName}_${fIdx}`;
     const bones =
       gpuAtlas.loaded.tracks?.byAnimFrame.get(frameKey) ??
       gpuAtlas.loaded.tracks?.defaultBones ??
       null;
+    const footRow = region.offsetY + region.h;
     const headBone = bones?.headBone;
     if (headBone) {
       const bx = (headBone.x - origW * 0.5) * scale * flipX;
-      // Dead Cells tracks.json y is measured down from top of origH; snug flame directly onto neck collar
-      const footRow = region.offsetY + region.h;
       const by = (headBone.y - footRow) * scale + 6;
       this.customHeadOx = Math.max(-14, Math.min(14, bx));
       this.customHeadOy = Math.max(-36, Math.min(-10, by));
     } else {
       this.customHeadOx = flipX * 1;
       this.customHeadOy = -Math.max(18, Math.min(30, dh * 0.80));
+    }
+    if (atlasName === 'beheaded') {
+      const wBone = bones?.weaponBone0 ?? bones?.weaponBone1;
+      if (wBone) {
+        const wx = (wBone.x - origW * 0.5) * scale * flipX;
+        const wy = (wBone.y - footRow) * scale;
+        this.customWeaponOx = Math.max(-24, Math.min(24, wx));
+        this.customWeaponOy = Math.max(-34, Math.min(-4, wy));
+        this.hasCustomWeaponBone = true;
+      }
     }
     return true;
   }
@@ -1461,19 +1983,25 @@ export class WebGL2Renderer implements RendererAPI {
         ? 40
         : MAX_ACTIVE_LIGHTS;
 
-    // 1. Prisoner Homunculus Flame Light (balanced dual-tone cyan + warm amber — zero white blowout!)
-    const heroFlick = 1.0 + Math.sin(elapsedSec * 12.5) * 0.08 + Math.sin(elapsedSec * 23.0) * 0.04;
+    // 1. Prisoner Homunculus Flame Light (anchored at live neck socket + velocity-reactive flicker!)
+    const speedFrac = Math.min(1, Math.abs(state.player.vel.x) / 220);
+    const heroFlick =
+      1.0 +
+      Math.sin(elapsedSec * (12.5 + speedFrac * 6.5)) * (0.08 + speedFrac * 0.04) +
+      Math.sin(elapsedSec * 23.0) * 0.04;
+    const headLightX = this.hasHeroNeckWorld ? this.heroNeckWorldX : heroX + state.player.facing * 2;
+    const headLightY = this.hasHeroNeckWorld ? this.heroNeckWorldY - 2 : heroY - 24;
     this.addLight(
-      heroX + state.player.facing * 2,
-      heroY - 24,
-      132 * heroFlick,
+      headLightX,
+      headLightY,
+      136 * heroFlick,
       0.56,
-      0.86,
+      0.88,
       1.0,
-      0.92 * heroFlick,
+      0.95 * heroFlick,
       36
     );
-    this.addLight(heroX, heroY - 22, 58, 1.0, 0.54, 0.22, 0.48 * heroFlick, 24);
+    this.addLight(headLightX, headLightY + 2, 62, 1.0, 0.56, 0.22, 0.52 * heroFlick, 24);
 
     // 1b. Active Hero Parry / Shield Block / CorruptedPower / Shield Dome Lights
     const p = state.player;
@@ -1556,7 +2084,27 @@ export class WebGL2Renderer implements RendererAPI {
         const b = ch === 'brutality' ? 0.32 : ch === 'tactics' ? 1.0 : ch === 'survival' ? 0.52 : 0.4;
         this.addLight(px, py - 8, 72, r, g, b, 1.15, 24);
       } else if (pk.kind === 'cell') {
-        this.addLight(px, py - 4, 42, 0.28, 0.9, 1.0, 0.85, 18);
+        this.addLight(px, py - 4, 46, 0.24, 0.92, 1.0, 0.96, 18);
+      }
+    }
+
+    // 4B. Shop Room Warm Lanterns, Merchant Stalls & Recycling Tubes
+    for (let i = 0; i < state.rooms.length; i++) {
+      const rm = state.rooms[i];
+      if (rm.type !== 'weaponShop' && rm.type !== 'skillShop' && rm.type !== 'foodShop') continue;
+      const midX = (rm.tx + rm.tw * 0.5) * TILE_SIZE;
+      const floorY = (rm.ty + rm.th - 1) * TILE_SIZE;
+      const flick = 0.92 + 0.08 * Math.sin(elapsedSec * 7.5 + rm.id * 2.1);
+      this.addLight(midX, floorY - 34, 138, 1.0, 0.78, 0.34, 1.15 * flick, 32);
+    }
+    for (let i = 0; i < state.shrines.length; i++) {
+      const sh = state.shrines[i];
+      if (sh.kind === 'merchant') {
+        const flick = 0.92 + 0.08 * Math.sin(elapsedSec * 8.0 + sh.uid);
+        this.addLight(sh.pos.x + 18, sh.pos.y - 32, 118, 1.0, 0.80, 0.36, 1.15 * flick, 30);
+      } else if (sh.kind === 'recyclingTube') {
+        const pulse = 0.88 + 0.12 * Math.sin(elapsedSec * 5.0 + sh.uid);
+        this.addLight(sh.pos.x, sh.pos.y - 24, 86, 0.28, 0.92, 1.0, 1.05 * pulse, 28);
       }
     }
 
@@ -1569,9 +2117,20 @@ export class WebGL2Renderer implements RendererAPI {
         const isBehemoth = en.bossId === 'Behemoth';
         const isTK = en.bossId === 'TimeKeeper';
         const r = isBehemoth ? 1.0 : isTK ? 0.32 : 0.42;
-        const g = isBehemoth ? 0.34 : isTK ? 0.96 : 0.82;
-        const b = isBehemoth ? 0.16 : isTK ? 0.88 : 1.0;
-        this.addLight(ex, ey - en.height * 0.5, en.bossAuraTicks > 0 ? 155 : 115, r, g, b, 1.5, 36);
+        const g = isBehemoth ? 0.38 : isTK ? 0.96 : 0.82;
+        const b = isBehemoth ? 0.18 : isTK ? 0.88 : 1.0;
+        this.addLight(ex, ey - en.height * 0.5, en.bossAuraTicks > 0 ? 160 : 122, r, g, b, 1.55, 36);
+        // Subtle dramatic overhead steel/rim fill so boss armor silhouettes pop cleanly against dark arenas!
+        this.addLight(
+          ex + en.facing * 10,
+          ey - en.height * 0.72,
+          96,
+          isBehemoth ? 0.72 : 0.65,
+          isBehemoth ? 0.78 : 0.88,
+          1.0,
+          0.62,
+          44
+        );
       } else if (en.isElite) {
         this.addLight(ex, ey - en.height * 0.5, 68, 0.98, 0.72, 0.22, 1.0, 26);
       } else if (en.statusEffects.length > 0) {
@@ -1627,11 +2186,22 @@ export class WebGL2Renderer implements RendererAPI {
     const regBgWall = resolveSpriteRegion(this.atlas.regions, `tile:${tTheme}:bg_wall`);
     const regBgArch = resolveSpriteRegion(this.atlas.regions, `tile:${tTheme}:bg_arch`);
     const regBgPillar = resolveSpriteRegion(this.atlas.regions, `tile:${tTheme}:bg_pillar`);
-    const regSolidTop = resolveSpriteRegion(this.atlas.regions, `tile:${tTheme}:solid_top`);
-    const regSolidMid = resolveSpriteRegion(this.atlas.regions, `tile:${tTheme}:solid_mid`);
+    const regSolidTop0 = resolveSpriteRegion(this.atlas.regions, `tile:${tTheme}:solid_top_0`, `tile:${tTheme}:solid_top`);
+    const regSolidTop1 = resolveSpriteRegion(this.atlas.regions, `tile:${tTheme}:solid_top_1`, `tile:${tTheme}:solid_top`);
+    const regSolidTop2 = resolveSpriteRegion(this.atlas.regions, `tile:${tTheme}:solid_top_2`, `tile:${tTheme}:solid_top`);
+    const regSolidTop3 = resolveSpriteRegion(this.atlas.regions, `tile:${tTheme}:solid_top_3`, `tile:${tTheme}:solid_top`);
+    const regCornerTL = resolveSpriteRegion(this.atlas.regions, `tile:${tTheme}:corner_tl`, `tile:${tTheme}:solid_top`);
+    const regCornerTR = resolveSpriteRegion(this.atlas.regions, `tile:${tTheme}:corner_tr`, `tile:${tTheme}:solid_top`);
+    const regCornerBL = resolveSpriteRegion(this.atlas.regions, `tile:${tTheme}:corner_bl`, `tile:${tTheme}:solid_mid`);
+    const regCornerBR = resolveSpriteRegion(this.atlas.regions, `tile:${tTheme}:corner_br`, `tile:${tTheme}:solid_mid`);
+    const regEdgeLeft = resolveSpriteRegion(this.atlas.regions, `tile:${tTheme}:edge_left`, `tile:${tTheme}:solid_mid`);
+    const regEdgeRight = resolveSpriteRegion(this.atlas.regions, `tile:${tTheme}:edge_right`, `tile:${tTheme}:solid_mid`);
+    const regSolidCeil0 = resolveSpriteRegion(this.atlas.regions, `tile:${tTheme}:solid_ceil_0`, `tile:${tTheme}:solid_mid`);
+    const regSolidCeil1 = resolveSpriteRegion(this.atlas.regions, `tile:${tTheme}:solid_ceil_1`, `tile:${tTheme}:solid_mid`);
+    const regPlatLeft = resolveSpriteRegion(this.atlas.regions, `tile:${tTheme}:plat_left`, `tile:${tTheme}:oneway`);
+    const regPlatMid = resolveSpriteRegion(this.atlas.regions, `tile:${tTheme}:plat_mid`, `tile:${tTheme}:oneway`);
+    const regPlatRight = resolveSpriteRegion(this.atlas.regions, `tile:${tTheme}:plat_right`, `tile:${tTheme}:oneway`);
     const regSolidDeep = resolveSpriteRegion(this.atlas.regions, `tile:${tTheme}:solid_deep`);
-    const regSolidVar = resolveSpriteRegion(this.atlas.regions, `tile:${tTheme}:solid_var`);
-    const regOneWay = resolveSpriteRegion(this.atlas.regions, `tile:${tTheme}:oneway`);
     const regCracked = resolveSpriteRegion(this.atlas.regions, `tile:${tTheme}:cracked_floor`);
     const regSecret = resolveSpriteRegion(this.atlas.regions, `tile:${tTheme}:secret_wall`);
     const regExitGate = resolveSpriteRegion(this.atlas.regions, `tile:${tTheme}:exit_gate`);
@@ -1815,21 +2385,58 @@ export class WebGL2Renderer implements RendererAPI {
             this.pushCustomRegion(biomeAtlas, reg, wx, wy, dw, dh, 1, 1, 1, 1, flip, 0, 0, -0.9);
           }
         }
+
+        // Biome-specific extracted props (Ramparts crenels, Sewer pipeCorners, Bridge parapets)
+        if (bCache.biomeProps.length > 0 && rm.tw >= 10 && rm.type !== 'passage') {
+          const btx = rm.tx + Math.floor(rm.tw * 0.5);
+          const h = tileHash(btx, rm.id + 13);
+          const reg = bCache.biomeProps[h % bCache.biomeProps.length];
+          const dw = Math.round(reg.w * 0.85);
+          const dh = Math.round(reg.h * 0.85);
+          const px = Math.round(btx * TILE_SIZE - dw * 0.5 - camX);
+          const py = floorScreenY - dh;
+          this.pushCustomRegion(biomeAtlas, reg, px, py, dw, dh, 1, 1, 1, 1, 1, 0, 0, -0.86);
+        }
+
+        // In-Biome Shop Stall & Merchant NPC (for weaponShop / skillShop / foodShop rooms)
+        if (rm.type === 'weaponShop' || rm.type === 'skillShop' || rm.type === 'foodShop') {
+          const stallX = Math.round((rm.tx + rm.tw * 0.5) * TILE_SIZE - camX);
+          this.drawSpriteKey('prop:shop_stall', stallX, floorScreenY, 1, 1, 1, 1, 1, 0, 0.06, -0.82, 1.08);
+          let hasMerchantShrine = false;
+          for (let s = 0; s < state.shrines.length; s++) {
+            const sh = state.shrines[s];
+            if (
+              sh.kind === 'merchant' &&
+              sh.pos.x >= rm.tx * TILE_SIZE &&
+              sh.pos.x <= (rm.tx + rm.tw) * TILE_SIZE
+            ) {
+              hasMerchantShrine = true;
+              break;
+            }
+          }
+          if (!hasMerchantShrine) {
+            this.drawSpriteKey('prop:npc_merchant', stallX - 38, floorScreenY, 1, 1, 1, 1, 1, 0, 0.08, 0.95);
+          }
+        }
       }
     } else {
-      // Built-In Mode: monumental baked Gothic Cathedral Archways + lush dungeon dressings!
+      // Built-In Mode: Monumental Gothic Archways + 15 Biome-Distinct Storytelling & Shop Props!
       const regBanner = resolveSpriteRegion(this.atlas.regions, `prop:banner_${animFrame2}`);
       const regCage = resolveSpriteRegion(this.atlas.regions, 'prop:cage');
       const regGothicArch = this.atlas.regions['prop:gothic_arch'] ?? null;
+      const regPendulum = this.atlas.regions['prop:clock_pendulum'] ?? null;
+      const regGearLg = this.atlas.regions['prop:wall_gear'] ?? null;
+      const regGearSm = this.atlas.regions['prop:wall_gear_sm'] ?? null;
       const hasPillar = Boolean(this.atlas.regions['prop:pillar_ornate']);
       const hasLantern = Boolean(this.atlas.regions[`prop:lantern_${flameFrame3}`]);
       const hasChainHook = Boolean(this.atlas.regions['prop:chain_hook']);
       const hasCrate = Boolean(this.atlas.regions['prop:crate']);
       const hasBarrel = Boolean(this.atlas.regions['prop:barrel']);
       const hasSkullPile = Boolean(this.atlas.regions['prop:skull_pile']);
+      const biomeId = state.activeBiomeId;
 
       // Passage Built-In Vaulted Alcoves behind Collector, Guillain & Blacksmith
-      if (state.activeBiomeId === 'Passage' && regGothicArch) {
+      if (biomeId === 'Passage' && regGothicArch) {
         for (let i = 0; i < state.shrines.length; i++) {
           const sh = state.shrines[i];
           if (sh.kind !== 'collector' && sh.kind !== 'forge') continue;
@@ -1866,12 +2473,14 @@ export class WebGL2Renderer implements RendererAPI {
 
         const floorTy = rm.type === 'passage' ? rm.ty + rm.th - 2 : rm.ty + rm.th - 1;
         const floorScreenY = Math.round(floorTy * TILE_SIZE - camY);
+        const ceilScreenY = Math.round((rm.ty + 1) * TILE_SIZE - camY);
+        const roomMidX = Math.round((rm.tx + rm.tw * 0.5) * TILE_SIZE - camX);
         const roomInnerH = Math.max(48, (floorTy - rm.ty - 1) * TILE_SIZE);
 
         // Monumental vaulted Gothic Stone Archways framing interior corridors & arenas!
-        if (regGothicArch && rm.tw >= 10 && rm.type !== 'passage') {
+        if (regGothicArch && rm.tw >= 10 && rm.type !== 'passage' && biomeId !== 'PrisonCourtyard' && biomeId !== 'Sewer') {
           const archCount = rm.tw >= 22 ? 3 : rm.tw >= 15 ? 2 : 1;
-          const maxScale = rm.type === 'bossArena' ? 0.84 : 1.06;
+          const maxScale = rm.type === 'bossArena' ? 0.84 : 1.04;
           for (let k = 0; k < archCount; k++) {
             const frac =
               archCount === 1 ? 0.5 : archCount === 2 ? (k === 0 ? 0.3 : 0.7) : (k + 1) / 4;
@@ -1885,30 +2494,156 @@ export class WebGL2Renderer implements RendererAPI {
           }
         }
 
-        if (rm.tw >= 8) {
-          const bx = Math.round((rm.tx + Math.floor(rm.tw * 0.35)) * TILE_SIZE - camX);
-          const by = Math.round((rm.ty + 1) * TILE_SIZE - camY);
-          this.pushQuad(regBanner, bx, by, regBanner.w, regBanner.h, 1, 1, 1, 1, 1, 0, 0, -0.9);
+        // Biome-Signature Architectural Storytelling Dressings (Instant 200ms Biome Identity!)
+        if (rm.tw >= 8 && rm.type !== 'passage') {
+          const leftSlotX = Math.round((rm.tx + Math.floor(rm.tw * 0.30)) * TILE_SIZE - camX);
+          const rightSlotX = Math.round((rm.tx + Math.floor(rm.tw * 0.70)) * TILE_SIZE - camX);
+          const midWallY = Math.round((ceilScreenY + floorScreenY) * 0.5);
+
+          if (biomeId === 'PrisonStart') {
+            // Iconic Prisoners' Quarters hanging glass specimen/weapon jars + barred cell windows!
+            this.drawSpriteKey('prop:prison_jars', roomMidX, ceilScreenY, 1, 1, 1, 1, 1, 0, 0.14, -0.85);
+            this.drawSpriteKey('prop:iron_cell_bars', leftSlotX, floorScreenY - 12, 1, 1, 1, 1, 1, 0, 0.08, -0.9);
+            if (rm.tw >= 14) {
+              this.drawSpriteKey('prop:iron_cell_bars', rightSlotX, floorScreenY - 12, 1, 1, 1, 1, -1, 0, 0.08, -0.9);
+            }
+          } else if (biomeId === 'PrisonCourtyard') {
+            // Promenade gnarled crooked dead trees + swaying hanging gibbet cages!
+            this.drawSpriteKey('prop:dead_tree', leftSlotX, floorScreenY, 1, 1, 1, 1, (rm.id & 1) === 0 ? 1 : -1, 0, 0, -0.86);
+            if (rm.tw >= 14) {
+              this.drawSpriteKey('prop:dead_tree', rightSlotX, floorScreenY, 0.92, 0.96, 0.94, 1, (rm.id & 1) === 0 ? -1 : 1, 0, 0, -0.88, 0.92);
+            }
+            const sway = Math.round(Math.sin(elapsedSec * 1.8 + rm.id) * 1.5);
+            this.drawSpriteKey('prop:gibbet_cage', roomMidX + sway, ceilScreenY, 1, 1, 1, 1, 1, 0, 0, -0.82);
+          } else if (biomeId === 'Sewer') {
+            // Toxic Sewers acid outflow grates + riveted copper valve pipes!
+            this.drawSpriteKey('prop:sewer_grate', leftSlotX, midWallY, 1, 1, 1, 1, 1, 0, 0.16, -0.86);
+            this.drawSpriteKey('prop:pipe_valve', rightSlotX, midWallY + 6, 1, 1, 1, 1, (rm.id & 1) === 0 ? 1 : -1, 0, 0.12, -0.84);
+          } else if (biomeId === 'PrisonRoof' || biomeId === 'Bridge') {
+            // Ramparts & Black Bridge whipping tattered 3-frame crimson wind banners + gibbets!
+            this.drawSpriteKey(`prop:wind_banner_${flameFrame3}`, leftSlotX, ceilScreenY + 4, 1, 1, 1, 1, 1, 0, 0, -0.86);
+            if (rm.tw >= 12) {
+              this.drawSpriteKey(`prop:wind_banner_${(flameFrame3 + 1) % 3}`, rightSlotX, ceilScreenY + 4, 1, 1, 1, 1, -1, 0, 0, -0.86);
+              if (biomeId === 'PrisonRoof') {
+                this.drawSpriteKey('prop:gibbet_cage', roomMidX, ceilScreenY, 1, 1, 1, 1, 1, 0, 0, -0.84);
+              }
+            }
+          } else if (biomeId === 'StiltVillage') {
+            // Stilt Village crooked harbor trees + swaying warm harbor lanterns!
+            this.drawSpriteKey('prop:dead_tree', leftSlotX, floorScreenY, 0.92, 0.92, 0.88, 1, 1, 0, 0, -0.86, 0.9);
+            if (hasLantern) {
+              this.drawSpriteKey(`prop:lantern_${flameFrame3}`, rightSlotX, ceilScreenY + 6, 1, 1, 1, 1, 1, 0, 0.30, 0.9);
+            }
+          } else if (biomeId === 'ClockTower' || biomeId === 'TopClockTower') {
+            // Clock Tower stained-glass rose windows, physically swinging brass pendulum & counter-rotating gears!
+            this.drawSpriteKey('prop:clock_rose_window', roomMidX, midWallY - 6, 1, 1, 1, 1, 1, 0, 0.24, -0.9);
+            if (regGearLg) {
+              this.pushRotatedQuad(
+                regGearLg,
+                leftSlotX,
+                midWallY - 4,
+                regGearLg.w,
+                regGearLg.h,
+                1,
+                1,
+                1,
+                1,
+                1,
+                0,
+                0.04,
+                -0.86,
+                elapsedSec * 0.42 + rm.id
+              );
+            }
+            if (regGearSm) {
+              this.pushRotatedQuad(
+                regGearSm,
+                leftSlotX + 26,
+                midWallY + 12,
+                regGearSm.w,
+                regGearSm.h,
+                1,
+                1,
+                1,
+                1,
+                1,
+                0,
+                0.04,
+                -0.86,
+                -elapsedSec * 0.68 - rm.id
+              );
+            }
+            if (regPendulum && rm.tw >= 12) {
+              const pendAng = Math.sin(elapsedSec * 1.65 + rm.id * 0.7) * 0.28;
+              const halfH = regPendulum.h * 0.5;
+              const px = rightSlotX - Math.sin(pendAng) * halfH;
+              const py = ceilScreenY + Math.cos(pendAng) * halfH;
+              this.pushRotatedQuad(
+                regPendulum,
+                px,
+                py,
+                regPendulum.w,
+                regPendulum.h,
+                1,
+                1,
+                1,
+                1,
+                1,
+                0,
+                0.10,
+                -0.82,
+                pendAng
+              );
+            }
+          } else if (biomeId === 'Castle' || biomeId === 'Throne') {
+            // High Peak Castle & Throne Room tall stained-glass lancets + ornate 5-candle candelabras!
+            this.drawSpriteKey('prop:castle_stained_glass', roomMidX, floorScreenY - 8, 1, 1, 1, 1, 1, 0, 0.22, -0.9);
+            this.drawSpriteKey('prop:royal_candelabra', leftSlotX, floorScreenY, 1, 1, 1, 1, 1, 0, 0.16, 0.92);
+            if (rm.tw >= 14) {
+              this.drawSpriteKey('prop:royal_candelabra', rightSlotX, floorScreenY, 1, 1, 1, 1, -1, 0, 0.16, 0.92);
+            }
+          } else {
+            // Default gothic banner & cage
+            this.pushQuad(regBanner, leftSlotX, ceilScreenY, regBanner.w, regBanner.h, 1, 1, 1, 1, 1, 0, 0, -0.9);
+            if (rm.tw >= 12 && (rm.id & 1) === 0) {
+              this.pushQuad(regCage, rightSlotX, ceilScreenY, regCage.w, regCage.h, 1, 1, 1, 1, 1, 0, 0, -0.85);
+            }
+          }
         }
-        if (rm.tw >= 12 && (rm.id & 1) === 0) {
-          const cx = Math.round((rm.tx + Math.floor(rm.tw * 0.68)) * TILE_SIZE - camX);
-          const cy = Math.round((rm.ty + 1) * TILE_SIZE - camY);
-          this.pushQuad(regCage, cx, cy, regCage.w, regCage.h, 1, 1, 1, 1, 1, 0, 0, -0.85);
+
+        // In-Biome Shop Stall & Merchant NPC (`weaponShop`, `skillShop`, `foodShop`)
+        if (rm.type === 'weaponShop' || rm.type === 'skillShop' || rm.type === 'foodShop') {
+          this.drawSpriteKey('prop:shop_stall', roomMidX, floorScreenY, 1, 1, 1, 1, 1, 0, 0.08, -0.82, 1.08);
+          let hasMerchantShrine = false;
+          for (let s = 0; s < state.shrines.length; s++) {
+            const sh = state.shrines[s];
+            if (
+              sh.kind === 'merchant' &&
+              sh.pos.x >= rm.tx * TILE_SIZE &&
+              sh.pos.x <= (rm.tx + rm.tw) * TILE_SIZE
+            ) {
+              hasMerchantShrine = true;
+              break;
+            }
+          }
+          if (!hasMerchantShrine) {
+            this.drawSpriteKey('prop:npc_merchant', roomMidX - 38, floorScreenY, 1, 1, 1, 1, 1, 0, 0.08, 0.95);
+          }
         }
 
         // Ornate architectural pillars framing room interiors
-        if (hasPillar && rm.tw >= 12) {
+        if (hasPillar && rm.tw >= 12 && biomeId !== 'PrisonCourtyard' && biomeId !== 'Sewer') {
           const pLeftX = Math.round((rm.tx + 2) * TILE_SIZE + 12 - camX);
           const pRightX = Math.round((rm.tx + rm.tw - 3) * TILE_SIZE + 12 - camX);
           this.drawSpriteKey('prop:pillar_ornate', pLeftX, floorScreenY, 1, 1, 1, 1, 1, 0, 0, -0.88);
           this.drawSpriteKey('prop:pillar_ornate', pRightX, floorScreenY, 1, 1, 1, 1, -1, 0, 0, -0.88);
         }
 
-        // Hanging gothic lanterns or ceiling chains
-        if (rm.tw >= 10) {
+        // Hanging gothic lanterns or ceiling chains (skip where prison jars/clock pendulum occupy center)
+        if (rm.tw >= 10 && biomeId !== 'PrisonStart' && biomeId !== 'ClockTower' && biomeId !== 'TopClockTower') {
           const ltx = rm.tx + Math.floor(rm.tw * 0.52);
           const lx = Math.round(ltx * TILE_SIZE + 12 - camX);
-          const ly = Math.round((rm.ty + 1) * TILE_SIZE - camY);
+          const ly = ceilScreenY;
           if (hasLantern) {
             this.drawSpriteKey(
               `prop:lantern_${flameFrame3}`,
@@ -1925,13 +2660,20 @@ export class WebGL2Renderer implements RendererAPI {
             );
           } else if (hasChainHook) {
             this.drawSpriteKey('prop:chain_hook', lx, ly + 18, 1, 1, 1, 1, 1, 0, 0, -0.85);
-          } else if ((rm.id % 3) === 1 && rm.th >= 8) {
+          } else if (rm.id % 3 === 1 && rm.th >= 8) {
             this.pushQuad(regChain, lx - 12, ly, TILE_SIZE, TILE_SIZE, 0.82, 0.84, 0.9, 1, 1, 0, 0, -0.8);
           }
         }
 
         // Grounded floor clutter (crates, barrels, skull piles) standing cleanly on solid floor
-        if (rm.tw >= 10 && rm.type !== 'bossArena' && rm.type !== 'passage') {
+        if (
+          rm.tw >= 10 &&
+          rm.type !== 'bossArena' &&
+          rm.type !== 'passage' &&
+          rm.type !== 'weaponShop' &&
+          rm.type !== 'skillShop' &&
+          rm.type !== 'foodShop'
+        ) {
           const propSlots = rm.tw >= 16 ? 2 : 1;
           for (let s = 0; s < propSlots; s++) {
             const ptx = rm.tx + (s === 0 ? 3 : rm.tw - 4);
@@ -2077,7 +2819,7 @@ export class WebGL2Renderer implements RendererAPI {
 
           if (useCustomSolid) {
             const fsList = bCache!.floorStamps;
-            const stamp = fsList[h % fsList.length];
+            let stamp = fsList[h % fsList.length];
             if (sAbove && sBelow && sLeft && sRight) {
               // Deep dark silhouette bedrock inside buried interiors (stays in same GPU batch!)
               this.pushCustomRegion(
@@ -2097,6 +2839,15 @@ export class WebGL2Renderer implements RendererAPI {
                 0.35
               );
             } else {
+              // Edge-matched Dead Cells masonry stamps (`floorStampLeft/Right/LeftRight`)!
+              if (!sLeft && !sRight && bCache!.floorStampLeftRight.length > 0) {
+                stamp = bCache!.floorStampLeftRight[h % bCache!.floorStampLeftRight.length];
+              } else if (!sLeft && bCache!.floorStampLeft.length > 0) {
+                stamp = bCache!.floorStampLeft[h % bCache!.floorStampLeft.length];
+              } else if (!sRight && bCache!.floorStampRight.length > 0) {
+                stamp = bCache!.floorStampRight[h % bCache!.floorStampRight.length];
+              }
+
               // Exposed solid terrain: real Dead Cells floorStamp + real *_n.png normal map!
               this.pushCustomRegion(
                 biomeAtlas!,
@@ -2114,25 +2865,61 @@ export class WebGL2Renderer implements RendererAPI {
                 0,
                 1.0
               );
-              if (!sAbove && hasCustomGround) {
-                const gcList = bCache!.groundCaps;
-                const cap = gcList[h % gcList.length];
-                this.pushCustomRegion(
-                  biomeAtlas!,
-                  cap,
-                  sx,
-                  sy,
-                  TILE_SIZE,
-                  Math.min(6, cap.h),
-                  1,
-                  1,
-                  1,
-                  1,
-                  1,
-                  0,
-                  0,
-                  1.0
-                );
+
+              // Exposed top corner caps (`ground_left`/`ground_right`) + ground caps!
+              if (!sAbove) {
+                let cap: LibGdxRegion | null = null;
+                if (!sLeft && bCache!.groundLeft.length > 0) {
+                  cap = bCache!.groundLeft[h % bCache!.groundLeft.length];
+                } else if (!sRight && bCache!.groundRight.length > 0) {
+                  cap = bCache!.groundRight[h % bCache!.groundRight.length];
+                } else if (hasCustomGround) {
+                  cap = bCache!.groundCaps[h % bCache!.groundCaps.length];
+                }
+                if (cap) {
+                  this.pushCustomRegion(
+                    biomeAtlas!,
+                    cap,
+                    sx,
+                    sy,
+                    TILE_SIZE,
+                    Math.min(8, cap.h),
+                    1,
+                    1,
+                    1,
+                    1,
+                    1,
+                    0,
+                    0,
+                    1.0
+                  );
+                }
+                // Overhanging biome foliage (`groundFoliage_0..1`) on exposed top edges!
+                if (
+                  bCache!.groundFoliage.length > 0 &&
+                  ty > 0 &&
+                  grid.tiles[(ty - 1) * grid.width + tx] === TileKind.EMPTY &&
+                  h % 3 === 0
+                ) {
+                  const fol = bCache!.groundFoliage[(h >>> 2) % bCache!.groundFoliage.length];
+                  const fh = Math.min(12, fol.h);
+                  this.pushCustomRegion(
+                    biomeAtlas!,
+                    fol,
+                    sx,
+                    sy - 1,
+                    TILE_SIZE,
+                    fh,
+                    1,
+                    1,
+                    1,
+                    1,
+                    (h & 1) === 0 ? 1 : -1,
+                    0,
+                    0,
+                    0.95
+                  );
+                }
               }
               if (!sBelow && hasCustomCeiling) {
                 const ccList = bCache!.ceilingCaps;
@@ -2190,16 +2977,30 @@ export class WebGL2Renderer implements RendererAPI {
               }
             }
           } else {
+            // Built-In Mode: Full 12-tile 4-neighbor biome autotiling!
             let reg = regSolidDeep;
-            if (!sAbove) {
-              reg = regSolidTop;
-            } else if (!sBelow || !sLeft || !sRight) {
-              reg = h % 4 === 0 ? regSolidVar : regSolidMid;
+            if (!sAbove && !sLeft) {
+              reg = regCornerTL;
+            } else if (!sAbove && !sRight) {
+              reg = regCornerTR;
+            } else if (!sBelow && !sLeft) {
+              reg = regCornerBL;
+            } else if (!sBelow && !sRight) {
+              reg = regCornerBR;
+            } else if (!sAbove) {
+              const tv = (tx * 37 + ty * 17) & 3;
+              reg = tv === 1 ? regSolidTop1 : tv === 2 ? regSolidTop2 : tv === 3 ? regSolidTop3 : regSolidTop0;
+            } else if (!sBelow) {
+              reg = ((tx + ty) & 1) === 0 ? regSolidCeil0 : regSolidCeil1;
+            } else if (!sLeft) {
+              reg = regEdgeLeft;
+            } else if (!sRight) {
+              reg = regEdgeRight;
             } else {
               reg = regSolidDeep;
             }
             this.pushQuad(reg, sx, sy, TILE_SIZE, TILE_SIZE, 1, 1, 1, 1, 1, 0, 0, 1.0);
-            if (regBuiltinMossCap && !sAbove && h % 3 === 0) {
+            if (regBuiltinMossCap && !sAbove && sLeft && sRight && h % 3 === 0) {
               this.pushQuad(
                 regBuiltinMossCap,
                 sx,
@@ -2215,7 +3016,7 @@ export class WebGL2Renderer implements RendererAPI {
                 0,
                 1.0
               );
-            } else if (regBuiltinMossCap && !sBelow && h % 5 === 0) {
+            } else if (regBuiltinMossCap && !sBelow && sLeft && sRight && h % 5 === 0) {
               const mh = Math.min(8, regBuiltinMossCap.h);
               this.pushQuad(
                 regBuiltinMossCap,
@@ -2235,6 +3036,26 @@ export class WebGL2Renderer implements RendererAPI {
             }
           }
         } else if (tile === TileKind.ONE_WAY) {
+          const leftIsOneWay = tx > 0 && grid.tiles[rowOff + tx - 1] === TileKind.ONE_WAY;
+          const rightIsOneWay =
+            tx + 1 < grid.width && grid.tiles[rowOff + tx + 1] === TileKind.ONE_WAY;
+
+          // Boss-Arena Throne Ice Platforms: crystalline frost glow & crumble flicker when icePlatformTimers active!
+          const isThroneIce = state.activeBiomeId === 'Throne';
+          let iceR = 1.0;
+          let iceG = 1.0;
+          let iceB = 1.0;
+          let iceEm = 0.0;
+          if (isThroneIce) {
+            const sideIdx = tx < (grid.width >> 1) ? 0 : 1;
+            const timer = state.bossArenaState.icePlatformTimers?.[sideIdx] ?? 0;
+            const warnFlick = timer > 0 && timer < 60 ? 0.65 + 0.35 * Math.sin(elapsedSec * 36) : 1.0;
+            iceR = 0.68 * warnFlick;
+            iceG = 0.96 * warnFlick;
+            iceB = 1.18;
+            iceEm = 0.24 * warnFlick;
+          }
+
           const fallbackPrisonAtlas =
             !hasCustomOneWay && useCustomWorld ? this.ensureCustomAtlasLoaded('prison') : null;
           const owAtlas = hasCustomOneWay
@@ -2242,11 +3063,8 @@ export class WebGL2Renderer implements RendererAPI {
             : fallbackPrisonAtlas && fallbackPrisonAtlas.cache.oneWays.length > 0
             ? fallbackPrisonAtlas
             : null;
-          if (owAtlas) {
+          if (owAtlas && !isThroneIce) {
             const owCache = owAtlas.cache;
-            const leftIsOneWay = tx > 0 && grid.tiles[rowOff + tx - 1] === TileKind.ONE_WAY;
-            const rightIsOneWay =
-              tx + 1 < grid.width && grid.tiles[rowOff + tx + 1] === TileKind.ONE_WAY;
             let ow = owCache.oneWays[tileHash(tx, ty) % owCache.oneWays.length];
             if (!leftIsOneWay && owCache.oneWayLeft) {
               ow = owCache.oneWayLeft;
@@ -2285,7 +3103,13 @@ export class WebGL2Renderer implements RendererAPI {
               );
             }
           } else {
-            this.pushQuad(regOneWay, sx, sy, TILE_SIZE, TILE_SIZE, 1, 1, 1, 1, 1, 0, 0, 1.0);
+            const platReg =
+              !leftIsOneWay && rightIsOneWay
+                ? regPlatLeft
+                : leftIsOneWay && !rightIsOneWay
+                ? regPlatRight
+                : regPlatMid;
+            this.pushQuad(platReg, sx, sy, TILE_SIZE, TILE_SIZE, iceR, iceG, iceB, 1, 1, 0, iceEm, 1.0);
           }
         } else if (tile === TileKind.LADDER) {
           if (hasCustomLadder) {
@@ -2404,6 +3228,9 @@ export class WebGL2Renderer implements RendererAPI {
         }
       }
     }
+
+    // 4.5. Persistent Ground Decals (Blood Spatters, Scorch Marks, Frost Rime) — Characters walk over them!
+    this.particles.renderDecals(camX, camY, this.emitVfxQuadBound);
 
     // 5. Doors, Teleporters, Chests, Shrines & Passage NPCs (all grounded cleanly to floor!)
     const isPassage = state.activeBiomeId === 'Passage';
@@ -2681,13 +3508,22 @@ export class WebGL2Renderer implements RendererAPI {
         continue;
       }
       let key = 'prop:scroll_altar';
+      let emBoost = 0.06;
       if (sh.kind === 'fountain') key = sh.used ? 'prop:fountain_empty' : 'prop:fountain_full';
       else if (sh.kind === 'collector') key = 'prop:npc_collector';
       else if (sh.kind === 'guillain') key = 'prop:npc_guillain';
       else if (sh.kind === 'forge') key = 'prop:npc_forge';
       else if (sh.kind === 'challengeRift') key = 'prop:challenge_rift';
       else if (sh.kind === 'loreSkeleton') key = 'prop:skeleton';
-      this.drawSpriteKey(key, sx, sy, 1, 1, 1, 1, 1, 0, 0.06, 1.0);
+      else if (sh.kind === 'merchant') {
+        this.drawSpriteKey('prop:shop_stall', sx + 22, sy, 1, 1, 1, 1, 1, 0, 0.06, -0.82, 1.05);
+        key = 'prop:npc_merchant';
+        emBoost = 0.08;
+      } else if (sh.kind === 'recyclingTube') {
+        key = 'prop:recycling_tube';
+        emBoost = sh.used ? 0.04 : 0.24;
+      }
+      this.drawSpriteKey(key, sx, sy, 1, 1, 1, 1, 1, 0, emBoost, 1.0);
     }
 
     // 6. Turrets & Deployables
@@ -2719,7 +3555,8 @@ export class WebGL2Renderer implements RendererAPI {
       );
     }
 
-    // 7. Pickups (Smooth interpolation + gentle vertical bobbing + color-coded scroll glow)
+    // 7. Pickups (Smooth interpolation + spinning metallic coins + fxCommon cells + gentle bobbing)
+    const fxCommonAtlas = useCustomWorld ? this.customGpuAtlases.get('fxCommon') ?? null : null;
     for (let i = 0; i < state.pickups.length; i++) {
       const pk = state.pickups[i];
       if (pk.collected) continue;
@@ -2727,6 +3564,58 @@ export class WebGL2Renderer implements RendererAPI {
       const py = pk.prevPos.y + (pk.pos.y - pk.prevPos.y) * interpAlpha - camY;
       if (px < -24 || px > VIEWPORT_W + 24 || py < -24 || py > VIEWPORT_H + 24) continue;
       const bob = Math.sin(elapsedSec * 4.5 + pk.bobPhase) * 2.2;
+
+      if (pk.kind === 'gold') {
+        const coinFrame = Math.floor(elapsedSec * 12 + pk.uid * 1.7) & 3;
+        if (fxCommonAtlas?.cache.coinLarge) {
+          const reg = fxCommonAtlas.cache.coinLarge;
+          const spinW = coinFrame === 2 ? 3 : coinFrame === 0 ? 9 : 6;
+          const ch = 9;
+          this.pushCustomRegion(
+            fxCommonAtlas,
+            reg,
+            Math.round(px - spinW * 0.5),
+            Math.round(py + 2 + bob - ch * 0.5),
+            spinW,
+            ch,
+            1,
+            0.96,
+            0.78,
+            1,
+            1,
+            coinFrame === 2 ? 0.35 : 0,
+            0.28,
+            0.9
+          );
+          continue;
+        }
+        this.drawSpriteKey(`vfx:coin_${coinFrame}`, px, py + 2 + bob, 1, 1, 1, 1, 1, 0, 0.24, 0.9);
+        continue;
+      }
+
+      if (pk.kind === 'cell' && fxCommonAtlas?.cache.fxCell) {
+        const reg = fxCommonAtlas.cache.fxCell;
+        const cw = 11;
+        const ch = Math.max(10, Math.round(cw * (reg.h / Math.max(1, reg.w))));
+        this.pushCustomRegion(
+          fxCommonAtlas,
+          reg,
+          Math.round(px - cw * 0.5),
+          Math.round(py + 2 + bob - ch * 0.5),
+          cw,
+          ch,
+          0.65,
+          0.98,
+          1.0,
+          1,
+          1,
+          0.12,
+          0.55,
+          0.7
+        );
+        continue;
+      }
+
       let key = 'pickup:gold';
       if (pk.kind === 'cell') key = 'pickup:cell';
       else if (pk.kind === 'food') key = 'pickup:food';
@@ -2766,14 +3655,16 @@ export class WebGL2Renderer implements RendererAPI {
       this.drawEnemyOrBoss(en, ex, ey, elapsedSec);
     }
 
-    // 9. Prisoner (Hero) + Glowing Animated Homunculus Plasma Flame Head (heroY is feet!)
-    this.drawHero(state.player, heroX - camX, heroY - camY, elapsedSec);
+    // 9A. Split Verlet Crimson Scarf Rendered Strictly BEHIND the Prisoner!
+    if (state.player.actionState !== 'dead') {
+      this.particles.renderScarfBehindHero(camX, camY, this.emitVfxQuadBound);
+    }
+
+    // 9B. Prisoner (Hero) + Glowing Animated Homunculus Plasma Flame Head (heroY is feet!)
+    this.drawHero(state.player, heroX - camX, heroY - camY, elapsedSec, camX, camY);
   }
 
   private drawEnemyOrBoss(en: EnemyState, sx: number, sy: number, elapsedSec: number): void {
-    const isAttackPose =
-      en.state === 'attack' || en.state === 'windup' || Math.floor(elapsedSec * 5 + en.uid) % 2 === 1;
-    const frame = isAttackPose ? 1 : 0;
     const flash = en.hitFlashTicks > 0 ? Math.min(1, en.hitFlashTicks / 5) : 0;
 
     // Status visual tinting (Freeze cyan, Poison green, Burn orange, Bleed crimson, Elite gold)
@@ -2784,27 +3675,28 @@ export class WebGL2Renderer implements RendererAPI {
 
     if (en.isElite) {
       const pulse = 0.14 * (0.5 + 0.5 * Math.sin(elapsedSec * 8 + en.uid));
-      r = 1.05;
+      r = 1.06;
       g = 0.92 + pulse;
-      b = 0.72;
-      emBoost = 0.10 + pulse;
+      b = 0.68;
+      emBoost = 0.12 + pulse;
     }
 
     for (let s = 0; s < en.statusEffects.length; s++) {
       const kind = en.statusEffects[s].kind;
       if (kind === 'freeze' || kind === 'frost') {
-        r = 0.62; g = 0.92; b = 1.15; emBoost = Math.max(emBoost, 0.16);
+        r = 0.62; g = 0.92; b = 1.18; emBoost = Math.max(emBoost, 0.16);
       } else if (kind === 'poison') {
-        r = 0.72; g = 1.1; b = 0.62;
+        r = 0.72; g = 1.12; b = 0.60;
       } else if (kind === 'burn') {
-        r = 1.18; g = 0.72; b = 0.45; emBoost = Math.max(emBoost, 0.18);
+        r = 1.18; g = 0.72; b = 0.44; emBoost = Math.max(emBoost, 0.18);
       } else if (kind === 'stun') {
-        r = 1.05; g = 0.95; b = 0.68;
+        r = 1.06; g = 0.95; b = 0.66;
       }
     }
 
     if (en.isBoss && en.bossId) {
       const isAtk = en.state === 'attack' || en.state === 'windup';
+      const phasePulse = en.bossPhase >= 2 ? 0.10 : 0.04;
       const customAtlas =
         en.bossId === 'Behemoth'
           ? 'behemoth'
@@ -2836,11 +3728,76 @@ export class WebGL2Renderer implements RendererAPI {
         sy,
         en.facing,
         flash,
-        en.bossId === 'KingsHand' ? 0.64 : en.bossId === 'Behemoth' ? 0.66 : 0.72
+        en.bossId === 'KingsHand' ? 0.64 : en.bossId === 'Behemoth' ? 0.66 : 0.72,
+        r,
+        g,
+        b,
+        1,
+        emBoost + phasePulse * 0.5
       );
       if (!drawnCustom) {
-        const key = `boss:${en.bossId}_${frame}`;
-        const phasePulse = en.bossPhase >= 2 ? 0.12 : 0.04;
+        // Built-In Mode: True multi-pose boss combat animation via `en.state` & `en.bossAttackId`!
+        let poseSuffix = 'idle0';
+        const isMoving = Math.abs(en.vel.x) > 10;
+        if (en.bossId === 'Behemoth') {
+          if (en.state === 'windup') {
+            poseSuffix = 'windup';
+          } else if (en.state === 'attack') {
+            if (en.bossAttackId === 'leapSlam' || en.bossAttackId === 'shockwave') {
+              poseSuffix = 'slam';
+            } else if (en.bossAttackId === 'roarAura') {
+              poseSuffix = 'roar';
+            } else if (en.bossAttackId === 'punch' && Math.abs(en.vel.x) > 100) {
+              poseSuffix = 'dash';
+            } else {
+              poseSuffix = 'attack';
+            }
+          } else if (isMoving) {
+            poseSuffix = (Math.floor(elapsedSec * 7.0) & 1) === 0 ? 'walk' : 'idle0';
+          } else {
+            poseSuffix = (Math.floor(elapsedSec * 3.5) & 1) === 0 ? 'idle0' : 'idle1';
+          }
+        } else if (en.bossId === 'TimeKeeper') {
+          if (en.state === 'windup') {
+            poseSuffix = 'windup';
+          } else if (en.state === 'attack') {
+            if (en.bossAttackId === 'dashSlash') {
+              poseSuffix = 'dash';
+            } else if (
+              en.bossAttackId === 'shurikenFan' ||
+              en.bossAttackId === 'hookPull' ||
+              en.bossAttackId === 'fallingSwords'
+            ) {
+              poseSuffix = 'throw';
+            } else {
+              poseSuffix = 'slash';
+            }
+          } else if (isMoving) {
+            poseSuffix = (Math.floor(elapsedSec * 9.0) & 1) === 0 ? 'walk' : 'idle0';
+          } else {
+            poseSuffix = (Math.floor(elapsedSec * 4.2) & 1) === 0 ? 'idle0' : 'idle1';
+          }
+        } else {
+          // KingsHand
+          if (en.state === 'windup') {
+            poseSuffix = 'windup';
+          } else if (en.state === 'attack') {
+            if (en.bossAttackId === 'lanceCombo') {
+              poseSuffix = 'cleave';
+            } else if (en.bossAttackId === 'shieldCharge') {
+              poseSuffix = 'charge';
+            } else if (en.bossAttackId === 'telluricSlam' || en.bossAttackId === 'superSlam') {
+              poseSuffix = 'slam';
+            } else {
+              poseSuffix = 'attack';
+            }
+          } else if (isMoving) {
+            poseSuffix = (Math.floor(elapsedSec * 7.0) & 1) === 0 ? 'walk' : 'idle0';
+          } else {
+            poseSuffix = (Math.floor(elapsedSec * 3.5) & 1) === 0 ? 'idle0' : 'idle1';
+          }
+        }
+        const key = `boss:${en.bossId}_${poseSuffix}`;
         const bossScale =
           en.bossId === 'KingsHand' ? 1.14 : en.bossId === 'Behemoth' ? 1.12 : 1.08;
         this.drawSpriteKey(
@@ -2861,16 +3818,19 @@ export class WebGL2Renderer implements RendererAPI {
       return;
     }
 
-    // Owned Custom Pack enemy atlases (with seamless per-key fallback to Built-In Krunked Art!)
+    // Owned Custom Pack enemy atlases (with status/elite tints + seamless Built-In fallback!)
     const cAtlas = ENEMY_CUSTOM_ATLAS[en.defId];
     if (cAtlas) {
-      const isAtk = en.state === 'attack' || en.state === 'windup';
+      const isWindup = en.state === 'windup';
+      const isAtk = en.state === 'attack';
       const isMoving = Math.abs(en.vel.x) > 8;
       const anims =
         cAtlas === 'knight'
           ? ['npcKnightTrainingRoom', 'npcKnightIdle']
+          : isWindup
+          ? ['atkA', 'load', 'atk', 'shoot', 'cast', 'bash', 'idle']
           : isAtk
-          ? ['atkA', 'atk', 'shoot', 'cast', 'bash', 'idle']
+          ? ['atkA', 'atkB', 'atk', 'shoot', 'cast', 'bash', 'idle']
           : isMoving
           ? ['run', 'walk', 'idle']
           : ['idle', 'walk', 'run'];
@@ -2883,19 +3843,43 @@ export class WebGL2Renderer implements RendererAPI {
           sy,
           en.facing,
           flash,
-          en.isElite ? 0.74 : 0.66
+          en.isElite ? 0.74 : 0.66,
+          r,
+          g,
+          b,
+          1,
+          emBoost
         )
       ) {
         return;
       }
     }
 
-    const key = `enemy:${en.defId}_${frame}`;
+    // Built-In Mode: True multi-frame enemy pose selection via `en.state`!
+    let key: string;
+    if (en.state === 'windup') {
+      key = `enemy:${en.defId}_windup`;
+    } else if (en.state === 'attack') {
+      key = `enemy:${en.defId}_attack`;
+    } else if (Math.abs(en.vel.x) > 6 || en.state === 'chase' || en.state === 'patrol') {
+      const stride = Math.floor(elapsedSec * 7.5 + en.uid * 0.7) & 1;
+      const walkKey = `enemy:${en.defId}_walk${stride}`;
+      key = this.atlas.regions[walkKey] ? walkKey : `enemy:${en.defId}_walk0`;
+    } else {
+      key = `enemy:${en.defId}_walk0`;
+    }
     const scale = en.isElite ? 1.12 : 1.0;
     this.drawSpriteKey(key, sx, sy, r, g, b, 1, en.facing, flash, emBoost, 1.0, scale);
   }
 
-  private drawHero(p: PlayerState, sx: number, sy: number, elapsedSec: number): void {
+  private drawHero(
+    p: PlayerState,
+    sx: number,
+    sy: number,
+    elapsedSec: number,
+    camX: number,
+    camY: number
+  ): void {
     const flash = p.hitFlashTicks > 0 ? Math.min(1, p.hitFlashTicks / 5) : 0;
     const iframeBlink = p.iframeTicks > 0 && (Math.floor(elapsedSec * 28) & 1) === 1;
     const hr = iframeBlink ? 0.78 : 1.0;
@@ -2929,7 +3913,7 @@ export class WebGL2Renderer implements RendererAPI {
         frame = Math.floor(elapsedSec * 14);
         break;
       case 'roll':
-        animKey = `hero:roll_${Math.floor(elapsedSec * 18) % 3}`;
+        animKey = `hero:roll_${Math.floor(elapsedSec * 20) % 4}`;
         customAnims = ['rolling', 'rollStart', 'rollEnd'];
         frame = Math.floor(elapsedSec * 24);
         break;
@@ -2967,21 +3951,47 @@ export class WebGL2Renderer implements RendererAPI {
         frame = Math.floor(elapsedSec * 10);
         break;
       default:
-        animKey = `hero:idle_${Math.floor(elapsedSec * 5) % 4}`;
-        customAnims = ['idle', 'idleFight'];
-        frame = Math.floor(elapsedSec * 14);
+        if (p.shieldBlocking || p.parryWindowTicks > 0) {
+          animKey = 'hero:parry';
+          customAnims = ['idleFight', 'idle'];
+          frame = Math.floor(elapsedSec * 14);
+        } else {
+          animKey = `hero:idle_${Math.floor(elapsedSec * 5) % 4}`;
+          customAnims = ['idle', 'idleFight'];
+          frame = Math.floor(elapsedSec * 14);
+        }
         break;
     }
 
-    const drawnCustom = this.tryDrawCustomPackSprite('beheaded', customAnims, frame, sx, sy, p.facing, flash, 0.76);
+    const drawnCustom = this.tryDrawCustomPackSprite(
+      'beheaded',
+      customAnims,
+      frame,
+      sx,
+      sy,
+      p.facing,
+      flash,
+      0.76,
+      hr,
+      hg,
+      hb,
+      1,
+      iframeBlink ? 0.15 : 0.04
+    );
+
     let headOx = p.facing * 2;
-    let headOy = p.actionState === 'roll' ? -14 : p.actionState === 'dead' ? -6 : -25;
+    let headOy = p.actionState === 'roll' ? -14 : p.actionState === 'dead' ? -6 : -29;
 
     if (drawnCustom) {
       headOx = this.customHeadOx;
       headOy = this.customHeadOy;
     } else {
       const heroScale = p.actionState === 'roll' || p.actionState === 'dead' ? 1.0 : 0.96;
+      const anchor =
+        BUILTIN_HERO_HEAD_ANCHORS[animKey] ?? BUILTIN_HERO_HEAD_ANCHORS['hero:idle_0'] ?? [1, -30];
+      headOx = anchor[0] * heroScale * p.facing;
+      headOy = anchor[1] * heroScale;
+
       this.drawSpriteKey(
         animKey,
         sx,
@@ -2998,14 +4008,22 @@ export class WebGL2Renderer implements RendererAPI {
       );
     }
 
-    // Layered Glowing Cyan-Amber Homunculus Plasma Head:
-    // Custom Pack `beheaded` is headless (uses headBone), while Built-In baked hero poses ALREADY include the flame head!
-    if ((drawnCustom || p.actionState === 'roll') && p.actionState !== 'dead') {
-      const flameFrame = Math.floor(elapsedSec * 14) % 4;
-      const bob = Math.sin(elapsedSec * 12) * 0.9;
+    // Store live world neck socket so Verlet scarf, flame trail & dynamic light stay locked on neck!
+    this.heroNeckWorldX = sx + headOx + camX;
+    this.heroNeckWorldY = sy + headOy + camY;
+    this.hasHeroNeckWorld = true;
+
+    // ALWAYS mount live animated glowing Homunculus Plasma Flame Head onto the headless Hero!
+    if (p.actionState !== 'dead') {
+      this.particles.renderScarfCollarWrap(camX, camY, this.emitVfxQuadBound);
+      const velSpeed = Math.abs(p.vel.x);
+      const flameHz = 14 + Math.min(8, velSpeed * 0.032);
+      const flameFrame = Math.floor(elapsedSec * flameHz) % 4;
+      const bob = Math.sin(elapsedSec * 12) * 0.85;
+      const velLeanX = Math.max(-2.2, Math.min(2.2, -p.vel.x * 0.008));
       this.drawSpriteKey(
         `hero:head_flame_${flameFrame}`,
-        sx + headOx,
+        sx + headOx + velLeanX,
         sy + headOy + bob,
         1,
         1,
@@ -3013,7 +4031,7 @@ export class WebGL2Renderer implements RendererAPI {
         1,
         p.facing,
         flash * 0.3,
-        0.35,
+        0.42,
         0.4
       );
     }
@@ -3034,10 +4052,43 @@ export class WebGL2Renderer implements RendererAPI {
     heroX: number,
     heroY: number
   ): void {
-    // 0. Animated Emissive Flames atop Custom Pack Braziers & Wall Torches!
+    // 0. Animated Emissive Flames atop Custom Pack Braziers/Torches & Exit Door Godrays!
     const useCustomWorld =
       this.settings.artPackMode === 'custom' && this.customPackStatus.available;
     const commonAtlas = useCustomWorld ? this.customGpuAtlases.get('common') ?? null : null;
+    const fxCommonAtlas = useCustomWorld ? this.customGpuAtlases.get('fxCommon') ?? null : null;
+
+    if (fxCommonAtlas?.cache.exitDoorGodray) {
+      const godray = fxCommonAtlas.cache.exitDoorGodray;
+      const isPassage = state.activeBiomeId === 'Passage';
+      for (let i = 0; i < state.doors.length; i++) {
+        const d = state.doors[i];
+        if (d.broken || d.kind !== 'biomeExit') continue;
+        const dx = d.pos.x - camX;
+        const dy = (isPassage ? d.pos.y : d.pos.y + d.height * 0.5) - camY;
+        if (dx < -96 || dx > VIEWPORT_W + 96 || dy < -96 || dy > VIEWPORT_H + 96) continue;
+        const pulse = 0.78 + 0.22 * Math.sin(elapsedSec * 2.4 + d.uid);
+        const gw = Math.round(godray.w * 0.55);
+        const gh = Math.round(godray.h * 0.55);
+        this.pushCustomRegion(
+          fxCommonAtlas,
+          godray,
+          Math.round(dx - gw * 0.5),
+          Math.round(dy - gh),
+          gw,
+          gh,
+          0.62,
+          0.95,
+          1.0,
+          0.42 * pulse,
+          1,
+          0.1,
+          1.1,
+          1.0
+        );
+      }
+    }
+
     if (commonAtlas && (commonAtlas.cache.brasero || commonAtlas.cache.torch)) {
       for (let i = 0; i < state.lights.length; i++) {
         const l = state.lights[i];
@@ -3172,9 +4223,23 @@ export class WebGL2Renderer implements RendererAPI {
       }
     }
 
-    // Unmistakable bright-gold active parry window glow!
+    // Unmistakable Held Shield Guard Flash & Bright-Gold Active Parry Window!
     if (p.parryWindowTicks > 0) {
       const pop = 1.0 + Math.sin(elapsedSec * 36.0) * 0.08;
+      this.emitVfxQuadBound(
+        'vfx:shield_guard',
+        hsx + p.facing * 10,
+        hsy - 16,
+        22 * pop,
+        34 * pop,
+        1.0,
+        0.94,
+        0.48,
+        0.96,
+        p.facing,
+        0.38,
+        1.45
+      );
       this.emitVfxQuadBound(
         'vfx:parry_ring',
         hsx + p.facing * 8,
@@ -3189,50 +4254,123 @@ export class WebGL2Renderer implements RendererAPI {
         0.45,
         1.5
       );
-      this.emitVfxQuadBound(
-        'vfx:shield_dome',
-        hsx + p.facing * 10,
-        hsy - 15,
-        28 * pop,
-        36 * pop,
-        1.0,
-        0.92,
-        0.38,
-        0.86,
-        p.facing,
-        0.35,
-        1.45
-      );
     } else if (p.shieldBlocking) {
-      // Crisp raised blue-gold directional guard arc in front of the Prisoner!
+      // Crisp raised metallic shield guard silhouette + directional ward glow!
       const pulse = 1.0 + Math.sin(elapsedSec * 14.0) * 0.04;
       this.emitVfxQuadBound(
-        'vfx:shield_dome',
-        hsx + p.facing * 12,
-        hsy - 15,
-        15 * pulse,
-        32 * pulse,
-        0.36,
+        'vfx:shield_guard',
+        hsx + p.facing * 10,
+        hsy - 16,
+        21 * pulse,
+        33 * pulse,
         0.82,
+        0.96,
         1.0,
-        0.78,
+        0.94,
         p.facing,
-        0.15,
-        1.25
+        0.12,
+        1.2
       );
       this.emitVfxQuadBound(
         'vfx:shield_dome',
-        hsx + p.facing * 14,
+        hsx + p.facing * 13,
         hsy - 15,
-        9 * pulse,
-        26 * pulse,
+        12 * pulse,
+        28 * pulse,
+        0.42,
+        0.86,
         1.0,
-        0.88,
-        0.36,
-        0.82,
+        0.64,
         p.facing,
-        0.25,
-        1.35
+        0.18,
+        1.25
+      );
+    }
+
+    // 1.5. Iconic World-Space Floating Curse Skull + Kill Count Directly Above Hero's Head!
+    if (p.curseKillsLeft > 0 && p.actionState !== 'dead') {
+      const bob = Math.sin(elapsedSec * 5.0) * 2.0;
+      const cursePop = this.cursePopTimer > 0 ? 1.0 + (this.cursePopTimer / 0.22) * 0.38 : 1.0;
+      const skullX = Math.round(hsx);
+      const skullY = Math.round(hsy - 46 + bob);
+      const haloPulse = 0.72 + 0.28 * Math.sin(elapsedSec * 7.0);
+      this.emitVfxQuadBound(
+        'vfx:ember',
+        skullX,
+        skullY,
+        24 * haloPulse * cursePop,
+        24 * haloPulse * cursePop,
+        0.88,
+        0.08,
+        0.24,
+        0.48 * haloPulse,
+        1,
+        0,
+        1.2
+      );
+      this.emitVfxQuadBound(
+        'vfx:curse_skull_world',
+        skullX,
+        skullY,
+        16 * cursePop,
+        18 * cursePop,
+        1,
+        1,
+        1,
+        0.98,
+        1,
+        this.cursePopTimer > 0 ? 0.45 : 0,
+        1.15
+      );
+      this.drawWorldDigits(
+        p.curseKillsLeft,
+        skullX + 11,
+        skullY + 4,
+        1.0,
+        0.32,
+        0.42,
+        1.0,
+        0.95 * cursePop,
+        1.25
+      );
+    }
+
+    // 1.6. World-Space Gold Price Badges Above Shop Wares (zero alloc pixel digits!)
+    for (let i = 0; i < state.pickups.length; i++) {
+      const pk = state.pickups[i];
+      if (pk.collected || !pk.priceGold || pk.priceGold <= 0) continue;
+      const px = pk.prevPos.x + (pk.pos.x - pk.prevPos.x) * interpAlpha - camX;
+      const py = pk.prevPos.y + (pk.pos.y - pk.prevPos.y) * interpAlpha - camY;
+      if (px < -30 || px > VIEWPORT_W + 30 || py < -30 || py > VIEWPORT_H + 30) continue;
+      const canAfford = p.gold >= pk.priceGold;
+      const tagY = Math.round(py - 16);
+      const digits = pk.priceGold >= 1000 ? 4 : pk.priceGold >= 100 ? 3 : pk.priceGold >= 10 ? 2 : 1;
+      const pillW = digits * 6 + 10;
+      this.emitVfxQuadBound('vfx:white_px', px, tagY, pillW, 10, 0.04, 0.04, 0.08, 0.78, 1, 0, 0);
+      this.emitVfxQuadBound(
+        'vfx:coin_0',
+        px - pillW * 0.5 + 4,
+        tagY,
+        6,
+        6,
+        canAfford ? 1.0 : 0.75,
+        canAfford ? 0.92 : 0.4,
+        canAfford ? 0.45 : 0.4,
+        0.95,
+        1,
+        0,
+        0.65
+      );
+      this.drawWorldDigits(
+        pk.priceGold,
+        px + 3,
+        tagY,
+        canAfford ? 1.0 : 1.0,
+        canAfford ? 0.88 : 0.34,
+        canAfford ? 0.36 : 0.38,
+        0.98,
+        0.82,
+        0.95
       );
     }
 
@@ -3356,23 +4494,76 @@ export class WebGL2Renderer implements RendererAPI {
         );
       }
 
-      // Iconic Golden `!` Enemy Attack Telegraph Glyph!
+      // Spring-Pop Golden `!` (Parriable) vs Crimson Pulsing `!!` (Unparriable Danger) Telegraph!
       if (en.state === 'windup' || en.telegraphTicks > 0) {
-        const pop = 1.0 + Math.sin(elapsedSec * 28) * 0.16;
-        this.emitVfxQuadBound(
-          'vfx:telegraph',
-          ex,
-          ey - en.height - 14,
-          16 * pop,
-          22 * pop,
-          1.0,
-          0.92,
-          0.35,
-          1.0,
-          1,
-          0.2,
-          1.45
-        );
+        const isDanger =
+          Boolean(en.telegraphUnparriable) ||
+          (en.isBoss && UNPARRIABLE_BOSS_ATTACKS.has(en.bossAttackId));
+
+        // Find telegraph start age from fixed 16-slot ring buffer for crisp 6-tick elastic spring-pop!
+        let ageSec = 0.25;
+        for (let k = 0; k < 16; k++) {
+          if (this.telegraphUids[k] === en.uid) {
+            const d = elapsedSec - this.telegraphTimes[k];
+            if (d >= 0 && d < ageSec) ageSec = d;
+          }
+        }
+        const springT = Math.min(1, ageSec / 0.10);
+        const springPop =
+          springT < 1.0
+            ? 1.65 - 0.65 * (1 - Math.pow(1 - springT, 3))
+            : 1.0 + Math.sin(elapsedSec * (isDanger ? 34 : 26)) * (isDanger ? 0.14 : 0.08);
+        const ty = ey - en.height - 15;
+
+        // 1-frame crisp horizontal white-gold / crimson flash bar cutting across busy combat!
+        if (ageSec < 0.045) {
+          this.emitVfxQuadBound(
+            'vfx:white_px',
+            ex,
+            ty,
+            44 * (1 - ageSec / 0.05),
+            3,
+            1.0,
+            isDanger ? 0.35 : 0.96,
+            isDanger ? 0.28 : 0.72,
+            0.92,
+            1,
+            0.7,
+            1.5
+          );
+        }
+
+        if (isDanger) {
+          this.emitVfxQuadBound(
+            'vfx:telegraph_danger',
+            ex,
+            ty,
+            22 * springPop,
+            24 * springPop,
+            1.0,
+            0.34,
+            0.24,
+            1.0,
+            1,
+            springT < 0.4 ? 0.45 : 0.15,
+            1.55
+          );
+        } else {
+          this.emitVfxQuadBound(
+            'vfx:telegraph',
+            ex,
+            ty,
+            16 * springPop,
+            22 * springPop,
+            1.0,
+            0.94,
+            0.38,
+            1.0,
+            1,
+            springT < 0.4 ? 0.5 : 0.2,
+            1.48
+          );
+        }
       }
 
       // Compact crisp pixel world HP bar above damaged non-boss enemies
@@ -3464,8 +4655,16 @@ export class WebGL2Renderer implements RendererAPI {
       );
     }
 
-    // 6. AtmosphereParticles (Scarf, Homunculus Flame Trail, Weapon Slashes, Rings, Weather, Popups!)
-    this.particles.renderOverlay(camX, camY, theme.weather, elapsedSec, this.emitVfxQuadBound);
+    // 6. AtmosphereParticles (Homunculus Flame Trail, Weapon Slashes, Lightning, Rings, Debris, Weather!)
+    this.particles.renderOverlay(
+      camX,
+      camY,
+      theme.weather,
+      elapsedSec,
+      this.emitVfxQuadBound,
+      this.emitCustomSlashBound,
+      this.emitCustomDebrisBound
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -3476,9 +4675,41 @@ export class WebGL2Renderer implements RendererAPI {
     const a = interpAlpha < 0 ? 0 : interpAlpha > 1 ? 1 : interpAlpha;
     const theme = getBiomeVisualTheme(state.activeBiomeId);
 
-    // Lazy-prefetch Custom Pack biome atlas whenever active biome changes!
+    // Smooth visual-only render timers (strictly outside SimState!)
+    let dt = elapsedSec - this.lastRenderElapsed;
+    this.lastRenderElapsed = elapsedSec;
+    if (dt <= 0 || dt > 0.1) dt = 1 / 60;
+
+    this.zoomKick *= Math.exp(-dt * 12.0);
+    if (this.zoomKick < 0.0005) this.zoomKick = 0;
+    this.chromaKick *= Math.exp(-dt * 16.0);
+    if (this.chromaKick < 0.00005) this.chromaKick = 0;
+
+    const curseLeft = state.player.curseKillsLeft;
+    if (curseLeft !== this.lastCurseKills) {
+      if (curseLeft > 0 && curseLeft < this.lastCurseKills) {
+        this.cursePopTimer = 0.22;
+      }
+      this.lastCurseKills = curseLeft;
+    }
+    if (this.cursePopTimer > 0) {
+      this.cursePopTimer = Math.max(0, this.cursePopTimer - dt);
+    }
+
+    const targetCurse = curseLeft > 0 ? 1.0 : 0.0;
+    this.smoothCurse += (targetCurse - this.smoothCurse) * Math.min(1, dt * 6.5);
+    if (Math.abs(this.smoothCurse - targetCurse) < 0.002) this.smoothCurse = targetCurse;
+
+    const hpFrac = state.player.hp / Math.max(1, state.player.maxHp);
+    const targetLowHp =
+      state.player.hp > 0 && hpFrac < 0.25 ? 0.55 + ((0.25 - hpFrac) / 0.25) * 0.45 : 0.0;
+    this.smoothLowHp += (targetLowHp - this.smoothLowHp) * Math.min(1, dt * 6.0);
+    if (Math.abs(this.smoothLowHp - targetLowHp) < 0.002) this.smoothLowHp = targetLowHp;
+
+    // Lazy-prefetch Custom Pack biome atlas & reset neck cache whenever active biome changes!
     if (state.activeBiomeId !== this.lastActiveBiomeId) {
       this.lastActiveBiomeId = state.activeBiomeId;
+      this.hasHeroNeckWorld = false;
       if (this.settings.artPackMode === 'custom' && this.customPackStatus.available) {
         this.getBiomeCustomAtlas(state.activeBiomeId);
       }
@@ -3501,7 +4732,17 @@ export class WebGL2Renderer implements RendererAPI {
     // SimState stores player.pos as AABB center; renderer sprite/VFX anchors use grounded feet Y!
     const heroY = heroCenterY + state.player.height * 0.5;
 
-    this.particles.step(state, theme.weather, elapsedSec, heroX, heroY, camX, camY);
+    this.particles.step(
+      state,
+      theme.weather,
+      elapsedSec,
+      heroX,
+      heroY,
+      camX,
+      camY,
+      this.hasHeroNeckWorld ? this.heroNeckWorldX : undefined,
+      this.hasHeroNeckWorld ? this.heroNeckWorldY : undefined
+    );
 
     if (this.backend === 'canvas2d-fallback' || !this.gl) {
       this.renderCanvas2DFallback(state, theme, a, elapsedSec, camX, camY, heroX, heroY);
@@ -3597,7 +4838,7 @@ export class WebGL2Renderer implements RendererAPI {
     this.flushBatch();
 
     // -------------------------------------------------------------------------
-    // PASS 4A: Drifting Ground Mist / Volumetric Fog (smokeShader)
+    // PASS 4A: Drifting Ground Mist / Volumetric Fog (light-attenuated!)
     // -------------------------------------------------------------------------
     if (this.settings.lightingQuality !== 'low') {
       gl.useProgram(this.progFog);
@@ -3608,6 +4849,17 @@ export class WebGL2Renderer implements RendererAPI {
       gl.uniform3f(this.uFogCol, theme.fogRgb[0], theme.fogRgb[1], theme.fogRgb[2]);
       gl.uniform3f(this.uFogAcc, theme.accentRgb[0], theme.accentRgb[1], theme.accentRgb[2]);
       gl.uniform1f(this.uFogDens, theme.fogDensity);
+      if (this.uFogEmissive && this.uFogHasEmissive) {
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, this.rtGEmissive);
+        gl.uniform1i(this.uFogEmissive, 0);
+        gl.uniform1f(this.uFogHasEmissive, 1.0);
+      }
+      if (this.uFogHeroZone) {
+        const heroU = (heroX - camX) / VIEWPORT_W;
+        const heroV = (heroY - 16 - camY) / VIEWPORT_H;
+        gl.uniform4f(this.uFogHeroZone, heroU, heroV, 0.28, 0.95);
+      }
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       this.drawCalls++;
     }
@@ -3686,6 +4938,13 @@ export class WebGL2Renderer implements RendererAPI {
     gl.uniform1f(this.uCompDmgFlash, state.damageFlashAlpha);
     gl.uniform1f(this.uCompParryFlash, state.parryFlashAlpha);
     gl.uniform3f(this.uCompGradeTint, theme.gradeRgb[0], theme.gradeRgb[1], theme.gradeRgb[2]);
+
+    const baseZoom = state.camera.zoom > 0.05 ? state.camera.zoom : 1.0;
+    if (this.uCompZoom) gl.uniform1f(this.uCompZoom, baseZoom + this.zoomKick);
+    if (this.uCompChromaSplit) gl.uniform1f(this.uCompChromaSplit, this.chromaKick);
+    if (this.uCompCurse) gl.uniform1f(this.uCompCurse, this.smoothCurse);
+    if (this.uCompLowHp) gl.uniform1f(this.uCompLowHp, this.smoothLowHp);
+    if (this.uCompTime) gl.uniform1f(this.uCompTime, elapsedSec);
 
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     this.drawCalls++;
@@ -3808,6 +5067,9 @@ export class WebGL2Renderer implements RendererAPI {
       for (const p of ca.pages) {
         gl.deleteTexture(p.diffuseTex);
         if (p.normalTex !== this.texFlatNormal) gl.deleteTexture(p.normalTex);
+        if (p.emissiveTex && p.emissiveTex !== this.texBlackEmissive) {
+          gl.deleteTexture(p.emissiveTex);
+        }
       }
     }
     this.customGpuAtlases.clear();
