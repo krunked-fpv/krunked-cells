@@ -27,7 +27,7 @@ export const MUTATIONS: readonly MutationDef[] = [
   {
     id: 'Melee',
     name: 'Melee',
-    description: 'Melee strikes chill and slow enemies for 2.5 seconds, stacking up to freeze.',
+    description: 'Melee strikes slow enemies for 2.5 seconds (stacking up to 50% slow).',
     color: 'brutality',
     baseValue: 150,
     scalePerStat: 8,
@@ -38,7 +38,7 @@ export const MUTATIONS: readonly MutationDef[] = [
   {
     id: 'Predator',
     name: 'Predator',
-    description: 'Killing an enemy with a melee strike grants a swift burst of speed and brief evasion.',
+    description: 'Killing an enemy with a melee strike grants stealth invisibility and a burst of speed until you attack.',
     color: 'brutality',
     baseValue: 180,
     scalePerStat: 10,
@@ -84,7 +84,7 @@ export const MUTATIONS: readonly MutationDef[] = [
   {
     id: 'BarbedTips',
     name: 'Barbed Tips',
-    description: 'Arrows and knives inflict lacerating poison/bleed damage over time per hit.',
+    description: 'Arrows and knives lodged in enemies deal scaling damage over time per stuck projectile.',
     color: 'tactics',
     baseValue: 22,
     scalePerStat: 4,
@@ -130,7 +130,7 @@ export const MUTATIONS: readonly MutationDef[] = [
   {
     id: 'WhatDoesntKillMe',
     name: "What Doesn't Kill Me",
-    description: 'Parrying a melee attack restores 4% (+0.3%/Survival) of max HP.',
+    description: 'Parrying a melee attack restores 4% (+0.3%/Survival) of max HP (4s cooldown).',
     color: 'survival',
     baseValue: 0.04,
     scalePerStat: 0.003,

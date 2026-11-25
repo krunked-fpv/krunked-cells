@@ -22,7 +22,10 @@ import {
   computeGearDamage,
   computePlayerMaxHp,
   getScrollDamageMultiplier,
+  rollAffixes,
 } from '../src/sim/roguelite';
+import { enterPassageRoom, handlePassageCommand } from '../src/sim/passage';
+import { applyEnemyStatus } from '../src/sim/combat';
 import {
   applyStatus,
   computeSynergyMultiplier,
@@ -302,8 +305,8 @@ describe('Combat, Parry, Rally, Scrolls, Synergies, Curse & Bosses', () => {
     });
   });
 
-  describe('Rally Orange Health Recovery', () => {
-    it('adds 100% lost HP to rallyHp, holds 60 ticks, drains linearly, and recovers up to 75% of weapon hit damage', () => {
+  describe('Rally Orange Health Recovery (Oracle Formula)', () => {
+    it('adds 80% lost HP to rallyHp, holds 36 ticks, drains at 30% maxHp/s, and recovers 12% hit capped at 20% lost anchor on weapons/parries only', () => {
       const state = createCombatSandbox();
       const rng = createRng(444);
       // Give player a higher HP pool so numbers are unambiguous
@@ -313,23 +316,32 @@ describe('Combat, Parry, Rally, Scrolls, Synergies, Curse & Bosses', () => {
 
       expect(damagePlayer(state, 80, 'TestMob', rng)).toBe(true);
       expect(state.player.hp).toBe(maxHp - 80);
-      expect(state.player.rallyHp).toBe(80);
-      expect(state.player.rallyHoldTicks).toBe(60);
+      expect(state.player.rallyHp).toBe(64); // 80% of 80 lost
+      expect(state.player.rallyLostAnchor).toBe(64);
+      expect(state.player.rallyHoldTicks).toBe(36);
+      expect(state.player.onHitShieldTicks).toBe(30); // Carrying StartShield triggers 30t post-hit shield
 
-      // Hold for 50 ticks -> rallyHp must NOT drain during the 60-tick hold window
-      for (let t = 0; t < 50; t++) {
+      // Hold for 30 ticks -> rallyHp must NOT drain during 36t hold; onHitShieldTicks expires
+      for (let t = 0; t < 30; t++) {
         stepSim(state, inputOf());
       }
-      expect(state.player.rallyHp).toBe(80);
-      expect(state.player.rallyHoldTicks).toBe(10);
+      expect(state.player.rallyHp).toBe(64);
+      expect(state.player.rallyHoldTicks).toBe(6);
+      expect(state.player.onHitShieldTicks).toBe(0);
 
-      // Deal 40 weapon damage -> recovers min(rallyHp, round(40 * 0.75)) = 30 HP!
       const dummy = spawnEnemy(state, 'CastleKnight', state.player.pos.x + 30, state.player.pos.y, 0, rng);
+      const hpBeforeSkill = state.player.hp;
+      // Skills do NOT recover Rally HP!
+      damageEnemy(state, dummy, 100, false, 15, 0, 0, rng, 'skill');
+      expect(state.player.hp).toBe(hpBeforeSkill);
+      expect(state.player.rallyHp).toBe(64);
+
+      // Direct weapon hit for 200 dmg -> 12% (24) capped at 20% of rallyLostAnchor (round(64 * 0.2) = 13)!
       const hpBeforeHit = state.player.hp;
-      damageEnemy(state, dummy, 40, false, 15, 0, 0, rng, 'StartSword');
-      expect(state.player.hp).toBe(hpBeforeHit + 30);
-      expect(state.player.rallyHp).toBe(50);
-      expect(state.events.some((e) => e.type === 'rallyRecovered' && e.amount === 30)).toBe(true);
+      damageEnemy(state, dummy, 200, false, 15, 0, 0, rng, 'StartSword');
+      expect(state.player.hp).toBe(hpBeforeHit + 13);
+      expect(state.player.rallyHp).toBe(51);
+      expect(state.events.some((e) => e.type === 'rallyRecovered' && e.amount === 13)).toBe(true);
 
       // Remove dummy so it doesn't deal fresh damage while observing rally drain
       state.enemies = [];
@@ -338,7 +350,7 @@ describe('Combat, Parry, Rally, Scrolls, Synergies, Curse & Bosses', () => {
       for (let t = 0; t < 35; t++) {
         stepSim(state, inputOf());
       }
-      expect(state.player.rallyHp).toBeLessThan(50);
+      expect(state.player.rallyHp).toBeLessThan(51);
 
       for (let t = 0; t < 260; t++) {
         stepSim(state, inputOf());
@@ -575,5 +587,250 @@ describe('Combat, Parry, Rally, Scrolls, Synergies, Curse & Bosses', () => {
         ).toBe(true);
       }
     );
+  });
+
+  describe('Dead Cells Mechanics Parity Regressions', () => {
+    it('enforces 15% single-hit boss damage cap, immediate Freeze Shatter into Slow, and Boss CC diminishing returns', () => {
+      const state = createCombatSandbox(1101);
+      const rng = createRng(1101);
+      const floorY = 14 * TILE_SIZE;
+      const boss = spawnBoss(state, 'Behemoth', 20 * TILE_SIZE, floorY - 26);
+
+      // 15% single-hit cap: 5000 raw dmg on 4000 HP Concierge caps at 600!
+      damageEnemy(state, boss, 5000, true, 50, 0, 0, rng, 'BroadSword');
+      expect(boss.hp).toBe(4000 - 600);
+
+      // Boss CC diminishing returns: 1st freeze = 55%, 2nd = 28%, 3rd = 12%, 4th = immune (0)
+      expect(applyEnemyStatus(state, boss, 'freeze', 100, 0, rng)).toBe(true);
+      expect(hasStatus(boss.statusEffects, 'freeze')).toBe(true);
+      expect(boss.statusEffects.find((s) => s.kind === 'freeze')?.ticksLeft).toBe(55);
+
+      // Hitting frozen enemy shatters freeze into slow (75t) + emits freezeShatter + adds +15% pop!
+      state.events = [];
+      const hpBeforeShatter = boss.hp;
+      damageEnemy(state, boss, 100, false, 10, 0, 0, rng, 'StartSword');
+      expect(hasStatus(boss.statusEffects, 'freeze')).toBe(false);
+      expect(hasStatus(boss.statusEffects, 'slow')).toBe(true);
+      expect(state.events.some((e) => e.type === 'freezeShatter')).toBe(true);
+      expect(hpBeforeShatter - boss.hp).toBe(115);
+
+      // Next 2 CCs diminish and 4th within 360t is immune!
+      expect(applyEnemyStatus(state, boss, 'root', 100, 0, rng)).toBe(true);
+      expect(applyEnemyStatus(state, boss, 'stun', 100, 0, rng)).toBe(true);
+      expect(applyEnemyStatus(state, boss, 'freeze', 100, 0, rng)).toBe(false);
+    });
+
+    it('detonates 5-stack Bleed Hemorrhage Burst immediately and clears stacks', () => {
+      const state = createCombatSandbox(1102);
+      const rng = createRng(1102);
+      const foe = spawnEnemy(state, 'CastleKnight', state.player.pos.x + 30, state.player.pos.y, 0, rng);
+      const hpBefore = foe.hp;
+
+      for (let i = 0; i < 4; i++) {
+        applyEnemyStatus(state, foe, 'bleed', 240, 30, rng);
+      }
+      expect(hasStatus(foe.statusEffects, 'bleed')).toBe(true);
+      expect(state.events.some((e) => e.type === 'bleedBurst')).toBe(false);
+
+      // 5th stack triggers immediate Hemorrhage Burst!
+      applyEnemyStatus(state, foe, 'bleed', 240, 30, rng);
+      expect(state.events.some((e) => e.type === 'bleedBurst' && e.damage > 0)).toBe(true);
+      expect(hasStatus(foe.statusEffects, 'bleed')).toBe(false);
+      expect(foe.hp).toBeLessThan(hpBefore);
+    });
+
+    it('lets Inquisitor (Mage360) bolts pierce solid walls and Worm 6 death-eggs bounce & rest pulsing on floor', () => {
+      const state = createCombatSandbox(1103);
+      const rng = createRng(1103);
+      // Place a solid wall pillar between x=14 and x=16
+      for (let ty = 8; ty <= 13; ty++) {
+        collisionApi.setTile(state.tileGrid, 15, ty, TileKind.SOLID);
+      }
+      // Spawn Inquisitor bolt on right side flying left through the solid wall
+      state.projectiles.push({
+        uid: state.nextUid++,
+        owner: 'enemy',
+        ownerUid: 777,
+        kind: 'enemyBolt',
+        pos: { x: 16 * TILE_SIZE + 8, y: 12 * TILE_SIZE },
+        prevPos: { x: 16 * TILE_SIZE + 8, y: 12 * TILE_SIZE },
+        vel: { x: -240, y: 0 },
+        radius: 5,
+        damage: 15,
+        isCrit: false,
+        pierceLeft: 0,
+        gravity: 0,
+        ttlTicks: 50,
+        maxTtlTicks: 50,
+        color: '#d966ff',
+        parriable: true,
+        piercesWalls: true,
+        hitIds: [],
+      });
+      for (let t = 0; t < 15; t++) stepSim(state, inputOf());
+      const bolt = state.projectiles.find((p) => p.ownerUid === 777);
+      expect(bolt).toBeDefined();
+      expect(bolt!.pos.x).toBeLessThan(15 * TILE_SIZE);
+
+      // Worm death spawns 6 bouncing/resting fuse eggs that survive floor contact!
+      const worm = spawnEnemy(state, 'Worm', 20 * TILE_SIZE, 14 * TILE_SIZE - 9, 0, rng);
+      damageEnemy(state, worm, 9999, false, 50, 0, 0, rng, 'StartSword');
+      const eggs = state.projectiles.filter((p) => p.ownerUid === worm.uid && p.kind === 'grenade');
+      expect(eggs.length).toBe(6);
+      expect(eggs.every((e) => (e.bouncesLeft ?? 0) >= 1 && (e.floorFuseTicks ?? 0) > 0 && e.parriable)).toBe(true);
+
+      // After 35 ticks (past first floor touch!), eggs are still alive & pulsing (not instant-detonated!)
+      for (let t = 0; t < 35; t++) stepSim(state, inputOf());
+      const survivingEggs = state.projectiles.filter((p) => p.ownerUid === worm.uid);
+      expect(survivingEggs.length).toBeGreaterThan(0);
+    });
+
+    it('lodges Quick Bow arrows for stuckArrows3 crits, returns ammo on kill, and triggers Pyrotechnics oiled-only crit + Electric Whip water crit + Phaser next-melee bonus', () => {
+      const state = createCombatSandbox(1104);
+      const rng = createRng(1104);
+
+      // 1. Quick Bow stuckArrows3 crit + ammo return on enemy kill
+      state.player.loadout.weapon1 = makeGear('FastBow', 'weapon', {
+        color: 'tactics',
+        ammo: 12,
+        maxAmmo: 12,
+      });
+      const dummy = spawnEnemy(state, 'CastleKnight', state.player.pos.x + 80, state.player.pos.y, 0, rng);
+      dummy.attackCooldownTicks = 9999;
+      let sawQuickCrit = false;
+      for (let shot = 0; shot < 4; shot++) {
+        for (let t = 0; t < 16; t++) {
+          stepSim(state, inputOf({ weapon1Pressed: t === 0 }));
+          if (state.events.some((e) => e.type === 'critImpact' && e.weaponId === 'FastBow')) {
+            sawQuickCrit = true;
+          }
+        }
+      }
+      expect(sawQuickCrit).toBe(true);
+      expect((dummy.stuckArrows?.length ?? 0)).toBeGreaterThanOrEqual(3);
+      const ammoBeforeKill = state.player.loadout.weapon1!.ammo!;
+      damageEnemy(state, dummy, 9999, false, 50, 0, 0, rng, 'StartSword');
+      expect(state.player.loadout.weapon1!.ammo!).toBeGreaterThan(ammoBeforeKill);
+
+      // 2. Electric Whip instant hitscan chain lightning + guaranteed WATER crit + lightningArc!
+      const sWhip = createCombatSandbox(1105);
+      const rngW = createRng(1105);
+      sWhip.player.loadout.weapon1 = makeGear('Whip', 'weapon', { color: 'tactics' });
+      const wetTx = 13;
+      collisionApi.setTile(sWhip.tileGrid, wetTx, 13, TileKind.WATER);
+      const wetFoe = spawnEnemy(sWhip, 'Zombie', wetTx * TILE_SIZE + 12, 13 * TILE_SIZE + 10, 0, rngW);
+      const chainFoe = spawnEnemy(sWhip, 'Zombie', (wetTx + 2) * TILE_SIZE, 13 * TILE_SIZE + 10, 0, rngW);
+      const chainHpBefore = chainFoe.hp;
+      let sawArc = false;
+      let sawWaterCrit = false;
+      for (let t = 0; t < 10; t++) {
+        stepSim(sWhip, inputOf({ weapon1Pressed: t === 0 }));
+        if (sWhip.events.some((e) => e.type === 'lightningArc')) sawArc = true;
+        if (sWhip.events.some((e) => e.type === 'critImpact' && e.weaponId === 'Whip')) sawWaterCrit = true;
+      }
+      expect(sawArc).toBe(true);
+      expect(sawWaterCrit).toBe(true);
+      expect(wetFoe.hp).toBeLessThan(wetFoe.maxHp);
+      expect(chainFoe.hp).toBeLessThan(chainHpBefore);
+
+      // 3. Pyrotechnics oiled-only crit (burning alone does NOT crit; oil DOES crit!)
+      const sPyro = createCombatSandbox(1106);
+      const rngP = createRng(1106);
+      sPyro.player.loadout.weapon1 = makeGear('Fireball', 'weapon', { color: 'brutality' });
+      const pyroFoe = spawnEnemy(sPyro, 'CastleKnight', sPyro.player.pos.x + 70, sPyro.player.pos.y, 0, rngP);
+      pyroFoe.attackCooldownTicks = 9999;
+      applyStatus(pyroFoe.statusEffects, 'burn', 300, 10, 0);
+      let burnCrit = false;
+      for (let t = 0; t < 18; t++) {
+        stepSim(sPyro, inputOf({ weapon1Pressed: t === 0 }));
+        if (sPyro.events.some((e) => e.type === 'critImpact')) burnCrit = true;
+      }
+      expect(burnCrit).toBe(false);
+
+      applyStatus(pyroFoe.statusEffects, 'oil', 300, 0, 0);
+      let oilCrit = false;
+      for (let t = 0; t < 18; t++) {
+        stepSim(sPyro, inputOf({ weapon1Pressed: t === 0 }));
+        if (sPyro.events.some((e) => e.type === 'critImpact')) oilCrit = true;
+      }
+      expect(oilCrit).toBe(true);
+
+      // 4. Phaser empowers NEXT MELEE STRIKE of ANY weapon + Tonic gives tempShieldHp barrier
+      const sSkill = createCombatSandbox(1107);
+      sSkill.player.loadout.skill1 = makeGear('Phaser', 'skill', { color: 'brutality' });
+      sSkill.player.loadout.skill2 = makeGear('Tonic', 'skill', { color: 'survival' });
+      stepSim(sSkill, inputOf({ skill1Pressed: true }));
+      expect(sSkill.player.phaserBonusDamage ?? 0).toBeGreaterThan(0);
+      expect(sSkill.player.phaserBuffTicks ?? 0).toBeGreaterThan(0);
+
+      sSkill.player.hp = 50;
+      stepSim(sSkill, inputOf({ skill2Pressed: true }));
+      expect(sSkill.player.hp).toBe(50); // No infinite permanent heal!
+      expect(sSkill.player.tempShieldHp ?? 0).toBeGreaterThan(0);
+    });
+
+    it('filters rollAffixes by gear kind, enforces 2BC fountain refill limits, and opens Flawless Boss Door + Forge scroll delta', () => {
+      const rng = createRng(1108);
+      // Melee swords & shields NEVER roll pierce_first
+      for (let i = 0; i < 40; i++) {
+        const meleeAff = rollAffixes(rng, 4, undefined, 'weapon', 'melee', 'StartSword');
+        const shieldAff = rollAffixes(rng, 4, undefined, 'weapon', 'shield', 'StartShield');
+        expect(meleeAff).not.toContain('pierce_first');
+        expect(shieldAff).not.toContain('pierce_first');
+      }
+
+      // 2BC Fountain decrements singleFlaskRefillsLeft (3 -> 2 -> 1 -> 0 -> refuses 4th!)
+      const s2bc = createCombatSandbox(1109);
+      s2bc.bossStemCells = 2;
+      s2bc.player.maxFlaskCharges = 4;
+      s2bc.player.flaskCharges = 0;
+      for (let visit = 0; visit < 3; visit++) {
+        enterPassageRoom(s2bc, 'PrisonStart', ['PrisonCourtyard'], rng);
+        expect(handlePassageCommand(s2bc, { type: 'useFountain' }, rng)).toBe(true);
+      }
+      enterPassageRoom(s2bc, 'PrisonStart', ['PrisonCourtyard'], rng);
+      expect(handlePassageCommand(s2bc, { type: 'useFountain' }, rng)).toBe(false);
+
+      // Flawless Boss Door + Minor Forge bonusScrolls delta
+      const sBoss = createCombatSandbox(1110);
+      sBoss.bossArenaState.defeated = true;
+      sBoss.bossArenaState.playerTookHit = false;
+      enterPassageRoom(sBoss, 'Bridge', ['ClockTower'], rng);
+      expect(sBoss.passageState.flawlessBossDoorOpen).toBe(true);
+      expect(sBoss.pickups.some((p) => p.gear?.quality === 'L')).toBe(true);
+
+      sBoss.player.gold = 20000;
+      const brutBefore = sBoss.player.scrolls.brutality;
+      expect(handlePassageCommand(sBoss, { type: 'forgeUpgrade', slot: 'weapon1' }, rng)).toBe(true); // +
+      expect(handlePassageCommand(sBoss, { type: 'forgeUpgrade', slot: 'weapon1' }, rng)).toBe(true); // ++ (+1 scroll!)
+      expect(sBoss.player.scrolls.brutality).toBe(brutBefore + 1);
+      expect(handlePassageCommand(sBoss, { type: 'forgeUpgrade', slot: 'weapon1' }, rng)).toBe(true); // S (+2 scrolls!)
+      expect(sBoss.player.scrolls.brutality).toBe(brutBefore + 2);
+    });
+
+    it('ensures Dark Tracker (Ninja) teleports FIRST and enters 26t windup without same-tick hit', () => {
+      const state = createCombatSandbox(1111);
+      const rng = createRng(1111);
+      const ninja = spawnEnemy(state, 'Ninja', state.player.pos.x + 110, state.player.pos.y, 0, rng);
+      ninja.attackCooldownTicks = 0;
+      const hpStart = state.player.hp;
+
+      let sawTeleport = false;
+      let hitOnTeleportTick = false;
+      for (let t = 0; t < 20; t++) {
+        stepSim(state, inputOf());
+        if (state.events.some((e) => e.type === 'teleport')) {
+          sawTeleport = true;
+          if (state.player.hp < hpStart) {
+            hitOnTeleportTick = true;
+          }
+          expect(ninja.state).toBe('windup');
+          expect(ninja.telegraphTicks).toBeGreaterThanOrEqual(20);
+          break;
+        }
+      }
+      expect(sawTeleport).toBe(true);
+      expect(hitOnTeleportTick).toBe(false);
+    });
   });
 });

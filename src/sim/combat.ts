@@ -3,6 +3,7 @@ import {
   MAX_ACTIVE_LIGHTS,
   MAX_BOSS_CELLS,
   TILE_SIZE,
+  TileKind,
   type CollisionAPI,
   type CritCondition,
   type EnemyState,
@@ -14,14 +15,16 @@ import {
   type SimState,
   type StatusKind,
   type StrikeStep,
+  type Vec2,
   type WeaponDef,
 } from '../contracts';
-import { AFFIX_MAP, ENEMY_MAP, SKILL_MAP, WEAPON_MAP, getSkill, getWeapon } from '../data';
+import { AFFIX_MAP, ENEMY_MAP, WEAPON_MAP, getSkill, getWeapon } from '../data';
 import {
   applyMutationCooldownReduction,
   applyMutationOnKill,
   applyMutationOnParry,
   computeGearDamage,
+  getLoadoutDamageTakenMultiplier,
   getMutationDamageMultiplier,
   hasLoadoutAffixKind,
   hasMutation,
@@ -30,11 +33,32 @@ import {
 import {
   applyStatus,
   clearNegativeStatuses,
+  computeBossCcDuration,
   computeSynergyMultiplier,
   getStatusColor,
   hasStatus,
+  removeStatus,
   tickEntityStatuses,
 } from './status';
+
+export interface DamagePlayerOptions {
+  attackerX?: number;
+  attacker?: EnemyState | null;
+  unblockable?: boolean;
+  unrollable?: boolean;
+}
+
+const UNBLOCKABLE_SOURCES: ReadonlySet<string> = new Set([
+  'Spikes',
+  'Toxic Acid',
+  'Crimson Aura',
+  'Hazard',
+  'Super Telluric Slam',
+  'bleed',
+  'poison',
+  'burn',
+  'electrify',
+]);
 
 function getWeaponGear(state: SimState, slot: 1 | 2): GearInstance | null {
   return slot === 1 ? state.player.loadout.weapon1 : state.player.loadout.weapon2;
@@ -52,7 +76,7 @@ function findEquippedShield(state: SimState): { gear: GearInstance; def: WeaponD
   }
   const slots: (1 | 2)[] = [1, 2];
   for (let i = 0; i < slots.length; i++) {
-    const g = getWeaponGear(state, slots[i]);
+    const g = getWeaponGear(state, slots[i]!);
     if (!g) continue;
     const def = WEAPON_MAP[g.defId];
     if (def && def.kind === 'shield') return { gear: g, def };
@@ -70,10 +94,7 @@ function aabbOverlap(
   bw: number,
   bh: number
 ): boolean {
-  return (
-    Math.abs(ax - bx) * 2 < aw + bw &&
-    Math.abs(ay - by) * 2 < ah + bh
-  );
+  return Math.abs(ax - bx) * 2 < aw + bw && Math.abs(ay - by) * 2 < ah + bh;
 }
 
 function spawnParticle(
@@ -194,10 +215,153 @@ export function findFloorY(
   return Math.min((grid.height - 1) * TILE_SIZE, startY + state.player.height * 0.5);
 }
 
+export function damagePlayerTurretsInArea(
+  state: SimState,
+  x: number,
+  y: number,
+  rangeX: number,
+  rangeY: number,
+  damage: number
+): void {
+  for (let i = state.turrets.length - 1; i >= 0; i--) {
+    const t = state.turrets[i]!;
+    if (t.owner !== 'player') continue;
+    if (t.kind !== 'sinew' && t.kind !== 'heavy') continue;
+    if (aabbOverlap(x, y, rangeX, rangeY, t.pos.x, t.pos.y, 18, 22)) {
+      t.hp -= Math.max(1, Math.round(damage));
+      spawnParticle(state, t.pos.x, t.pos.y - 6, 0, -35, 3, '#ff9c52', 12, 'spark', true, 180);
+      if (t.hp <= 0) {
+        state.turrets.splice(i, 1);
+      }
+    }
+  }
+}
+
+export function refundStuckArrows(state: SimState, enemy: EnemyState): void {
+  if (!enemy.stuckArrows || enemy.stuckArrows.length === 0) return;
+  for (let i = 0; i < enemy.stuckArrows.length; i++) {
+    const stuck = enemy.stuckArrows[i]!;
+    const gear = stuck.slot === 1 ? state.player.loadout.weapon1 : state.player.loadout.weapon2;
+    if (gear && gear.maxAmmo !== undefined && gear.ammo !== undefined) {
+      gear.ammo = Math.min(gear.maxAmmo, gear.ammo + 1);
+    }
+  }
+  enemy.stuckArrows = [];
+}
+
+function isEntityInWater(state: SimState, x: number, y: number, h: number, col?: CollisionAPI): boolean {
+  if (!col) return false;
+  const tx = Math.floor(x / TILE_SIZE);
+  const midTy = Math.floor(y / TILE_SIZE);
+  const footTy = Math.floor((y + h * 0.45) / TILE_SIZE);
+  return (
+    col.getTile(state.tileGrid, tx, midTy) === TileKind.WATER ||
+    col.getTile(state.tileGrid, tx, footTy) === TileKind.WATER
+  );
+}
+
+function triggerBleedHemorrhageBurst(
+  state: SimState,
+  enemy: EnemyState,
+  burstDmg: number,
+  rng: RngAPI,
+  col?: CollisionAPI
+): void {
+  state.events.push({
+    type: 'bleedBurst',
+    x: enemy.pos.x,
+    y: enemy.pos.y,
+    damage: burstDmg,
+  });
+  state.hitstopTicks = Math.max(state.hitstopTicks, 2);
+  state.screenShake = Math.max(state.screenShake, 3.5);
+  spawnParticle(state, enemy.pos.x, enemy.pos.y, 0, 0, 44, '#ff1f3d', 16, 'ring', true, 0);
+  spawnParticle(
+    state,
+    enemy.pos.x,
+    enemy.pos.y - enemy.height * 0.6 - 12,
+    0,
+    -42,
+    12,
+    '#ff2e4c',
+    38,
+    'text',
+    true,
+    0,
+    'BLEED!'
+  );
+  for (let s = 0; s < 10; s++) {
+    const ang = (s / 10) * Math.PI * 2;
+    spawnParticle(
+      state,
+      enemy.pos.x,
+      enemy.pos.y,
+      Math.cos(ang) * rng.rangeFloat(80, 175),
+      Math.sin(ang) * rng.rangeFloat(80, 175) - 25,
+      3.5,
+      '#ff2e4c',
+      22,
+      'blood',
+      true,
+      300
+    );
+  }
+  damageEnemy(state, enemy, burstDmg, false, 0, 0, 0, rng, 'status', undefined, col);
+}
+
+export function applyEnemyStatus(
+  state: SimState,
+  enemy: EnemyState,
+  kind: StatusKind,
+  ticks: number,
+  dps: number,
+  rng: RngAPI,
+  col?: CollisionAPI
+): boolean {
+  if (enemy.state === 'dead' || enemy.hp <= 0) return false;
+
+  let effectiveTicks = ticks;
+  if (kind === 'freeze' || kind === 'stun' || kind === 'root') {
+    effectiveTicks = computeBossCcDuration(enemy, ticks);
+    if (effectiveTicks <= 0) {
+      return false;
+    }
+  }
+
+  if (kind === 'bleed') {
+    applyStatus(enemy.statusEffects, 'bleed', effectiveTicks, dps, 0, (burstDmg) => {
+      triggerBleedHemorrhageBurst(state, enemy, burstDmg, rng, col);
+    });
+    return true;
+  }
+
+  applyStatus(enemy.statusEffects, kind, effectiveTicks, dps, 0);
+  if (kind === 'freeze') {
+    if (!enemy.isBoss) {
+      enemy.state = 'frozen';
+      enemy.stateTicks = Math.max(enemy.stateTicks, effectiveTicks);
+    }
+  } else if (kind === 'stun') {
+    enemy.stunTicks = Math.max(enemy.stunTicks, effectiveTicks);
+    if (!enemy.isBoss) {
+      enemy.state = 'stunned';
+      enemy.stateTicks = Math.max(enemy.stateTicks, effectiveTicks);
+    }
+  } else if (kind === 'root') {
+    if (!enemy.isBoss) {
+      enemy.state = 'rooted';
+      enemy.stateTicks = Math.max(enemy.stateTicks, effectiveTicks);
+    }
+  }
+  return true;
+}
+
 const PARRIABLE_BOSS_MELEE: ReadonlySet<string> = new Set([
   'punch',
   'dashSlash',
+  'swordCombo',
   'lanceCombo',
+  'jabTelluric',
   'shieldCharge',
 ]);
 const RANGED_ENEMY_ATTACK_KINDS: ReadonlySet<string> = new Set([
@@ -211,18 +375,18 @@ function tryParryOverlappingThreats(state: SimState, rng: RngAPI): boolean {
   const player = state.player;
   if (player.parryWindowTicks <= 0) return false;
 
-  // 1. Overlapping parriable enemy projectiles
+  // 1. Overlapping parriable enemy projectiles (r <= 34, reflects ALL simultaneous overlapping!)
   for (let i = 0; i < state.projectiles.length; i++) {
-    const p = state.projectiles[i];
+    const p = state.projectiles[i]!;
     if (p.owner !== 'enemy' || !p.parriable) continue;
-    if (Math.hypot(p.pos.x - player.pos.x, p.pos.y - player.pos.y) <= 28) {
+    if (Math.hypot(p.pos.x - player.pos.x, p.pos.y - player.pos.y) <= 34) {
       return attemptShieldParry(state, p.damage, null, p, rng);
     }
   }
 
   // 2. Overlapping active enemy/boss melee strikes
   for (let i = 0; i < state.enemies.length; i++) {
-    const e = state.enemies[i];
+    const e = state.enemies[i]!;
     if (e.state !== 'attack' || e.hp <= 0 || e.hitPlayerThisSwing) continue;
 
     if (e.isBoss) {
@@ -230,9 +394,10 @@ function tryParryOverlappingThreats(state: SimState, rng: RngAPI): boolean {
       const dx = player.pos.x - e.pos.x;
       const dy = player.pos.y - e.pos.y;
       const reachX =
-        e.bossAttackId === 'lanceCombo' ? 76 : e.bossAttackId === 'punch' ? 68 : 58;
+        e.bossAttackId === 'lanceCombo' ? 78 : e.bossAttackId === 'punch' ? 68 : 58;
       const reachY = 42;
-      if (Math.abs(dx) <= reachX && dx * e.facing >= -18 && Math.abs(dy) <= reachY) {
+      const bidirectional = e.bossAttackId === 'lanceCombo' && e.stateTicks <= 19 && e.stateTicks > 9;
+      if (Math.abs(dx) <= reachX && (bidirectional || dx * e.facing >= -18) && Math.abs(dy) <= reachY) {
         if (attemptShieldParry(state, e.damage, e, null, rng)) {
           e.hitPlayerThisSwing = true;
           return true;
@@ -240,12 +405,14 @@ function tryParryOverlappingThreats(state: SimState, rng: RngAPI): boolean {
       }
     } else {
       const def = ENEMY_MAP[e.defId];
-      if (!def || !def.canBeParried || RANGED_ENEMY_ATTACK_KINDS.has(def.attackKind)) {
+      if (!def || !def.canBeParried) continue;
+      const isPirateMelee = e.defId === 'PirateChief' && e.bossAttackId === 'meleeCombo';
+      if (RANGED_ENEMY_ATTACK_KINDS.has(def.attackKind) && !isPirateMelee) {
         continue;
       }
       const dx = player.pos.x - e.pos.x;
       const dy = player.pos.y - e.pos.y;
-      const reachX = e.defId === 'Lancer' ? 92 : Math.max(38, def.attackRange + 8);
+      const reachX = e.defId === 'Lancer' ? 100 : Math.max(38, def.attackRange + 8);
       const reachY = 30;
       if (Math.abs(dx) <= reachX && dx * e.facing >= -12 && Math.abs(dy) <= reachY) {
         if (attemptShieldParry(state, e.damage, e, null, rng)) {
@@ -275,7 +442,10 @@ function evaluateCritCondition(
     case 'always':
       return true;
     case 'backstab':
-      return (enemy.pos.x - player.pos.x) * enemy.facing > 0;
+      return (
+        ((enemy.pos.x - player.pos.x) * enemy.facing >= -6 && player.facing === enemy.facing) ||
+        (enemy.pos.x - player.pos.x) * enemy.facing > 0
+      );
     case 'finalHit':
       if (weaponDef.id === 'BroadSword') {
         return stepIndex >= 1;
@@ -286,7 +456,9 @@ function evaluateCritCondition(
     case 'poisoned':
       return hasStatus(enemy.statusEffects, 'poison');
     case 'burning':
-      return hasStatus(enemy.statusEffects, 'burn') || hasStatus(enemy.statusEffects, 'oil');
+      return hasStatus(enemy.statusEffects, 'burn');
+    case 'oiled':
+      return hasStatus(enemy.statusEffects, 'oil');
     case 'frozenOrRooted':
       return (
         hasStatus(enemy.statusEffects, 'freeze') ||
@@ -302,7 +474,7 @@ function evaluateCritCondition(
       return player.afterParryCritTicks > 0;
     case 'isolated': {
       for (let i = 0; i < state.enemies.length; i++) {
-        const other = state.enemies[i];
+        const other = state.enemies[i]!;
         if (other.uid === enemy.uid || other.state === 'dead' || other.hp <= 0) continue;
         if (Math.hypot(other.pos.x - enemy.pos.x, other.pos.y - enemy.pos.y) <= 96) {
           return false;
@@ -313,21 +485,28 @@ function evaluateCritCondition(
     case 'wallSlam': {
       if (!col) return false;
       const dir = enemy.pos.x >= player.pos.x ? 1 : -1;
-      const tx = Math.floor((enemy.pos.x + dir * (enemy.width * 0.5 + 22)) / TILE_SIZE);
       const ty = Math.floor(enemy.pos.y / TILE_SIZE);
-      return col.isSolidAt(state.tileGrid, tx, ty);
+      // Generous 44px behind-enemy wall check so pushing/pinning near a wall crits cleanly!
+      for (const probeDist of [16, 30, 44]) {
+        const tx = Math.floor((enemy.pos.x + dir * (enemy.width * 0.5 + probeDist)) / TILE_SIZE);
+        if (col.isSolidAt(state.tileGrid, tx, ty)) {
+          return true;
+        }
+      }
+      return false;
     }
     case 'highCombo':
-      return stepIndex >= 2 || player.comboStep >= 2 || player.killStreak >= 3;
+      // Balanced Blade crits at 10+ consecutive hits!
+      return (player.balancedStacks ?? 0) >= 10;
+    case 'stuckArrows3':
+      // Quick Bow crits when target has 3+ arrows lodged in it!
+      return (enemy.stuckArrows?.length ?? 0) >= 3;
     case 'closeRange':
-      return Math.hypot(enemy.pos.x - player.pos.x, enemy.pos.y - player.pos.y) <= 84;
+      return Math.hypot(enemy.pos.x - player.pos.x, enemy.pos.y - player.pos.y) <= 88;
     case 'midRange': {
       const dist = Math.hypot(enemy.pos.x - player.pos.x, enemy.pos.y - player.pos.y);
       return dist >= 64 && dist <= 160;
     }
-    case 'stuckArrows3':
-    case 'oiled':
-      return false;
   }
 }
 
@@ -349,17 +528,22 @@ function applyWeaponAndAffixStatuses(
   weaponStatus: StatusKind | undefined,
   affixes: readonly string[] | undefined,
   isMelee: boolean,
-  isRangedWeapon: boolean
+  weaponId: string,
+  stepIndex: number,
+  rng: RngAPI,
+  col?: CollisionAPI
 ): void {
   if (weaponStatus) {
     const dur =
       weaponStatus === 'freeze'
-        ? 110
+        ? 72
         : weaponStatus === 'stun'
           ? 75
           : weaponStatus === 'root'
             ? 150
-            : 210;
+            : weaponStatus === 'bleed' && weaponId === 'Bleeder'
+              ? 360
+              : 210;
     const dps =
       weaponStatus === 'bleed' ||
       weaponStatus === 'poison' ||
@@ -367,37 +551,88 @@ function applyWeaponAndAffixStatuses(
       weaponStatus === 'electrify'
         ? getStatusDps(state, weaponStatus)
         : 0;
-    applyStatus(enemy.statusEffects, weaponStatus, dur, dps, 0);
-    if (weaponStatus === 'freeze') {
-      enemy.state = 'frozen';
-      enemy.stateTicks = Math.max(enemy.stateTicks, 90);
-    } else if (weaponStatus === 'stun') {
-      enemy.stunTicks = Math.max(enemy.stunTicks, 75);
-      enemy.state = 'stunned';
+    applyEnemyStatus(state, enemy, weaponStatus, dur, dps, rng, col);
+    // Blood Sword hit 2 applies an extra Bleed stack toward 5-stack Hemorrhage Burst!
+    if (weaponId === 'Bleeder' && weaponStatus === 'bleed' && stepIndex >= 1 && enemy.hp > 0) {
+      applyEnemyStatus(state, enemy, 'bleed', dur, dps, rng, col);
     }
   }
 
   if (affixes) {
     for (let i = 0; i < affixes.length; i++) {
-      const def = AFFIX_MAP[affixes[i]];
+      const affixId = affixes[i]!;
+      const def = AFFIX_MAP[affixId];
       if (!def || def.kind !== 'applyStatus' || !def.applyStatus) continue;
       const st = def.applyStatus;
       const dur = st === 'oil' ? 300 : 210;
       const dps = st === 'oil' ? 0 : getStatusDps(state, st);
-      applyStatus(enemy.statusEffects, st, dur, dps, 0);
+      applyEnemyStatus(state, enemy, st, dur, dps, rng, col);
+      // ★ spread_oil splashes oil to nearby enemies too
+      if (affixId === 'spread_oil') {
+        for (let j = 0; j < state.enemies.length; j++) {
+          const other = state.enemies[j]!;
+          if (other.uid === enemy.uid || other.state === 'dead' || other.hp <= 0) continue;
+          if (Math.hypot(other.pos.x - enemy.pos.x, other.pos.y - enemy.pos.y) <= 56) {
+            applyStatus(other.statusEffects, 'oil', 300, 0, 0);
+          }
+        }
+      }
     }
   }
 
-  if (isMelee && hasMutation(state, 'OpenWounds')) {
-    applyStatus(enemy.statusEffects, 'bleed', 180, getStatusDps(state, 'bleed'), 0);
+  if (isMelee && hasMutation(state, 'OpenWounds') && enemy.hp > 0) {
+    applyEnemyStatus(state, enemy, 'bleed', 180, getStatusDps(state, 'bleed'), rng, col);
   }
-  if (isMelee && hasMutation(state, 'Melee')) {
+  if (isMelee && hasMutation(state, 'Melee') && enemy.hp > 0) {
+    // Slow-only (NO frost -> NO accidental boss freeze stunlock!)
     applyStatus(enemy.statusEffects, 'slow', 150, 0, 0);
-    applyStatus(enemy.statusEffects, 'frost', 180, 0, 0);
   }
-  if (isRangedWeapon && hasMutation(state, 'BarbedTips')) {
-    applyStatus(enemy.statusEffects, 'bleed', 180, getStatusDps(state, 'bleed'), 0);
+}
+
+function reflectSingleProjectile(
+  state: SimState,
+  proj: ProjectileState,
+  shieldCounterDamage: number,
+  incomingDamage: number,
+  shieldGear: GearInstance | null
+): void {
+  const player = state.player;
+  const origOwnerUid = proj.ownerUid;
+  proj.owner = 'player';
+  proj.ownerUid = 0;
+  const speed = Math.max(330, Math.hypot(proj.vel.x, proj.vel.y) * 1.45);
+
+  // Aim reflected projectile directly back at its attacker if alive, else along player.facing!
+  const attacker =
+    origOwnerUid > 0
+      ? state.enemies.find((e) => e.uid === origOwnerUid && e.state !== 'dead' && e.hp > 0)
+      : undefined;
+  if (attacker) {
+    const adx = attacker.pos.x - proj.pos.x;
+    const ady = attacker.pos.y - proj.pos.y;
+    const alen = Math.max(1, Math.hypot(adx, ady));
+    proj.vel.x = (adx / alen) * speed;
+    proj.vel.y = (ady / alen) * speed;
+  } else {
+    const dirX = player.facing;
+    proj.vel.x = dirX * speed;
+    proj.vel.y = Math.min(0, -Math.abs(proj.vel.y) * 0.45);
   }
+
+  proj.gravity = Math.min(proj.gravity, 120);
+  proj.damage = Math.max(
+    shieldCounterDamage,
+    Math.round(Math.max(incomingDamage, proj.damage) * 2.2)
+  );
+  proj.isCrit = true;
+  proj.parriable = false;
+  proj.rollsOnFloor = false;
+  proj.floorFuseTicks = undefined;
+  proj.bouncesLeft = 0;
+  proj.ttlTicks = Math.max(proj.ttlTicks, 120);
+  proj.hitIds = [];
+  proj.color = '#ffe866';
+  proj.affixes = shieldGear?.affixes;
 }
 
 export function attemptShieldParry(
@@ -437,6 +672,7 @@ export function attemptShieldParry(
   player.parryCooldownTicks = 0; // Instant cooldown reset on successful parry!
   player.parryWindowTicks = 0;
   player.afterParryCritTicks = 90;
+  player.afterRollCritTicks = Math.max(player.afterRollCritTicks, 60);
   player.iframeTicks = Math.max(player.iframeTicks, 14);
   if (!armadilloRoll) {
     player.actionState = 'parrySuccess';
@@ -489,23 +725,15 @@ export function attemptShieldParry(
   }
 
   if (projectile) {
-    projectile.owner = 'player';
-    projectile.ownerUid = 0;
-    const speed = Math.max(320, Math.hypot(projectile.vel.x, projectile.vel.y) * 1.45);
-    const dirX = projectile.vel.x === 0 ? player.facing : -Math.sign(projectile.vel.x);
-    projectile.vel.x = dirX * speed;
-    projectile.vel.y = Math.min(0, -Math.abs(projectile.vel.y) * 0.5);
-    projectile.gravity = Math.min(projectile.gravity, 120);
-    projectile.damage = Math.max(
-      shieldCounterDamage,
-      Math.round(Math.max(incomingDamage, projectile.damage) * 2.2)
-    );
-    projectile.isCrit = true;
-    projectile.parriable = false;
-    projectile.ttlTicks = Math.max(projectile.ttlTicks, 120);
-    projectile.hitIds = [];
-    projectile.color = '#ffe866';
-    projectile.affixes = shieldGear?.affixes;
+    reflectSingleProjectile(state, projectile, shieldCounterDamage, incomingDamage, shieldGear);
+    // Reflect ALL simultaneous overlapping parriable projectiles in r <= 34!
+    for (let i = 0; i < state.projectiles.length; i++) {
+      const other = state.projectiles[i]!;
+      if (other.uid === projectile.uid || other.owner !== 'enemy' || !other.parriable) continue;
+      if (Math.hypot(other.pos.x - player.pos.x, other.pos.y - player.pos.y) <= 34) {
+        reflectSingleProjectile(state, other, shieldCounterDamage, other.damage, shieldGear);
+      }
+    }
 
     state.events.push({
       type: 'parrySuccess',
@@ -523,13 +751,11 @@ export function attemptShieldParry(
   }
 
   if (attacker && attacker.state !== 'dead' && attacker.hp > 0) {
-    const stunDur = shieldDef?.parryPassive === 'stun' ? 165 : 75;
-    attacker.stunTicks = Math.max(attacker.stunTicks, stunDur);
-    if (!attacker.isBoss) {
-      attacker.state = 'stunned';
-      attacker.stateTicks = Math.max(attacker.stateTicks, stunDur);
-    }
-    applyStatus(attacker.statusEffects, 'stun', stunDur, 0, 0);
+    // Return any arrows stuck in the parried attacker!
+    refundStuckArrows(state, attacker);
+
+    const baseStunDur = shieldDef?.parryPassive === 'stun' ? 165 : 75;
+    applyEnemyStatus(state, attacker, 'stun', baseStunDur, 0, rng);
 
     const pushDir = attacker.pos.x >= player.pos.x ? 1 : -1;
     damageEnemy(
@@ -551,21 +777,25 @@ export function attemptShieldParry(
   if (passive === 'bleed') {
     const bleedDps = getStatusDps(state, 'bleed');
     for (let i = 0; i < state.enemies.length; i++) {
-      const e = state.enemies[i];
+      const e = state.enemies[i]!;
       if (e.state === 'dead' || e.hp <= 0) continue;
-      if (Math.hypot(e.pos.x - player.pos.x, e.pos.y - player.pos.y) <= 110) {
-        applyStatus(e.statusEffects, 'bleed', 240, bleedDps, 0);
+      if (Math.hypot(e.pos.x - player.pos.x, e.pos.y - player.pos.y) <= 120) {
+        applyEnemyStatus(state, e, 'bleed', 240, bleedDps, rng);
+        if (e.hp > 0) {
+          applyEnemyStatus(state, e, 'bleed', 240, bleedDps, rng);
+        }
       }
     }
-    spawnParticle(state, player.pos.x, player.pos.y, 0, 0, 88, '#ff2e4c', 18, 'ring', true, 0);
-  } else if (passive === 'forcefield') {
-    applyStatus(player.statusEffects, 'shield', 120, 0, 0);
+    spawnParticle(state, player.pos.x, player.pos.y, 0, 0, 96, '#ff2e4c', 18, 'ring', true, 0);
+  } else if (passive === 'forcefield' && !projectile) {
+    // Rampart forcefield triggers STRICTLY on melee parries (135t)!
+    applyStatus(player.statusEffects, 'shield', 135, 0, 0);
   } else if (passive === 'damageBuff') {
     player.afterParryCritTicks = 180;
     player.comboMutationTicks = Math.max(player.comboMutationTicks, 180);
   }
 
-  applyMutationOnParry(state);
+  applyMutationOnParry(state, Boolean(projectile));
   return true;
 }
 
@@ -574,19 +804,32 @@ export function damagePlayer(
   amount: number,
   sourceLabel: string,
   rng: RngAPI,
-  ignoreIframes = false
+  ignoreIframes = false,
+  opts?: DamagePlayerOptions
 ): boolean {
   const player = state.player;
   if (player.godMode || player.actionState === 'dead' || state.runStatus !== 'playing') {
     return false;
   }
 
+  // Rampart / Disengagement invulnerability forcefield blocks all hits
+  if (hasStatus(player.statusEffects, 'shield')) {
+    return false;
+  }
+
   if (!ignoreIframes) {
-    if (player.iframeTicks > 0 || hasStatus(player.statusEffects, 'shield')) {
+    const isUnrollableWhileRolling = Boolean(opts?.unrollable && player.actionState === 'roll');
+    if (
+      (!isUnrollableWhileRolling && player.iframeTicks > 0) ||
+      (player.onHitShieldTicks ?? 0) > 0
+    ) {
       return false;
     }
-  } else if (hasStatus(player.statusEffects, 'shield')) {
-    return false;
+  }
+
+  // Track Flawless Boss No-Hit failure
+  if (state.bossArenaState.active) {
+    state.bossArenaState.playerTookHit = true;
   }
 
   // Cursed instant death (any unparried damage kills immediately!)
@@ -594,8 +837,10 @@ export function damagePlayer(
     const lost = player.hp;
     player.hp = 0;
     player.rallyHp = 0;
+    player.rallyLostAnchor = 0;
     player.killStreak = 0;
     player.speedKillCount = 0;
+    player.balancedStacks = 0;
     state.lastDamageSource = `Curse (${sourceLabel})`;
     state.damageFlashAlpha = 1.0;
     state.screenShake = Math.max(state.screenShake, 10);
@@ -615,28 +860,65 @@ export function damagePlayer(
   if (amuletDr > 0) {
     mult *= Math.max(0.4, 1 - amuletDr / 100);
   }
-  if ((player.hitFlashTicks > 0 || player.rallyHp > 0) && hasMutation(state, 'Vengeance')) {
+  if ((player.vengeanceTicks ?? 0) > 0 && hasMutation(state, 'Vengeance')) {
     mult *= 0.75;
+  }
+  if ((player.tempShieldTicks ?? 0) > 0) {
+    // Tonic 35% DR while overheal barrier is active
+    mult *= 0.65;
   }
   if (hasStatus(player.statusEffects, 'corrupted')) {
     mult *= 1.3;
   }
-  if (hasLoadoutAffixKind(state, 'dmgDealtTaken')) {
-    mult *= 1.2;
-  }
+  mult *= getLoadoutDamageTakenMultiplier(state);
 
-  // Hold-to-block shield mitigation: 75% damage reduction on non-cursed, non-DoT hits
+  // Frontal-Only Hold-to-Block Shield Mitigation (NEVER blocks floor spikes, acid, DoTs, or unparriable shockwaves!)
+  const unblockable = Boolean(opts?.unblockable) || UNBLOCKABLE_SOURCES.has(sourceLabel);
+  const isFrontal =
+    opts?.attackerX === undefined ||
+    (opts.attackerX - player.pos.x) * player.facing >= -8;
+  const shieldInfo = findEquippedShield(state);
   const isShieldBlocked = Boolean(
-    player.shieldBlocking && !ignoreIframes && player.curseKillsLeft <= 0
+    player.shieldBlocking &&
+      shieldInfo &&
+      !ignoreIframes &&
+      !unblockable &&
+      isFrontal &&
+      player.curseKillsLeft <= 0
   );
-  if (isShieldBlocked) {
-    mult *= 0.25;
+
+  if (isShieldBlocked && shieldInfo) {
+    const dr = shieldInfo.def.blockDrPct ?? 0.75;
+    mult *= Math.max(0.05, 1 - dr);
   }
 
   const finalDamage = Math.max(1, Math.round(amount * mult));
-  const actualLost = Math.min(player.hp, finalDamage);
 
-  if (isShieldBlocked) {
+  // Absorb damage from Tonic temporary overheal barrier BEFORE player.hp!
+  let remainingDamage = finalDamage;
+  if ((player.tempShieldHp ?? 0) > 0) {
+    const absorbed = Math.min(player.tempShieldHp!, remainingDamage);
+    player.tempShieldHp! -= absorbed;
+    remainingDamage -= absorbed;
+    spawnParticle(
+      state,
+      player.pos.x,
+      player.pos.y - 20,
+      0,
+      -32,
+      9,
+      '#66f5c8',
+      26,
+      'text',
+      true,
+      0,
+      `-${absorbed} SHD`
+    );
+  }
+
+  const actualLost = Math.min(player.hp, remainingDamage);
+
+  if (isShieldBlocked && shieldInfo) {
     player.vel.x = -player.facing * 105;
     state.events.push({
       type: 'shieldBlock',
@@ -685,11 +967,21 @@ export function damagePlayer(
       10,
       'slash'
     );
+
+    // Block contact passives against frontal melee attackers!
+    if (opts?.attacker && opts.attacker.state !== 'dead' && opts.attacker.hp > 0) {
+      if (shieldInfo.def.id === 'StunShield') {
+        applyEnemyStatus(state, opts.attacker, 'stun', 180, 0, rng);
+      } else if (shieldInfo.def.id === 'BleedShield') {
+        applyEnemyStatus(state, opts.attacker, 'bleed', 180, getStatusDps(state, 'bleed'), rng);
+      }
+    }
   }
 
   // Disengagement safety shield below 20% HP
   const lowHpThreshold = Math.round(player.maxHp * 0.2);
   if (
+    actualLost > 0 &&
     player.hp - actualLost <= lowHpThreshold &&
     hasMutation(state, 'Disengagement') &&
     player.disengagementCooldownTicks <= 0
@@ -715,15 +1007,33 @@ export function damagePlayer(
     player.hp = Math.max(0, player.hp - actualLost);
   }
 
-  // Rally orange HP recovery: 100% of lost HP enters rallyHp, holds 60 ticks, drains over 240 ticks
-  player.rallyHp = Math.min(player.maxHp - player.hp, player.rallyHp + actualLost);
-  player.rallyHoldTicks = 60;
-  player.rallyDrainTicks = 240;
+  // Oracle Rally Formula: 80% of lost HP enters rallyHp, holds 36t, drains at 0.30 * maxHp / sec
+  const rallyAdd = Math.round(actualLost * 0.8);
+  if (rallyAdd > 0) {
+    player.rallyHp = Math.min(player.maxHp - player.hp, player.rallyHp + rallyAdd);
+    player.rallyLostAnchor = player.rallyHp;
+    player.rallyHoldTicks = 36;
+    player.rallyDrainTicks = Math.max(
+      1,
+      Math.round(player.rallyHp / Math.max(0.01, 0.3 * player.maxHp * FIXED_DT))
+    );
+  }
 
-  // Reset kill streak on taking damage
+  // Carrying any shield grants 0.5s (30t) post-hit protective barrier (with -65% rally malus)
+  if (!ignoreIframes && shieldInfo && actualLost > 0) {
+    player.onHitShieldTicks = 30;
+  }
+
+  // Reset kill streak & Balanced Blade stacks; activate 8s Vengeance window; 5BC Malaise hit
   player.killStreak = 0;
   player.speedKillCount = 0;
+  player.balancedStacks = 0;
+  player.balancedDecayTicks = 0;
   player.hitFlashTicks = 12;
+  player.vengeanceTicks = 480;
+  if (state.bossStemCells >= 5 && !ignoreIframes) {
+    player.malaise = Math.min(100, (player.malaise ?? 0) + 10);
+  }
   if (!ignoreIframes) {
     player.iframeTicks = Math.max(player.iframeTicks, 36);
   }
@@ -736,37 +1046,39 @@ export function damagePlayer(
     x: player.pos.x,
     y: player.pos.y,
     amount: actualLost,
-    rallyAdded: actualLost,
+    rallyAdded: rallyAdd,
   });
 
-  spawnParticle(
-    state,
-    player.pos.x,
-    player.pos.y - 18,
-    rng.rangeFloat(-20, 20),
-    -40,
-    10,
-    '#ff4757',
-    32,
-    'text',
-    true,
-    0,
-    `-${actualLost}`
-  );
-  for (let i = 0; i < 6; i++) {
+  if (actualLost > 0) {
     spawnParticle(
       state,
       player.pos.x,
-      player.pos.y,
-      rng.rangeFloat(-90, 90),
-      rng.rangeFloat(-110, -20),
-      3,
-      '#ff334b',
-      22,
-      'blood',
-      false,
-      360
+      player.pos.y - 18,
+      rng.rangeFloat(-20, 20),
+      -40,
+      10,
+      '#ff4757',
+      32,
+      'text',
+      true,
+      0,
+      `-${actualLost}`
     );
+    for (let i = 0; i < 6; i++) {
+      spawnParticle(
+        state,
+        player.pos.x,
+        player.pos.y,
+        rng.rangeFloat(-90, 90),
+        rng.rangeFloat(-110, -20),
+        3,
+        '#ff334b',
+        22,
+        'blood',
+        false,
+        360
+      );
+    }
   }
 
   if (player.hp <= 0) {
@@ -784,6 +1096,12 @@ function finalizePlayerDeath(state: SimState, cause: string): void {
   player.vel.x = 0;
   state.runStatus = 'dead';
   state.metaSnapshot.totalRuns += 1;
+
+  // Bank retained Gold up to Gold Reserves cap
+  const caps = [0, 2500, 5000, 10000, 15000];
+  const cap = caps[Math.min(4, Math.max(0, state.metaSnapshot.goldReserveTier))] ?? 0;
+  state.metaSnapshot.bankedGold = Math.min(player.gold, cap);
+
   state.runSummary = {
     victory: false,
     bossCells: state.bossStemCells,
@@ -851,12 +1169,12 @@ export function damageEnemy(
   affixes?: readonly string[],
   col?: CollisionAPI
 ): boolean {
-  if (enemy.state === 'dead' || enemy.hp <= 0) {
+  if (enemy.state === 'dead' || enemy.hp <= 0 || enemy.buried) {
     return false;
   }
 
-  // Protector shield aura or Boss transition invulnerability shield
-  if (enemy.protectedByUid !== null || enemy.bossShieldTicks > 0) {
+  // Protector shield aura or Boss invulnerability shield / Floating Add-Summon
+  if (enemy.protectedByUid !== null || enemy.bossShieldTicks > 0 || enemy.bossFloatingSummon) {
     spawnParticle(
       state,
       enemy.pos.x,
@@ -874,13 +1192,22 @@ export function damageEnemy(
     return false;
   }
 
-  // Front shield block (Shieldbearer blocks frontal attacks unless rolled behind, stunned, frozen, lightning, or heavy breach)
+  // Frontal shield block (Shieldbearer, charging Royal Guard, charging Hand of the King)
   const enemyDef = ENEMY_MAP[enemy.defId];
-  const isLightning = weaponId === 'Whip' || weaponId === 'status' || weaponId === 'skill';
+  const ignoresShields =
+    weaponId === 'Whip' ||
+    weaponId === 'status' ||
+    weaponId === 'skill' ||
+    Boolean(affixes && affixes.includes('breaks_shields'));
+  const isChargingShield =
+    enemy.state === 'attack' &&
+    enemy.bossAttackId === 'shieldCharge' &&
+    (enemy.defId === 'CastleKnight' || enemy.bossId === 'KingsHand');
+  const hasFrontShield = Boolean(enemyDef?.shieldFront) || isChargingShield;
+
   if (
-    enemyDef &&
-    enemyDef.shieldFront &&
-    !isLightning &&
+    hasFrontShield &&
+    !ignoresShields &&
     breachPower < 55 &&
     enemy.stunTicks <= 0 &&
     !hasStatus(enemy.statusEffects, 'freeze') &&
@@ -888,6 +1215,14 @@ export function damageEnemy(
     (state.player.pos.x - enemy.pos.x) * enemy.facing > 0
   ) {
     enemy.vel.x += Math.sign(knockbackX || enemy.facing) * -35;
+    // Shieldbearer frontal melee block recoils the attacker!
+    const wDef = WEAPON_MAP[weaponId];
+    if (wDef && wDef.kind === 'melee' && enemy.defId === 'Shield') {
+      state.player.vel.x = -state.player.facing * 120;
+      state.player.attackPhase = 'none';
+      state.player.attackPhaseTicks = 0;
+      state.player.fallStunTicks = Math.max(state.player.fallStunTicks ?? 0, 8);
+    }
     spawnParticle(
       state,
       enemy.pos.x + enemy.facing * 8,
@@ -919,7 +1254,7 @@ export function damageEnemy(
 
   // Heavy Turret aura: +20% bonus damage when player is close to own Heavy Turret
   for (let i = 0; i < state.turrets.length; i++) {
-    const t = state.turrets[i];
+    const t = state.turrets[i]!;
     if (
       t.owner === 'player' &&
       t.kind === 'heavy' &&
@@ -932,6 +1267,55 @@ export function damageEnemy(
 
   let finalDamage = Math.max(1, Math.round(rawDamage * mult));
 
+  // Freeze Shatter: hitting a frozen enemy (except FrostBow/status) shatters ice into slow + 15% shatter pop!
+  if (
+    hasStatus(enemy.statusEffects, 'freeze') &&
+    weaponId !== 'FrostBow' &&
+    weaponId !== 'status'
+  ) {
+    removeStatus(enemy.statusEffects, 'freeze');
+    applyStatus(enemy.statusEffects, 'slow', 75, 0, 0);
+    if (enemy.state === 'frozen') {
+      enemy.state = 'chase';
+    }
+    finalDamage = Math.max(1, Math.round(finalDamage * 1.15));
+    state.events.push({
+      type: 'freezeShatter',
+      x: enemy.pos.x,
+      y: enemy.pos.y,
+    });
+    spawnParticle(
+      state,
+      enemy.pos.x,
+      enemy.pos.y - enemy.height * 0.55 - 10,
+      0,
+      -40,
+      11,
+      '#8ceeff',
+      32,
+      'text',
+      true,
+      0,
+      'SHATTER!'
+    );
+    for (let s = 0; s < 8; s++) {
+      const ang = (s / 8) * Math.PI * 2;
+      spawnParticle(
+        state,
+        enemy.pos.x,
+        enemy.pos.y,
+        Math.cos(ang) * rng.rangeFloat(75, 160),
+        Math.sin(ang) * rng.rangeFloat(75, 160) - 25,
+        3.5,
+        s % 2 === 0 ? '#7ce8ff' : '#e0fbff',
+        20,
+        'ice',
+        true,
+        240
+      );
+    }
+  }
+
   // Wall-slam bonus damage (+25%) and 35-tick stun when knockback slams an enemy into a solid wall
   let wallSlammed = false;
   if (col && Math.abs(knockbackX) >= 75) {
@@ -943,24 +1327,9 @@ export function damageEnemy(
       wallSlammed = true;
       finalDamage = Math.round(finalDamage * 1.25);
       if (!enemy.isBoss) {
-        enemy.stunTicks = Math.max(enemy.stunTicks, 35);
-        enemy.state = 'stunned';
-        enemy.stateTicks = Math.max(enemy.stateTicks, 35);
-        applyStatus(enemy.statusEffects, 'stun', 35, 0, 0);
+        applyEnemyStatus(state, enemy, 'stun', 35, 0, rng, col);
       }
-      spawnParticle(
-        state,
-        probeX,
-        enemy.pos.y,
-        0,
-        0,
-        24,
-        '#ffcf66',
-        14,
-        'ring',
-        true,
-        0
-      );
+      spawnParticle(state, probeX, enemy.pos.y, 0, 0, 24, '#ffcf66', 14, 'ring', true, 0);
       spawnParticle(
         state,
         enemy.pos.x,
@@ -978,16 +1347,27 @@ export function damageEnemy(
     }
   }
 
+  // Boss 15% Single-Hit Damage Cap!
+  if (enemy.isBoss) {
+    finalDamage = Math.min(finalDamage, Math.max(1, Math.round(enemy.maxHp * 0.15)));
+  }
+
   enemy.hp = Math.max(0, enemy.hp - finalDamage);
   enemy.hitFlashTicks = 8;
 
-  // Rally recovery: weapon damage heals up to 75% of hit damage from rallyHp
-  const isWeaponDamage = weaponId !== 'status';
-  if (isWeaponDamage && state.player.rallyHp > 0 && state.player.hp > 0) {
-    const healFromRally = Math.min(
-      state.player.rallyHp,
-      Math.max(1, Math.round(finalDamage * 0.75))
+  // Oracle Rally Recovery: ONLY direct weapons & shield parries (NOT status/skills/diveSlam)!
+  const isDirectWeaponOrParry =
+    weaponId !== 'status' && weaponId !== 'skill' && weaponId !== 'diveSlam';
+  if (isDirectWeaponOrParry && state.player.rallyHp > 0 && state.player.hp > 0) {
+    const anchor = Math.max(state.player.rallyLostAnchor ?? state.player.rallyHp, state.player.rallyHp);
+    let perHit = Math.min(
+      Math.round(finalDamage * 0.12),
+      Math.max(1, Math.round(anchor * 0.2))
     );
+    if ((state.player.onHitShieldTicks ?? 0) > 0) {
+      perHit = Math.round(perHit * 0.35);
+    }
+    const healFromRally = Math.min(state.player.rallyHp, Math.max(1, perHit));
     state.player.rallyHp = Math.max(0, state.player.rallyHp - healFromRally);
     state.player.hp = Math.min(state.player.maxHp, state.player.hp + healFromRally);
     state.events.push({
@@ -998,10 +1378,17 @@ export function damageEnemy(
     });
   }
 
-  // Breach & knockback
+  // Breach (with Slasher 0.7 & Royal Guard 0.65 combo super-armor!) & knockback
   let didBreach = false;
   if (breachPower > 0) {
-    enemy.breachMeter += breachPower;
+    let breachResist = 0;
+    if (enemy.state === 'attack' && enemy.defId === 'Comboter') {
+      breachResist = 0.7;
+    } else if (enemy.state === 'attack' && enemy.defId === 'CastleKnight') {
+      breachResist = 0.65;
+    }
+    const effBreach = Math.round(breachPower * (1 - breachResist));
+    enemy.breachMeter += effBreach;
     if (enemy.breachMeter >= enemy.breachThreshold) {
       enemy.breachMeter = 0;
       didBreach = true;
@@ -1019,6 +1406,7 @@ export function damageEnemy(
   enemy.vel.y += knockbackY * kbScale;
 
   // Hitstop durations: 2 normal, 4 heavy/breach, 6 crit/parry
+  const isWeaponDamage = weaponId !== 'status';
   if (isWeaponDamage) {
     if (isCrit) {
       state.hitstopTicks = Math.max(state.hitstopTicks, 6);
@@ -1050,6 +1438,7 @@ export function damageEnemy(
       damage: finalDamage,
       breach: didBreach || wallSlammed,
       color: isWeaponDamage ? '#ffcf70' : '#ff6b6b',
+      weaponId,
     });
   }
 
@@ -1092,20 +1481,23 @@ export function damageEnemy(
     enemy.vel.x = knockbackX * 0.6;
     enemy.vel.y = -90;
 
+    // Return all stuck arrows/knives lodged in this enemy!
+    refundStuckArrows(state, enemy);
+
     // Clear Protector aura from allies if Protector died
     if (enemy.defId === 'Protector') {
       for (let i = 0; i < state.enemies.length; i++) {
-        if (state.enemies[i].protectedByUid === enemy.uid) {
-          state.enemies[i].protectedByUid = null;
+        if (state.enemies[i]!.protectedByUid === enemy.uid) {
+          state.enemies[i]!.protectedByUid = null;
         }
       }
     }
 
-    // Worm drops 6 death-bombs on death!
+    // Worm drops 6 bouncing/resting pulsing death-eggs (parriable until detonation!)
     if (enemy.defId === 'Worm') {
       for (let i = 0; i < 6; i++) {
-        const vx = -110 + i * 44 + rng.rangeFloat(-12, 12);
-        const vy = rng.rangeFloat(-200, -120);
+        const vx = -115 + i * 46 + rng.rangeFloat(-12, 12);
+        const vy = rng.rangeFloat(-205, -125);
         state.projectiles.push({
           uid: state.nextUid++,
           owner: 'enemy',
@@ -1119,14 +1511,42 @@ export function damageEnemy(
           isCrit: false,
           pierceLeft: 0,
           gravity: 560,
-          ttlTicks: 48 + i * 5,
-          maxTtlTicks: 78,
+          ttlTicks: 165,
+          maxTtlTicks: 165,
           color: '#ff6642',
           explosionRadius: 42,
           parriable: true,
+          bouncesLeft: 1,
+          floorFuseTicks: 60 + i * 5,
           hitIds: [],
         });
       }
+    }
+
+    // Cannibal (LeapingDuelyst) drops 1 delayed parting fuse bomb on death!
+    if (enemy.defId === 'LeapingDuelyst') {
+      state.projectiles.push({
+        uid: state.nextUid++,
+        owner: 'enemy',
+        ownerUid: enemy.uid,
+        kind: 'grenade',
+        pos: { x: enemy.pos.x, y: enemy.pos.y - 6 },
+        prevPos: { x: enemy.pos.x, y: enemy.pos.y - 6 },
+        vel: { x: rng.rangeFloat(-45, 45), y: -155 },
+        radius: 5,
+        damage: Math.max(14, Math.round(enemy.damage * 0.9)),
+        isCrit: false,
+        pierceLeft: 0,
+        gravity: 560,
+        ttlTicks: 120,
+        maxTtlTicks: 120,
+        color: '#ff9c42',
+        explosionRadius: 46,
+        parriable: true,
+        bouncesLeft: 1,
+        floorFuseTicks: 48,
+        hitIds: [],
+      });
     }
 
     // Affix: Victims explode into a toxic cloud
@@ -1145,7 +1565,7 @@ export function damageEnemy(
         owner: 'player',
       });
       for (let i = 0; i < state.enemies.length; i++) {
-        const other = state.enemies[i];
+        const other = state.enemies[i]!;
         if (other.uid === enemy.uid || other.state === 'dead' || other.hp <= 0) continue;
         if (Math.hypot(other.pos.x - enemy.pos.x, other.pos.y - enemy.pos.y) <= 56) {
           applyStatus(other.statusEffects, 'poison', 240, getStatusDps(state, 'poison'), 0);
@@ -1153,14 +1573,16 @@ export function damageEnemy(
       }
     }
 
-    // Recover player ranged ammo on kill
-    const w1 = state.player.loadout.weapon1;
-    const w2 = state.player.loadout.weapon2;
-    if (w1 && w1.maxAmmo !== undefined && w1.ammo !== undefined) {
-      w1.ammo = Math.min(w1.maxAmmo, w1.ammo + 3);
-    }
-    if (w2 && w2.maxAmmo !== undefined && w2.ammo !== undefined) {
-      w2.ammo = Math.min(w2.maxAmmo, w2.ammo + 3);
+    // ★ Star Affix: Victims freeze nearby enemies on death
+    if (affixes && affixes.includes('freeze_death')) {
+      spawnParticle(state, enemy.pos.x, enemy.pos.y, 0, 0, 72, '#7ce8ff', 16, 'ring', true, 0);
+      for (let i = 0; i < state.enemies.length; i++) {
+        const other = state.enemies[i]!;
+        if (other.uid === enemy.uid || other.state === 'dead' || other.hp <= 0) continue;
+        if (Math.hypot(other.pos.x - enemy.pos.x, other.pos.y - enemy.pos.y) <= 72) {
+          applyEnemyStatus(state, other, 'freeze', 72, 0, rng, col);
+        }
+      }
     }
 
     // Boss death: 18-tick slow-mo burst, unlock boss gates, check KingsHand victory
@@ -1170,8 +1592,8 @@ export function damageEnemy(
       state.bossArenaState.defeated = true;
       state.bossArenaState.active = false;
       for (let i = 0; i < state.doors.length; i++) {
-        if (state.doors[i].kind === 'bossGate') {
-          state.doors[i].opened = true;
+        if (state.doors[i]!.kind === 'bossGate') {
+          state.doors[i]!.opened = true;
         }
       }
       if (enemy.bossId === 'KingsHand') {
@@ -1188,6 +1610,168 @@ export function damageEnemy(
   return true;
 }
 
+function fireElectricWhipHitscan(
+  state: SimState,
+  weaponDef: WeaponDef,
+  gear: GearInstance,
+  step: StrikeStep,
+  stepIndex: number,
+  input: InputFrame,
+  rng: RngAPI,
+  col: CollisionAPI
+): void {
+  const player = state.player;
+  const baseDmg = computeGearDamage(step.basePower, gear, player.scrolls);
+  const origin: Vec2 = { x: player.pos.x + player.facing * 12, y: player.pos.y - 4 };
+
+  // Find closest living enemy in 136x80 frontal/aim cone (auto-target, ignores shields!)
+  let aimDx: number = player.facing;
+  let aimDy = 0;
+  if (hasValidAim(input)) {
+    const rdx = input.aimX - origin.x;
+    const rdy = input.aimY - origin.y;
+    const rlen = Math.hypot(rdx, rdy);
+    if (rlen >= 4) {
+      aimDx = rdx / rlen;
+      aimDy = rdy / rlen;
+    }
+  }
+
+  let primary: EnemyState | null = null;
+  let bestDist = step.rangeX + 1;
+  for (let i = 0; i < state.enemies.length; i++) {
+    const e = state.enemies[i]!;
+    if (e.state === 'dead' || e.hp <= 0 || e.buried) continue;
+    const ex = e.pos.x - player.pos.x;
+    const ey = e.pos.y - player.pos.y;
+    const dist = Math.hypot(ex, ey);
+    if (dist > step.rangeX || Math.abs(ey) > step.rangeY) continue;
+    const aligned = hasValidAim(input) ? ex * aimDx + ey * aimDy >= -18 : ex * player.facing >= -18;
+    if (!aligned) continue;
+    if (dist < bestDist) {
+      bestDist = dist;
+      primary = e;
+    }
+  }
+
+  if (!primary) {
+    // Emit crackle lightning arc into the air along facing/aim
+    const tip: Vec2 = {
+      x: origin.x + aimDx * Math.min(88, step.rangeX * 0.65),
+      y: origin.y + aimDy * Math.min(88, step.rangeX * 0.65),
+    };
+    state.events.push({ type: 'lightningArc', points: [origin, tip] });
+    return;
+  }
+
+  const arcPoints: Vec2[] = [origin];
+  const hitSet = new Set<number>();
+
+  const strikeTarget = (target: EnemyState, dmgScale: number): boolean => {
+    hitSet.add(target.uid);
+    arcPoints.push({ x: target.pos.x, y: target.pos.y });
+    const dist = Math.hypot(target.pos.x - player.pos.x, target.pos.y - player.pos.y);
+    const inWater = isEntityInWater(state, target.pos.x, target.pos.y, target.height, col);
+    const isCrit = inWater || evaluateCritCondition(state, weaponDef, stepIndex, target, col);
+    const mutMult = getMutationDamageMultiplier(state, false, dist);
+    const dmg = Math.max(1, Math.round(baseDmg * dmgScale * mutMult * (isCrit ? step.critMul : 1)));
+
+    applyWeaponAndAffixStatuses(
+      state,
+      target,
+      'electrify',
+      gear.affixes,
+      false,
+      weaponDef.id,
+      stepIndex,
+      rng,
+      col
+    );
+    if (inWater) {
+      applyEnemyStatus(state, target, 'stun', 20, 0, rng, col);
+    }
+    damageEnemy(
+      state,
+      target,
+      dmg,
+      isCrit,
+      step.breachPower,
+      (target.pos.x >= player.pos.x ? 1 : -1) * 45,
+      -20,
+      rng,
+      weaponDef.id,
+      gear.affixes,
+      col
+    );
+
+    for (let s = 0; s < 4; s++) {
+      spawnParticle(
+        state,
+        target.pos.x + rng.rangeFloat(-8, 8),
+        target.pos.y + rng.rangeFloat(-10, 8),
+        rng.rangeFloat(-75, 75),
+        rng.rangeFloat(-75, 45),
+        3,
+        inWater ? '#ffe866' : '#78e6ff',
+        12,
+        'spark',
+        true,
+        0
+      );
+    }
+    return inWater;
+  };
+
+  const primaryWet = strikeTarget(primary, 1.0);
+
+  // Chain up to 3 nearby enemies within 84px for 50% damage (plus all nearby wet enemies if in water!)
+  let chainOrigin = primary;
+  let chainsLeft = 3;
+  while (chainsLeft > 0) {
+    let nextTarget: EnemyState | null = null;
+    let nextDist = 85;
+    for (let i = 0; i < state.enemies.length; i++) {
+      const e = state.enemies[i]!;
+      if (e.state === 'dead' || e.hp <= 0 || e.buried || hitSet.has(e.uid)) continue;
+      const d = Math.hypot(e.pos.x - chainOrigin.pos.x, e.pos.y - chainOrigin.pos.y);
+      if (d <= 84 && d < nextDist) {
+        nextDist = d;
+        nextTarget = e;
+      }
+    }
+    if (!nextTarget) break;
+    strikeTarget(nextTarget, 0.5);
+    chainOrigin = nextTarget;
+    chainsLeft -= 1;
+  }
+
+  // Water conductivity: conduct across ALL enemies standing in the same water pool (r <= 145px)!
+  if (primaryWet) {
+    for (let i = 0; i < state.enemies.length; i++) {
+      const e = state.enemies[i]!;
+      if (e.state === 'dead' || e.hp <= 0 || e.buried || hitSet.has(e.uid)) continue;
+      if (
+        Math.hypot(e.pos.x - primary.pos.x, e.pos.y - primary.pos.y) <= 145 &&
+        isEntityInWater(state, e.pos.x, e.pos.y, e.height, col)
+      ) {
+        strikeTarget(e, 0.75);
+      }
+    }
+  }
+
+  state.events.push({ type: 'lightningArc', points: arcPoints });
+  spawnTransientLight(
+    state,
+    primary.pos.x,
+    primary.pos.y - 4,
+    115,
+    [0.42, 0.9, 1.0],
+    1.7,
+    10,
+    'slash'
+  );
+}
+
 function fireRangedWeapon(
   state: SimState,
   weaponDef: WeaponDef,
@@ -1195,8 +1779,14 @@ function fireRangedWeapon(
   step: StrikeStep,
   stepIndex: number,
   input: InputFrame,
-  rng: RngAPI
+  rng: RngAPI,
+  col: CollisionAPI
 ): void {
+  if (weaponDef.id === 'Whip') {
+    fireElectricWhipHitscan(state, weaponDef, gear, step, stepIndex, input, rng, col);
+    return;
+  }
+
   const player = state.player;
   const baseDmg = computeGearDamage(step.basePower, gear, player.scrolls);
   const speed = step.projectileSpeed ?? 390;
@@ -1206,7 +1796,29 @@ function fireRangedWeapon(
   let aimDx: number = player.facing;
   let aimDy = 0;
 
-  if (hasValidAim(input)) {
+  // Throwing Knife ALWAYS auto-aims vertically toward nearest threat in front cone (175x96)!
+  const forceAutoTarget = weaponDef.id === 'ThrowingKnife';
+  let autoTargeted = false;
+
+  if (forceAutoTarget || !hasValidAim(input)) {
+    let bestDist = step.rangeX;
+    for (let i = 0; i < state.enemies.length; i++) {
+      const e = state.enemies[i]!;
+      if (e.state === 'dead' || e.hp <= 0 || e.buried) continue;
+      const dx = e.pos.x - spawnX;
+      const dy = e.pos.y - spawnY;
+      if (dx * player.facing < -8) continue;
+      const dist = Math.hypot(dx, dy);
+      if (dist < bestDist && Math.abs(dy) <= Math.max(step.rangeY, 72)) {
+        bestDist = dist;
+        aimDx = dx / Math.max(1, dist);
+        aimDy = dy / Math.max(1, dist);
+        autoTargeted = true;
+      }
+    }
+  }
+
+  if (!autoTargeted && hasValidAim(input)) {
     // Cursor aiming with gentle magnetic auto-assist onto enemies near the aim ray
     const rawDx = input.aimX - spawnX;
     const rawDy = input.aimY - spawnY;
@@ -1222,8 +1834,8 @@ function fireRangedWeapon(
     let bestPerp = Infinity;
 
     for (let i = 0; i < state.enemies.length; i++) {
-      const e = state.enemies[i];
-      if (e.state === 'dead' || e.hp <= 0) continue;
+      const e = state.enemies[i]!;
+      if (e.state === 'dead' || e.hp <= 0 || e.buried) continue;
       const ex = e.pos.x - spawnX;
       const ey = e.pos.y - spawnY;
       const edist = Math.hypot(ex, ey);
@@ -1251,73 +1863,6 @@ function fireRangedWeapon(
       aimDx = bx / blen;
       aimDy = by / blen;
     }
-  } else {
-    // Keyboard-only: Dead Cells frontal auto-aim toward nearest living enemy in front
-    let bestDist = step.rangeX;
-    for (let i = 0; i < state.enemies.length; i++) {
-      const e = state.enemies[i];
-      if (e.state === 'dead' || e.hp <= 0) continue;
-      const dx = e.pos.x - spawnX;
-      const dy = e.pos.y - spawnY;
-      if (dx * player.facing < -8) continue;
-      const dist = Math.hypot(dx, dy);
-      if (dist < bestDist && Math.abs(dy) <= Math.max(step.rangeY, 72)) {
-        bestDist = dist;
-        aimDx = dx / Math.max(1, dist);
-        aimDy = dy / Math.max(1, dist);
-      }
-    }
-  }
-
-  // Electric Whip chains instantly to up to 2 nearby targets for snappy responsiveness
-  const chainedIds: number[] = [];
-  if (weaponDef.id === 'Whip') {
-    let hitCount = 0;
-    for (let i = 0; i < state.enemies.length && hitCount < 2; i++) {
-      const e = state.enemies[i];
-      if (e.state === 'dead' || e.hp <= 0) continue;
-      const ex = e.pos.x - player.pos.x;
-      const ey = e.pos.y - player.pos.y;
-      const dist = Math.hypot(ex, ey);
-      const aligned = hasValidAim(input)
-        ? ex * aimDx + ey * aimDy >= -16
-        : ex * player.facing >= -16;
-      if (dist <= step.rangeX && aligned) {
-        const mutMult = getMutationDamageMultiplier(state, false, dist);
-        const isCrit = evaluateCritCondition(state, weaponDef, stepIndex, e);
-        const dmg = Math.round(baseDmg * mutMult * (isCrit ? step.critMul : 1));
-        applyWeaponAndAffixStatuses(state, e, 'electrify', gear.affixes, false, true);
-        damageEnemy(
-          state,
-          e,
-          dmg,
-          isCrit,
-          step.breachPower,
-          (ex >= 0 ? 1 : -1) * 45,
-          -20,
-          rng,
-          weaponDef.id,
-          gear.affixes
-        );
-        chainedIds.push(e.uid);
-        for (let s = 0; s < 4; s++) {
-          spawnParticle(
-            state,
-            e.pos.x + rng.rangeFloat(-8, 8),
-            e.pos.y + rng.rangeFloat(-10, 8),
-            rng.rangeFloat(-70, 70),
-            rng.rangeFloat(-70, 40),
-            3,
-            '#78e6ff',
-            12,
-            'spark',
-            true,
-            0
-          );
-        }
-        hitCount += 1;
-      }
-    }
   }
 
   let pierce = step.pierceCount ?? 0;
@@ -1326,8 +1871,9 @@ function fireRangedWeapon(
   }
 
   const kind = step.projectileKind ?? 'arrow';
-  const radius = kind === 'fireball' ? 6 : kind === 'lightning' ? 9 : 4;
+  const radius = kind === 'fireball' ? 6 : 4;
   const ttl = Math.max(14, Math.round((step.rangeX / Math.max(100, speed)) * 60) + 6);
+  const tracksAmmo = weaponDef.ammoCapacity !== undefined;
 
   state.projectiles.push({
     uid: state.nextUid++,
@@ -1348,8 +1894,9 @@ function fireRangedWeapon(
     applyStatus: step.applyStatus,
     explosionRadius: kind === 'fireball' ? 28 : undefined,
     parriable: false,
-    hitIds: chainedIds,
+    hitIds: [],
     affixes: gear.affixes,
+    sourceWeaponSlot: tracksAmmo ? player.activeWeaponSlot : undefined,
   });
 }
 
@@ -1367,10 +1914,10 @@ function executeMeleeActiveFrame(
   const hitCenterY = player.pos.y + step.offsetY;
   const baseDmg = computeGearDamage(step.basePower, gear, player.scrolls);
 
-  // Smash wooden doors in weapon reach
+  // Smash wooden doors in weapon reach (even if already opened, as long as unbroken!)
   for (let i = 0; i < state.doors.length; i++) {
-    const door = state.doors[i];
-    if (door.kind !== 'wood' || door.broken || door.opened) continue;
+    const door = state.doors[i]!;
+    if (door.kind !== 'wood' || door.broken) continue;
     if (
       aabbOverlap(
         hitCenterX,
@@ -1387,12 +1934,12 @@ function executeMeleeActiveFrame(
       door.opened = true;
       state.events.push({ type: 'doorSmash', x: door.pos.x, y: door.pos.y });
       for (let j = 0; j < state.enemies.length; j++) {
-        const e = state.enemies[j];
+        const e = state.enemies[j]!;
         if (e.state === 'dead' || e.hp <= 0 || e.isBoss) continue;
-        if (Math.hypot(e.pos.x - door.pos.x, e.pos.y - door.pos.y) <= 72) {
-          e.stunTicks = Math.max(e.stunTicks, 90);
-          e.state = 'stunned';
-          applyStatus(e.statusEffects, 'stun', 90, 0, 0);
+        const ddx = e.pos.x - door.pos.x;
+        if (ddx * player.facing >= -16 && Math.hypot(ddx, e.pos.y - door.pos.y) <= 84) {
+          applyEnemyStatus(state, e, 'stun', 90, 0, rng, col);
+          e.vel.x += player.facing * 95;
         }
       }
     }
@@ -1400,7 +1947,7 @@ function executeMeleeActiveFrame(
 
   // Damage enemy boss banners in reach
   for (let i = state.turrets.length - 1; i >= 0; i--) {
-    const t = state.turrets[i];
+    const t = state.turrets[i]!;
     if (t.owner !== 'enemy') continue;
     if (player.attackHitIds.includes(t.uid)) continue;
     if (aabbOverlap(hitCenterX, hitCenterY, step.rangeX, step.rangeY, t.pos.x, t.pos.y, 18, 30)) {
@@ -1415,8 +1962,8 @@ function executeMeleeActiveFrame(
 
   // Hit enemies
   for (let i = 0; i < state.enemies.length; i++) {
-    const enemy = state.enemies[i];
-    if (enemy.state === 'dead' || enemy.hp <= 0) continue;
+    const enemy = state.enemies[i]!;
+    if (enemy.state === 'dead' || enemy.hp <= 0 || enemy.buried) continue;
     if (player.attackHitIds.includes(enemy.uid)) continue;
 
     if (
@@ -1433,14 +1980,54 @@ function executeMeleeActiveFrame(
     ) {
       player.attackHitIds.push(enemy.uid);
       const dist = Math.hypot(enemy.pos.x - player.pos.x, enemy.pos.y - player.pos.y);
+
+      // Balanced Blade (`QuickSword`) progressive hit-stack ramp (+8%/stack up to 9, crits at >= 10!)
+      let balancedMult = 1.0;
+      if (weaponDef.id === 'QuickSword') {
+        const stacks = Math.min(20, (player.balancedStacks ?? 0) + 1);
+        player.balancedStacks = stacks;
+        player.balancedDecayTicks = 210;
+        balancedMult = 1 + Math.min(9, stacks - 1) * 0.08;
+      }
+
       const isCrit = evaluateCritCondition(state, weaponDef, stepIndex, enemy, col);
       const mutMult = getMutationDamageMultiplier(state, true, dist);
-      const rawDamage = Math.round(baseDmg * mutMult * (isCrit ? step.critMul : 1.0));
-      const kbX = player.facing * (step.breachPower >= 45 ? 165 : 95);
+      let rawDamage = Math.round(
+        baseDmg * balancedMult * mutMult * (isCrit ? step.critMul : 1.0)
+      );
+
+      // Phaser empowers the NEXT MELEE STRIKE of ANY weapon!
+      if ((player.phaserBuffTicks ?? 0) > 0 && (player.phaserBonusDamage ?? 0) > 0) {
+        rawDamage += player.phaserBonusDamage!;
+        player.phaserBonusDamage = 0;
+        player.phaserBuffTicks = 0;
+        spawnParticle(state, enemy.pos.x, enemy.pos.y, 0, 0, 38, '#52f5ff', 14, 'ring', true, 0);
+        spawnParticle(
+          state,
+          enemy.pos.x,
+          enemy.pos.y - 28,
+          0,
+          -36,
+          10,
+          '#52f5ff',
+          28,
+          'text',
+          true,
+          0,
+          'PHASED!'
+        );
+      }
+
+      const kbSpeed =
+        weaponDef.id === 'ImpaleSpear'
+          ? 150
+          : step.breachPower >= 45
+            ? 165
+            : 95;
+      const kbX = player.facing * kbSpeed;
       const kbY = step.breachPower >= 45 ? -70 : -25;
 
-      applyWeaponAndAffixStatuses(state, enemy, step.applyStatus, gear.affixes, true, false);
-      damageEnemy(
+      const damaged = damageEnemy(
         state,
         enemy,
         rawDamage,
@@ -1453,6 +2040,19 @@ function executeMeleeActiveFrame(
         gear.affixes,
         col
       );
+      if (damaged && enemy.hp > 0) {
+        applyWeaponAndAffixStatuses(
+          state,
+          enemy,
+          step.applyStatus,
+          gear.affixes,
+          true,
+          weaponDef.id,
+          stepIndex,
+          rng,
+          col
+        );
+      }
     }
   }
 }
@@ -1472,8 +2072,9 @@ function startParryAction(
   player.actionState = 'parry';
   player.actionTicks = 16;
   player.parryWindowTicks = 16;
-  player.parryCooldownTicks = 26;
+  player.parryCooldownTicks = 36; // 36t whiff lockout (reset to 0 on success!)
   player.shieldBlocking = false;
+  player.shieldHoldTicks = 0;
   player.queuedInput = 'none';
   player.queuedInputTicks = 0;
 
@@ -1522,13 +2123,16 @@ function startWeaponAttack(state: SimState, slot: 1 | 2, input: InputFrame): boo
 
   applyAimFacing(state, input);
   player.shieldBlocking = false;
+  player.shieldHoldTicks = 0;
+  // Attacking breaks Predator stealth invisibility!
+  player.stealthTicks = 0;
 
   if (player.activeWeaponSlot !== slot || player.comboResetTicks <= 0) {
     player.comboStep = 0;
   }
   player.activeWeaponSlot = slot;
   const stepIndex = player.comboStep % weaponDef.strikeChain.length;
-  const step = weaponDef.strikeChain[stepIndex];
+  const step = weaponDef.strikeChain[stepIndex]!;
 
   player.actionState = 'attack';
   player.attackPhase = 'windup';
@@ -1549,10 +2153,11 @@ export function stepPlayerCombat(
   const player = state.player;
   if (player.actionState === 'dead' || state.runStatus !== 'playing') {
     player.shieldBlocking = false;
+    player.shieldHoldTicks = 0;
     return;
   }
 
-  // Decrement combat & mutation timers
+  // Decrement combat, buff & mutation timers
   if (player.comboResetTicks > 0) {
     player.comboResetTicks -= 1;
     if (player.comboResetTicks === 0 && player.attackPhase === 'none') {
@@ -1566,6 +2171,35 @@ export function stepPlayerCombat(
   if (player.disengagementCooldownTicks > 0) player.disengagementCooldownTicks -= 1;
   if (player.hitFlashTicks > 0) player.hitFlashTicks -= 1;
   if (player.speedBuffTicks > 0) player.speedBuffTicks -= 1;
+  if ((player.onHitShieldTicks ?? 0) > 0) player.onHitShieldTicks! -= 1;
+  if ((player.vengeanceTicks ?? 0) > 0) player.vengeanceTicks! -= 1;
+  if ((player.stealthTicks ?? 0) > 0) player.stealthTicks! -= 1;
+  if ((player.wdlmCooldownTicks ?? 0) > 0) player.wdlmCooldownTicks! -= 1;
+  if ((player.phaserBuffTicks ?? 0) > 0) {
+    player.phaserBuffTicks! -= 1;
+    if (player.phaserBuffTicks === 0) {
+      player.phaserBonusDamage = 0;
+    }
+  }
+  if ((player.balancedDecayTicks ?? 0) > 0) {
+    player.balancedDecayTicks! -= 1;
+    if (player.balancedDecayTicks === 0) {
+      player.balancedStacks = 0;
+    }
+  }
+  if ((player.tempShieldTicks ?? 0) > 0) {
+    player.tempShieldTicks! -= 1;
+    if (player.tempShieldTicks === 0) {
+      player.tempShieldHp = 0;
+    }
+  }
+  if ((player.speedComboDecayTicks ?? 0) > 0) {
+    player.speedComboDecayTicks! -= 1;
+    if (player.speedComboDecayTicks === 0) {
+      player.speedKillCount = 0;
+    }
+  }
+
   if (player.healTicks > 0) {
     player.healTicks -= 1;
     if (player.healTicks === 0 && player.actionState === 'heal') {
@@ -1581,34 +2215,51 @@ export function stepPlayerCombat(
     player.loadout.skill2.cooldownTicks -= 1;
   }
 
-  // Passive ammo regeneration for ranged weapons
-  if (state.tick % 60 === 0) {
-    const slots = [player.loadout.weapon1, player.loadout.weapon2];
-    for (let i = 0; i < slots.length; i++) {
-      const g = slots[i];
-      if (g && g.maxAmmo !== undefined && g.ammo !== undefined && g.ammo < g.maxAmmo) {
-        g.ammo += 1;
-      }
-    }
-  }
-
   // Tick player status effects
   tickEntityStatuses(player.statusEffects, (kind, amount) => {
     state.events.push({ type: 'statusProc', x: player.pos.x, y: player.pos.y, status: kind });
     damagePlayer(state, amount, kind, rng, true);
   });
 
-  // Tick Rally (Orange Health Recovery)
+  // Corrupted Power continuous electric shock aura (every 30 ticks within 64px!)
+  if (hasStatus(player.statusEffects, 'corrupted') && state.tick % 30 === 0) {
+    const auraDmg = Math.max(
+      8,
+      Math.round(
+        18 *
+          Math.pow(
+            1.15,
+            Math.max(0, Math.max(player.scrolls.brutality, player.scrolls.tactics) - 1)
+          )
+      )
+    );
+    let hitAny = false;
+    for (let i = 0; i < state.enemies.length; i++) {
+      const e = state.enemies[i]!;
+      if (e.state === 'dead' || e.hp <= 0 || e.buried) continue;
+      if (Math.hypot(e.pos.x - player.pos.x, e.pos.y - player.pos.y) <= 64) {
+        hitAny = true;
+        applyEnemyStatus(state, e, 'electrify', 120, getStatusDps(state, 'electrify'), rng, col);
+        damageEnemy(state, e, auraDmg, false, 10, 0, 0, rng, 'skill', undefined, col);
+      }
+    }
+    if (hitAny) {
+      spawnParticle(state, player.pos.x, player.pos.y, 0, 0, 64, '#b86bff', 12, 'ring', true, 0);
+    }
+  }
+
+  // Tick Oracle Rally (Orange Health Recovery): hold 36t, then drain 0.30 * maxHp * FIXED_DT
   if (player.rallyHp > 0) {
     if (player.rallyHoldTicks > 0) {
       player.rallyHoldTicks -= 1;
     } else {
-      const drainRate = Math.max(
-        player.maxHp / 240,
-        player.rallyHp / Math.max(1, player.rallyDrainTicks)
-      );
+      const drainRate = Math.max(0.05, 0.3 * player.maxHp * FIXED_DT);
       player.rallyHp = Math.max(0, player.rallyHp - drainRate);
       if (player.rallyDrainTicks > 0) player.rallyDrainTicks -= 1;
+      if (player.rallyHp <= 0.01) {
+        player.rallyHp = 0;
+        player.rallyLostAnchor = 0;
+      }
     }
   }
 
@@ -1622,7 +2273,10 @@ export function stepPlayerCombat(
       uid: state.nextUid++,
       rect: { x: player.pos.x - 10, y: player.pos.y + 4, w: 20, h: 12 },
       kind: 'burningOil',
-      damage: Math.max(8, Math.round(12 * Math.pow(1.15, Math.max(0, player.scrolls.brutality - 1)))),
+      damage: Math.max(
+        8,
+        Math.round(12 * Math.pow(1.15, Math.max(0, player.scrolls.brutality - 1)))
+      ),
       ttlTicks: 90,
       owner: 'player',
     });
@@ -1657,7 +2311,7 @@ export function stepPlayerCombat(
     }
   }
 
-  // If physics already started a roll this tick, immediately cancel any weapon swing
+  // React to physics.ts roll initiation (single source of truth in physics.ts — NO duplicate roll-start here!)
   if (player.actionState === 'roll') {
     if (player.attackPhase !== 'none') {
       player.attackPhase = 'none';
@@ -1666,37 +2320,8 @@ export function stepPlayerCombat(
     }
     player.parryWindowTicks = 0;
     player.shieldBlocking = false;
+    player.shieldHoldTicks = 0;
     player.afterRollCritTicks = Math.max(player.afterRollCritTicks, 60);
-  }
-
-  // Instant Roll Cancel of weapon windup & recovery
-  if (
-    (input.rollPressed || player.queuedInput === 'roll') &&
-    player.rollCooldownTicks <= 0 &&
-    player.actionState !== 'roll'
-  ) {
-    player.attackPhase = 'none';
-    player.attackPhaseTicks = 0;
-    player.attackHitIds = [];
-    player.parryWindowTicks = 0;
-    player.shieldBlocking = false;
-    player.actionState = 'roll';
-    player.rollTicks = 24;
-    player.iframeTicks = 21;
-    player.rollCooldownTicks = 15;
-    player.afterRollCritTicks = 60;
-    if (input.moveLeft && !input.moveRight) player.facing = -1;
-    else if (input.moveRight && !input.moveLeft) player.facing = 1;
-    player.vel.x = player.facing * 265;
-    player.queuedInput = 'none';
-    player.queuedInputTicks = 0;
-    state.events.push({
-      type: 'dodgeRoll',
-      x: player.pos.x,
-      y: player.pos.y,
-      facing: player.facing,
-    });
-    return;
   }
 
   // Instant Shield Parry Cancel of weapon windup & recovery
@@ -1717,6 +2342,16 @@ export function stepPlayerCombat(
     startParryAction(state, wantParrySlot, input, rng);
   }
 
+  // Track shield hold duration (first 12-16t auto-parries, >= 16t enters frontal-only Hold-to-Block!)
+  const holdingShield =
+    (input.weapon2Held && w2Def?.kind === 'shield') ||
+    (input.weapon1Held && w1Def?.kind === 'shield');
+  if (holdingShield && player.actionState !== 'roll' && player.healTicks <= 0) {
+    player.shieldHoldTicks = (player.shieldHoldTicks ?? 0) + 1;
+  } else {
+    player.shieldHoldTicks = 0;
+  }
+
   // Tick active Parry window & check overlapping parriable projectiles / active melee swings
   if (player.parryWindowTicks > 0) {
     if (!tryParryOverlappingThreats(state, rng) && player.parryWindowTicks > 0) {
@@ -1734,7 +2369,7 @@ export function stepPlayerCombat(
     }
   }
 
-  // Health Flask activation (heals 60% max HP per SPEC.md oracle) + full/empty feedback
+  // Health Flask activation (heals 60% max HP + clears 30 Malaise on 5BC) + full/empty feedback
   if (input.healPressed && player.actionState !== 'roll' && player.healTicks <= 0) {
     if (player.hp >= player.maxHp) {
       state.events.push({
@@ -1785,12 +2420,17 @@ export function stepPlayerCombat(
       player.hp = Math.min(player.maxHp, player.hp + healAmount);
       const actualHealed = player.hp - beforeHp;
       player.rallyHp = 0;
+      player.rallyLostAnchor = 0;
+      if (state.bossStemCells >= 5) {
+        player.malaise = Math.max(0, (player.malaise ?? 0) - 30);
+      }
       player.healTicks = 24;
       player.iframeTicks = Math.max(player.iframeTicks, 20);
       player.actionState = 'heal';
       player.attackPhase = 'none';
       player.attackPhaseTicks = 0;
       player.shieldBlocking = false;
+      player.shieldHoldTicks = 0;
       state.events.push({
         type: 'flaskDrink',
         x: player.pos.x,
@@ -1848,11 +2488,12 @@ export function stepPlayerCombat(
     activateSkill(state, 2, rng, col, input);
   }
 
-  // Do not run weapon attacks while rolling, parrying, or drinking flask
+  // Do not run weapon attacks while rolling, parrying, drinking flask, or dizzy/fall-stunned
   if (
     player.actionState === 'roll' ||
     player.parryWindowTicks > 0 ||
-    player.healTicks > 0
+    player.healTicks > 0 ||
+    (player.fallStunTicks ?? 0) > 0
   ) {
     player.shieldBlocking = false;
     return;
@@ -1900,7 +2541,7 @@ export function stepPlayerCombat(
     }
     const weaponDef = getWeapon(gear.defId);
     const stepIndex = player.comboStep % weaponDef.strikeChain.length;
-    const step = weaponDef.strikeChain[stepIndex];
+    const step = weaponDef.strikeChain[stepIndex]!;
 
     player.attackPhaseTicks -= 1;
 
@@ -1938,7 +2579,7 @@ export function stepPlayerCombat(
         if (weaponDef.ammoCapacity !== undefined && gear.ammo !== undefined) {
           gear.ammo = Math.max(0, gear.ammo - 1);
         }
-        fireRangedWeapon(state, weaponDef, gear, step, stepIndex, input, rng);
+        fireRangedWeapon(state, weaponDef, gear, step, stepIndex, input, rng, col);
       } else {
         executeMeleeActiveFrame(state, weaponDef, gear, step, stepIndex, rng, col);
       }
@@ -1963,12 +2604,10 @@ export function stepPlayerCombat(
     }
   }
 
-  // Hold-to-Block tracking when holding a shield outside active parry/roll/attack/heal
-  const holdingShield =
-    (input.weapon2Held && w2Def?.kind === 'shield') ||
-    (input.weapon1Held && w1Def?.kind === 'shield');
+  // Hold-to-Block activates strictly after shieldHoldTicks >= 16 (first 12-16t auto-parries!)
   player.shieldBlocking =
     Boolean(holdingShield) &&
+    (player.shieldHoldTicks ?? 0) >= 16 &&
     player.actionState !== 'attack' &&
     player.actionState !== 'heal' &&
     player.attackPhase === 'none' &&
@@ -1990,6 +2629,10 @@ export function activateSkill(
   const skillDef = getSkill(gear.defId);
   gear.cooldownTicks = skillDef.cooldownTicks;
   const scaledDmg = computeGearDamage(skillDef.basePower, gear, player.scrolls);
+
+  if (skillDef.id !== 'Tonic') {
+    player.stealthTicks = 0;
+  }
 
   // Face cursor direction for thrown/deployed/blink skills unless holding opposite direction
   if (
@@ -2014,7 +2657,7 @@ export function activateSkill(
       // Cap active player turrets of same kind to 1 (replace oldest)
       const kind = skillDef.id === 'SinewSlicer' ? 'sinew' : 'heavy';
       for (let i = state.turrets.length - 1; i >= 0; i--) {
-        if (state.turrets[i].owner === 'player' && state.turrets[i].kind === kind) {
+        if (state.turrets[i]!.owner === 'player' && state.turrets[i]!.kind === kind) {
           state.turrets.splice(i, 1);
         }
       }
@@ -2075,6 +2718,7 @@ export function activateSkill(
     case 'IceGrenade':
     case 'ClusterGrenade': {
       const isCluster = skillDef.id === 'ClusterGrenade';
+      const isInfantry = skillDef.id === 'InfantryGrenade';
       const color =
         skillDef.id === 'FireGrenade'
           ? '#ff6b2b'
@@ -2109,12 +2753,14 @@ export function activateSkill(
         isCrit: false,
         pierceLeft: 0,
         gravity: 620,
-        ttlTicks: 54,
-        maxTtlTicks: 54,
+        ttlTicks: isInfantry ? 68 : 54,
+        maxTtlTicks: isInfantry ? 68 : 54,
         color,
         applyStatus: skillDef.applyStatus,
         explosionRadius: skillDef.radius,
         parriable: false,
+        bouncesLeft: isInfantry ? 1 : 0,
+        floorFuseTicks: isInfantry ? 18 : undefined,
         hitIds: [],
         affixes: gear.affixes,
       });
@@ -2125,8 +2771,8 @@ export function activateSkill(
       let target: EnemyState | null = null;
       let bestDist = skillDef.radius;
       for (let i = 0; i < state.enemies.length; i++) {
-        const e = state.enemies[i];
-        if (e.state === 'dead' || e.hp <= 0) continue;
+        const e = state.enemies[i]!;
+        if (e.state === 'dead' || e.hp <= 0 || e.buried) continue;
         const d = Math.hypot(e.pos.x - player.pos.x, e.pos.y - player.pos.y);
         if (d < bestDist) {
           bestDist = d;
@@ -2147,6 +2793,11 @@ export function activateSkill(
           ? arena.lockedRightX - halfW
           : (state.tileGrid.width - 1) * TILE_SIZE - halfW;
 
+      // Empower the NEXT MELEE STRIKE of ANY weapon!
+      player.phaserBonusDamage = Math.max(10, Math.round(scaledDmg * 1.85));
+      player.phaserBuffTicks = 180;
+      player.afterRollCritTicks = Math.max(player.afterRollCritTicks, 90);
+
       if (target) {
         const behindX = Math.max(
           minBoundX,
@@ -2166,9 +2817,8 @@ export function activateSkill(
         player.prevPos.x = finalX;
         player.prevPos.y = target.pos.y;
         player.facing = target.pos.x >= player.pos.x ? 1 : -1;
-        player.afterRollCritTicks = Math.max(player.afterRollCritTicks, 90);
         player.iframeTicks = Math.max(player.iframeTicks, 15);
-        applyStatus(target.statusEffects, 'root', 90, 0, 0);
+        applyEnemyStatus(state, target, 'root', 90, 0, rng, col);
         damageEnemy(
           state,
           target,
@@ -2227,7 +2877,7 @@ export function activateSkill(
 
         const stepDistances = [8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 110];
         for (let k = 0; k < stepDistances.length; k++) {
-          const testX = fromX + player.facing * stepDistances[k];
+          const testX = fromX + player.facing * stepDistances[k]!;
           if (testX < minBoundX || testX > maxBoundX) break;
           const leadTx = Math.floor((testX + player.facing * halfW) / TILE_SIZE);
           const centerTx = Math.floor(testX / TILE_SIZE);
@@ -2244,7 +2894,6 @@ export function activateSkill(
 
         player.pos.x = destX;
         player.prevPos.x = destX;
-        player.afterRollCritTicks = Math.max(player.afterRollCritTicks, 90);
         player.iframeTicks = Math.max(player.iframeTicks, 12);
         gear.cooldownTicks = Math.round(skillDef.cooldownTicks * 0.5);
 
@@ -2304,7 +2953,7 @@ export function activateSkill(
     case 'WolfTrap': {
       // Replace prior player wolf traps before tossing twin fresh traps
       for (let i = state.turrets.length - 1; i >= 0; i--) {
-        if (state.turrets[i].owner === 'player' && state.turrets[i].kind === 'wolfTrap') {
+        if (state.turrets[i]!.owner === 'player' && state.turrets[i]!.kind === 'wolfTrap') {
           state.turrets.splice(i, 1);
         }
       }
@@ -2357,7 +3006,6 @@ export function activateSkill(
     }
 
     case 'WaveOfDenial': {
-      // Double shockwave ring + 14 cyan wind sparks + transient cyan light
       spawnParticle(state, player.pos.x, player.pos.y, 0, 0, skillDef.radius * 0.65, '#d4fbff', 12, 'ring', true, 0);
       spawnParticle(state, player.pos.x, player.pos.y, 0, 0, skillDef.radius, '#7cf0ff', 18, 'ring', true, 0);
       for (let s = 0; s < 14; s++) {
@@ -2389,16 +3037,36 @@ export function activateSkill(
       );
       state.screenShake = Math.max(state.screenShake, 5);
 
-      // Reflect all enemy projectiles within radius
+      // Smash all unbroken wooden doors within radius (stunning nearby enemies behind doors!)
+      for (let i = 0; i < state.doors.length; i++) {
+        const door = state.doors[i]!;
+        if (door.kind !== 'wood' || door.broken) continue;
+        if (Math.hypot(door.pos.x - player.pos.x, door.pos.y - player.pos.y) <= skillDef.radius) {
+          door.broken = true;
+          door.opened = true;
+          state.events.push({ type: 'doorSmash', x: door.pos.x, y: door.pos.y });
+          for (let j = 0; j < state.enemies.length; j++) {
+            const e = state.enemies[j]!;
+            if (e.state === 'dead' || e.hp <= 0 || e.isBoss) continue;
+            if (Math.hypot(e.pos.x - door.pos.x, e.pos.y - door.pos.y) <= 84) {
+              applyEnemyStatus(state, e, 'stun', 90, 0, rng, col);
+            }
+          }
+        }
+      }
+
+      // Reflect all enemy projectiles & ground bombs within radius
       for (let i = 0; i < state.projectiles.length; i++) {
-        const p = state.projectiles[i];
+        const p = state.projectiles[i]!;
         if (p.owner !== 'enemy') continue;
         if (Math.hypot(p.pos.x - player.pos.x, p.pos.y - player.pos.y) <= skillDef.radius) {
           p.owner = 'player';
           p.ownerUid = 0;
           const pushDir = p.pos.x >= player.pos.x ? 1 : -1;
           p.vel.x = Math.abs(p.vel.x) < 40 ? pushDir * 300 : -p.vel.x * 1.4;
-          p.vel.y = -p.vel.y * 0.6;
+          p.vel.y = -Math.abs(p.vel.y) * 0.6 - 60;
+          p.rollsOnFloor = false;
+          p.floorFuseTicks = undefined;
           p.damage = Math.max(scaledDmg, Math.round(p.damage * 2.0));
           p.isCrit = true;
           p.color = '#7cf0ff';
@@ -2420,10 +3088,11 @@ export function activateSkill(
           );
         }
       }
+
       // Hurl enemies violently away (triggering wall slams!)
       for (let i = 0; i < state.enemies.length; i++) {
-        const e = state.enemies[i];
-        if (e.state === 'dead' || e.hp <= 0) continue;
+        const e = state.enemies[i]!;
+        if (e.state === 'dead' || e.hp <= 0 || e.buried) continue;
         const dx = e.pos.x - player.pos.x;
         const dy = e.pos.y - player.pos.y;
         if (Math.hypot(dx, dy) <= skillDef.radius) {
@@ -2479,10 +3148,10 @@ export function activateSkill(
         'status'
       );
       for (let i = 0; i < state.enemies.length; i++) {
-        const e = state.enemies[i];
-        if (e.state === 'dead' || e.hp <= 0) continue;
+        const e = state.enemies[i]!;
+        if (e.state === 'dead' || e.hp <= 0 || e.buried) continue;
         if (Math.hypot(e.pos.x - player.pos.x, e.pos.y - player.pos.y) <= skillDef.radius) {
-          applyStatus(e.statusEffects, 'electrify', 150, getStatusDps(state, 'electrify'), 0);
+          applyEnemyStatus(state, e, 'electrify', 150, getStatusDps(state, 'electrify'), rng, col);
           damageEnemy(
             state,
             e,
@@ -2555,12 +3224,14 @@ export function activateSkill(
     }
 
     case 'Tonic': {
-      const heal = Math.max(10, Math.round(player.maxHp * 0.25));
-      player.hp = Math.min(player.maxHp, player.hp + heal);
-      player.rallyHp = 0;
+      // Authentic Dead Cells Tonic: Temporary Overheal Barrier (+35% max HP for 8s) + 35% DR + Speed + Status Purge!
+      const survBonus = 1 + Math.max(0, player.scrolls.survival - 1) * 0.04;
+      const barrierAmt = Math.max(15, Math.round(player.maxHp * 0.35 * survBonus));
+      player.tempShieldHp = barrierAmt;
+      player.tempShieldTicks = 480;
       clearNegativeStatuses(player.statusEffects);
-      applyStatus(player.statusEffects, 'shield', skillDef.durationTicks, 0, 0);
-      player.speedBuffTicks = Math.max(player.speedBuffTicks, 240);
+      player.speedBuffTicks = Math.max(player.speedBuffTicks, 300);
+
       spawnParticle(state, player.pos.x, player.pos.y - 4, 0, 0, 58, '#4dff9b', 20, 'ring', true, 0);
       for (let i = 0; i < 10; i++) {
         spawnParticle(
@@ -2599,13 +3270,54 @@ export function activateSkill(
         'text',
         true,
         0,
-        `TONIC +${heal}`
+        `SHIELD +${barrierAmt}`
       );
       break;
     }
   }
 
   return true;
+}
+
+function spawnBurningOilZone(
+  state: SimState,
+  x: number,
+  y: number,
+  width: number,
+  damage: number,
+  rng: RngAPI,
+  col: CollisionAPI
+): void {
+  const oilFloorY = findFloorY(state, x, y - 4, col);
+  const oilY = Math.abs(oilFloorY - y) <= 42 ? oilFloorY - 12 : y - 10;
+  state.hazards.push({
+    uid: state.nextUid++,
+    rect: {
+      x: x - width * 0.5,
+      y: oilY,
+      w: width,
+      h: 18,
+    },
+    kind: 'burningOil',
+    damage: Math.max(8, Math.round(damage)),
+    ttlTicks: 240,
+    owner: 'player',
+  });
+  for (let f = 0; f < 6; f++) {
+    spawnParticle(
+      state,
+      x + rng.rangeFloat(-width * 0.45, width * 0.45),
+      oilY + 8,
+      rng.rangeFloat(-18, 18),
+      rng.rangeFloat(-75, -30),
+      4.5,
+      f % 2 === 0 ? '#ff6b2b' : '#ffd152',
+      24,
+      'flame',
+      true,
+      -40
+    );
+  }
 }
 
 function detonateProjectile(
@@ -2633,7 +3345,6 @@ function detonateProjectile(
     element,
   });
 
-  // Expanding shockwave ring + 14 bright sparks/flames/ice shards + intense transient light!
   spawnParticle(state, proj.pos.x, proj.pos.y, 0, 0, radius, proj.color, 18, 'ring', true, 0);
   if (element === 'ice') {
     spawnParticle(state, proj.pos.x, proj.pos.y, 0, 0, radius * 0.65, '#c8f8ff', 14, 'ring', true, 0);
@@ -2688,7 +3399,7 @@ function detonateProjectile(
   );
   state.screenShake = Math.max(state.screenShake, element === 'cluster' ? 6 : 4.5);
 
-  // Cluster grenade splits into 5 juicy sub-bomblets
+  // Cluster grenade splits into bouncing sub-bomblets (5 player, 3 enemy Bombardier!)
   if (proj.kind === 'cluster') {
     const subCount = proj.owner === 'player' ? 5 : 3;
     const subTx = Math.floor(proj.pos.x / TILE_SIZE);
@@ -2709,72 +3420,56 @@ function detonateProjectile(
         isCrit: false,
         pierceLeft: 0,
         gravity: 640,
-        ttlTicks: 34,
-        maxTtlTicks: 34,
+        ttlTicks: proj.owner === 'player' ? 75 : 110,
+        maxTtlTicks: proj.owner === 'player' ? 75 : 110,
         color: proj.color,
         applyStatus: proj.applyStatus,
         explosionRadius: 42,
         parriable: proj.owner === 'enemy',
+        bouncesLeft: proj.owner === 'player' ? 2 : 1,
+        floorFuseTicks: proj.owner === 'player' ? 18 : 40,
         hitIds: [],
         affixes: proj.affixes,
       });
     }
   }
 
-  // Fire grenade leaves visible burning oil zone with flames
-  if (proj.owner === 'player' && proj.applyStatus === 'burn') {
-    const oilFloorY = findFloorY(state, proj.pos.x, proj.pos.y - 4, col);
-    const oilY = Math.abs(oilFloorY - proj.pos.y) <= 42 ? oilFloorY - 12 : proj.pos.y - 10;
-    const oilW = radius * 1.4;
-    state.hazards.push({
-      uid: state.nextUid++,
-      rect: {
-        x: proj.pos.x - oilW * 0.5,
-        y: oilY,
-        w: oilW,
-        h: 18,
-      },
-      kind: 'burningOil',
-      damage: Math.max(8, Math.round(proj.damage * 0.25)),
-      ttlTicks: 240,
-      owner: 'player',
-    });
-    for (let f = 0; f < 6; f++) {
-      spawnParticle(
-        state,
-        proj.pos.x + rng.rangeFloat(-oilW * 0.45, oilW * 0.45),
-        oilY + 8,
-        rng.rangeFloat(-18, 18),
-        rng.rangeFloat(-75, -30),
-        4.5,
-        f % 2 === 0 ? '#ff6b2b' : '#ffd152',
-        24,
-        'flame',
-        true,
-        -40
-      );
+  // Player heavy grenades also smash nearby wooden doors!
+  if (proj.owner === 'player' && (proj.kind === 'grenade' || proj.kind === 'cluster')) {
+    for (let d = 0; d < state.doors.length; d++) {
+      const door = state.doors[d]!;
+      if (door.kind !== 'wood' || door.broken) continue;
+      if (Math.hypot(door.pos.x - proj.pos.x, door.pos.y - proj.pos.y) <= radius) {
+        door.broken = true;
+        door.opened = true;
+        state.events.push({ type: 'doorSmash', x: door.pos.x, y: door.pos.y });
+      }
     }
   }
 
+  // Fire grenade leaves blazing floor fire zone (igniting any existing oil into burningOil!)
+  if (proj.owner === 'player' && proj.applyStatus === 'burn' && proj.kind !== 'fireball') {
+    spawnBurningOilZone(state, proj.pos.x, proj.pos.y, radius * 1.4, proj.damage * 0.25, rng, col);
+  }
+
   if (proj.owner === 'player') {
+    const spreadsOil = Boolean(
+      proj.affixes && (proj.affixes.includes('spread_oil') || proj.affixes.includes('apply_oil'))
+    );
     for (let i = 0; i < state.enemies.length; i++) {
-      const e = state.enemies[i];
-      if (e.state === 'dead' || e.hp <= 0) continue;
+      const e = state.enemies[i]!;
+      if (e.state === 'dead' || e.hp <= 0 || e.buried) continue;
       if (proj.kind === 'fireball' && proj.hitIds.includes(e.uid)) continue;
       if (Math.hypot(e.pos.x - proj.pos.x, e.pos.y - proj.pos.y) <= radius) {
         if (proj.applyStatus) {
-          const dur = proj.applyStatus === 'freeze' ? 150 : 210;
+          const dur = proj.applyStatus === 'freeze' ? 90 : 210;
           const dps =
             proj.applyStatus === 'burn' || proj.applyStatus === 'bleed' || proj.applyStatus === 'poison'
               ? getStatusDps(state, proj.applyStatus)
               : 0;
-          applyStatus(e.statusEffects, proj.applyStatus, dur, dps, 0);
-          if (proj.applyStatus === 'burn') {
+          applyEnemyStatus(state, e, proj.applyStatus, dur, dps, rng, col);
+          if (spreadsOil) {
             applyStatus(e.statusEffects, 'oil', 240, 0, 0);
-          }
-          if (proj.applyStatus === 'freeze') {
-            e.state = 'frozen';
-            e.stateTicks = Math.max(e.stateTicks, 120);
           }
         }
         const dir = e.pos.x >= proj.pos.x ? 1 : -1;
@@ -2782,11 +3477,28 @@ function detonateProjectile(
       }
     }
   } else {
+    damagePlayerTurretsInArea(state, proj.pos.x, proj.pos.y, radius * 2, radius * 2, proj.damage);
     const p = state.player;
     if (Math.hypot(p.pos.x - proj.pos.x, p.pos.y - proj.pos.y) <= radius) {
       if (!attemptShieldParry(state, proj.damage, null, proj, rng)) {
-        damagePlayer(state, proj.damage, 'Explosion', rng);
+        damagePlayer(state, proj.damage, 'Explosion', rng, false, {
+          attackerX: proj.pos.x,
+          unrollable: proj.unrollable,
+        });
       }
+    }
+  }
+}
+
+function refundMissedProjectileAmmo(state: SimState, proj: ProjectileState): void {
+  if (
+    proj.owner === 'player' &&
+    proj.sourceWeaponSlot !== undefined &&
+    proj.hitIds.length === 0
+  ) {
+    const gear = getWeaponGear(state, proj.sourceWeaponSlot);
+    if (gear && gear.maxAmmo !== undefined && gear.ammo !== undefined) {
+      gear.ammo = Math.min(gear.maxAmmo, gear.ammo + 1);
     }
   }
 }
@@ -2800,7 +3512,7 @@ export function stepProjectilesAndTurrets(
 
   // 1. Step Projectiles
   for (let i = state.projectiles.length - 1; i >= 0; i--) {
-    const proj = state.projectiles[i];
+    const proj = state.projectiles[i]!;
     proj.prevPos.x = proj.pos.x;
     proj.prevPos.y = proj.pos.y;
     proj.ttlTicks -= 1;
@@ -2811,37 +3523,163 @@ export function stepProjectilesAndTurrets(
 
     const nextX = proj.pos.x + proj.vel.x * FIXED_DT;
     const nextY = proj.pos.y + proj.vel.y * FIXED_DT;
-    const tx = Math.floor(nextX / TILE_SIZE);
-    const ty = Math.floor(nextY / TILE_SIZE);
+    const ignoresWalls =
+      Boolean(proj.piercesWalls) ||
+      proj.kind === 'laserBeam' ||
+      proj.kind === 'fallingSword';
 
-    // Shockwaves hug floor, laser beams & Mage360 bolts pierce thin walls, others collide
-    const ignoresWalls = proj.kind === 'laserBeam' || proj.kind === 'fallingSword';
-    const hitWall = !ignoresWalls && col.isSolidAt(state.tileGrid, tx, ty);
-
-    if (hitWall) {
-      if (proj.kind === 'grenade' || proj.kind === 'cluster') {
+    // Handle rolling cannonballs (Pirate Captain) & bouncing/floor-fuse bombs!
+    if (proj.rollsOnFloor) {
+      const wallTx = Math.floor((nextX + Math.sign(proj.vel.x || 1) * proj.radius) / TILE_SIZE);
+      const midTy = Math.floor(proj.pos.y / TILE_SIZE);
+      if (col.isSolidAt(state.tileGrid, wallTx, midTy)) {
         detonateProjectile(state, proj, rng, col);
         state.projectiles.splice(i, 1);
         continue;
-      } else if (proj.kind === 'shockwave') {
-        // Shockwave rides along floor, stops only on solid wall ahead
-        const wallAheadTx = Math.floor((proj.pos.x + Math.sign(proj.vel.x || 1) * 10) / TILE_SIZE);
-        const wallAheadTy = Math.floor((proj.pos.y - 6) / TILE_SIZE);
-        if (col.isSolidAt(state.tileGrid, wallAheadTx, wallAheadTy)) {
+      }
+      proj.pos.x = nextX;
+      const footTy = Math.floor((nextY + proj.radius) / TILE_SIZE);
+      const curTx = Math.floor(proj.pos.x / TILE_SIZE);
+      const hitFloor =
+        proj.vel.y >= 0 &&
+        (col.isSolidAt(state.tileGrid, curTx, footTy) ||
+          col.isOneWayAt(state.tileGrid, curTx, footTy));
+      if (hitFloor) {
+        proj.pos.y = footTy * TILE_SIZE - proj.radius;
+        proj.vel.y = 0;
+        const rollDir = Math.sign(proj.vel.x || 1);
+        proj.vel.x = rollDir * 220;
+      } else {
+        proj.pos.y = nextY;
+      }
+    } else if (
+      (proj.kind === 'grenade' || proj.kind === 'cluster') &&
+      ((proj.bouncesLeft ?? 0) > 0 || proj.floorFuseTicks !== undefined)
+    ) {
+      // Axis-separated bounce & floor-rest fuse behavior!
+      const txNextX = Math.floor((nextX + Math.sign(proj.vel.x || 1) * proj.radius) / TILE_SIZE);
+      const tyCur = Math.floor(proj.pos.y / TILE_SIZE);
+      if (col.isSolidAt(state.tileGrid, txNextX, tyCur)) {
+        proj.vel.x = -proj.vel.x * 0.5;
+      } else {
+        proj.pos.x = nextX;
+      }
+
+      const txCur = Math.floor(proj.pos.x / TILE_SIZE);
+      const tyNextY = Math.floor(
+        (nextY + (proj.vel.y >= 0 ? proj.radius : -proj.radius)) / TILE_SIZE
+      );
+      const hitFloor =
+        proj.vel.y >= 0 &&
+        (col.isSolidAt(state.tileGrid, txCur, tyNextY) ||
+          (col.isOneWayAt(state.tileGrid, txCur, tyNextY) &&
+            proj.pos.y + proj.radius <= tyNextY * TILE_SIZE + 4));
+      const hitCeil = proj.vel.y < 0 && col.isSolidAt(state.tileGrid, txCur, tyNextY);
+
+      if (hitFloor) {
+        proj.pos.y = tyNextY * TILE_SIZE - proj.radius;
+        if ((proj.bouncesLeft ?? 0) > 0) {
+          proj.bouncesLeft! -= 1;
+          proj.vel.y = -Math.abs(proj.vel.y) * 0.52;
+          proj.vel.x *= 0.72;
+          spawnParticle(state, proj.pos.x, proj.pos.y + 3, 0, -30, 2.5, proj.color, 8, 'spark', true, 160);
+        } else if (proj.floorFuseTicks !== undefined) {
+          proj.vel.y = 0;
+          proj.vel.x *= 0.76;
+          if (Math.abs(proj.vel.x) < 6) proj.vel.x = 0;
+          proj.floorFuseTicks -= 1;
+          // Pulsing visual fuse spark while resting parriable on floor
+          if (proj.floorFuseTicks % 6 === 0) {
+            spawnParticle(
+              state,
+              proj.pos.x,
+              proj.pos.y - 3,
+              rng.rangeFloat(-20, 20),
+              rng.rangeFloat(-45, -15),
+              3.2,
+              proj.floorFuseTicks < 16 ? '#ff3b3b' : '#ffe066',
+              10,
+              'spark',
+              true,
+              120
+            );
+          }
+          if (proj.floorFuseTicks <= 0) {
+            detonateProjectile(state, proj, rng, col);
+            state.projectiles.splice(i, 1);
+            continue;
+          }
+        } else {
+          detonateProjectile(state, proj, rng, col);
           state.projectiles.splice(i, 1);
           continue;
         }
-        proj.pos.x = nextX;
+      } else if (hitCeil) {
+        proj.vel.y = Math.abs(proj.vel.y) * 0.35;
       } else {
-        if (proj.explosionRadius) {
+        proj.pos.y = nextY;
+      }
+    } else {
+      const tx = Math.floor(nextX / TILE_SIZE);
+      const ty = Math.floor(nextY / TILE_SIZE);
+      const hitWall = !ignoresWalls && col.isSolidAt(state.tileGrid, tx, ty);
+
+      if (hitWall) {
+        if (proj.kind === 'grenade' || proj.kind === 'cluster') {
           detonateProjectile(state, proj, rng, col);
+          state.projectiles.splice(i, 1);
+          continue;
+        } else if (proj.kind === 'shockwave') {
+          const wallAheadTx = Math.floor((proj.pos.x + Math.sign(proj.vel.x || 1) * 10) / TILE_SIZE);
+          const wallAheadTy = Math.floor((proj.pos.y - 6) / TILE_SIZE);
+          if (col.isSolidAt(state.tileGrid, wallAheadTx, wallAheadTy)) {
+            state.projectiles.splice(i, 1);
+            continue;
+          }
+          proj.pos.x = nextX;
+        } else {
+          if (proj.explosionRadius) {
+            detonateProjectile(state, proj, rng, col);
+          }
+          refundMissedProjectileAmmo(state, proj);
+          state.projectiles.splice(i, 1);
+          continue;
         }
+      } else {
+        proj.pos.x = nextX;
+        proj.pos.y = nextY;
+      }
+    }
+
+    // Closed wooden doors block standard enemy projectiles (except piercesWalls Inquisitor bolts!)
+    if (proj.owner === 'enemy' && !ignoresWalls && proj.kind !== 'shockwave') {
+      let hitClosedDoor = false;
+      for (let d = 0; d < state.doors.length; d++) {
+        const door = state.doors[d]!;
+        if (door.kind !== 'wood' || door.broken || door.opened) continue;
+        if (
+          aabbOverlap(
+            proj.pos.x,
+            proj.pos.y,
+            proj.radius * 2,
+            proj.radius * 2,
+            door.pos.x,
+            door.pos.y,
+            door.width,
+            door.height
+          )
+        ) {
+          hitClosedDoor = true;
+          if (proj.kind === 'grenade' || proj.kind === 'cluster') {
+            detonateProjectile(state, proj, rng, col);
+          }
+          break;
+        }
+      }
+      if (hitClosedDoor) {
         state.projectiles.splice(i, 1);
         continue;
       }
-    } else {
-      proj.pos.x = nextX;
-      proj.pos.y = nextY;
     }
 
     // Trailing glowing embers while grenades are in flight!
@@ -2868,7 +3706,7 @@ export function stepProjectilesAndTurrets(
     if (proj.owner === 'player') {
       // Check enemy turrets (boss banners)
       for (let t = state.turrets.length - 1; t >= 0; t--) {
-        const tur = state.turrets[t];
+        const tur = state.turrets[t]!;
         if (tur.owner !== 'enemy') continue;
         if (Math.hypot(proj.pos.x - tur.pos.x, proj.pos.y - tur.pos.y) <= proj.radius + 14) {
           tur.hp -= proj.damage;
@@ -2885,8 +3723,8 @@ export function stepProjectilesAndTurrets(
       // Check enemies
       if (!consumed) {
         for (let j = 0; j < state.enemies.length; j++) {
-          const enemy = state.enemies[j];
-          if (enemy.state === 'dead' || enemy.hp <= 0) continue;
+          const enemy = state.enemies[j]!;
+          if (enemy.state === 'dead' || enemy.hp <= 0 || enemy.buried) continue;
           if (proj.hitIds.includes(enemy.uid)) continue;
 
           if (
@@ -2912,9 +3750,9 @@ export function stepProjectilesAndTurrets(
             // Match the player's ranged weapon for this projectile (skip turret projectiles)
             let projWeaponDef: WeaponDef | null = null;
             if (proj.ownerUid === 0) {
-              const primarySlot = player.activeWeaponSlot;
-              const secondarySlot: 1 | 2 = primarySlot === 1 ? 2 : 1;
-              const candidates = [getWeaponGear(state, primarySlot), getWeaponGear(state, secondarySlot)];
+              const slotPref = proj.sourceWeaponSlot ?? player.activeWeaponSlot;
+              const altSlot: 1 | 2 = slotPref === 1 ? 2 : 1;
+              const candidates = [getWeaponGear(state, slotPref), getWeaponGear(state, altSlot)];
               for (let c = 0; c < candidates.length; c++) {
                 const g = candidates[c];
                 if (!g) continue;
@@ -2926,17 +3764,30 @@ export function stepProjectilesAndTurrets(
               }
             }
 
+            // Lodge stuck arrow/knife inside hit enemy (once per shot, returned on death/parry/timeout!)
+            let lodgedHere = false;
+            if (
+              proj.sourceWeaponSlot !== undefined &&
+              proj.hitIds.length === 1 &&
+              (proj.kind === 'arrow' || proj.kind === 'iceArrow' || proj.kind === 'knife')
+            ) {
+              enemy.stuckArrows ??= [];
+              const stickTtl = proj.kind === 'knife' ? 180 : 300;
+              enemy.stuckArrows.push({ slot: proj.sourceWeaponSlot, ttlTicks: stickTtl });
+              lodgedHere = true;
+            }
+
+            const wasOiled = hasStatus(enemy.statusEffects, 'oil');
             let isCrit = proj.isCrit;
             if (!isCrit && projWeaponDef) {
-              const critStep = projWeaponDef.id === 'FastBow' ? player.comboStep : 0;
-              isCrit = evaluateCritCondition(state, projWeaponDef, critStep, enemy, col);
+              isCrit = evaluateCritCondition(state, projWeaponDef, 0, enemy, col);
             }
             const critMul = isCrit && !proj.isCrit ? projWeaponDef?.strikeChain[0]?.critMul ?? 2.0 : 1.0;
             const mutMult = getMutationDamageMultiplier(state, false, dist);
             const hitDmg = Math.round(proj.damage * mutMult * critMul);
 
-            applyWeaponAndAffixStatuses(state, enemy, proj.applyStatus, proj.affixes, false, true);
-            damageEnemy(
+            const hitWeaponId = projWeaponDef?.id ?? (proj.ownerUid === 0 ? 'ranged' : 'skill');
+            const damaged = damageEnemy(
               state,
               enemy,
               hitDmg,
@@ -2945,10 +3796,39 @@ export function stepProjectilesAndTurrets(
               Math.sign(proj.vel.x || 1) * 70,
               -20,
               rng,
-              projWeaponDef?.id ?? (proj.ownerUid === 0 ? 'ranged' : 'skill'),
+              hitWeaponId,
               proj.affixes,
               col
             );
+
+            if (!damaged && lodgedHere && enemy.stuckArrows && enemy.stuckArrows.length > 0) {
+              const popped = enemy.stuckArrows.pop();
+              if (popped) {
+                const g = getWeaponGear(state, popped.slot);
+                if (g && g.maxAmmo !== undefined && g.ammo !== undefined) {
+                  g.ammo = Math.min(g.maxAmmo, g.ammo + 1);
+                }
+              }
+            }
+
+            if (damaged && enemy.hp > 0) {
+              applyWeaponAndAffixStatuses(
+                state,
+                enemy,
+                proj.applyStatus,
+                proj.affixes,
+                false,
+                hitWeaponId,
+                0,
+                rng,
+                col
+              );
+            }
+
+            // Pyrotechnics hitting an oiled target ignites a burningOil floor pool beneath them!
+            if (proj.kind === 'fireball' && wasOiled) {
+              spawnBurningOilZone(state, enemy.pos.x, enemy.pos.y, 58, proj.damage * 0.35, rng, col);
+            }
 
             if (proj.explosionRadius) {
               detonateProjectile(state, proj, rng, col);
@@ -2983,20 +3863,70 @@ export function stepProjectilesAndTurrets(
         }
 
         if (proj.kind === 'hook') {
-          // TimeKeeper Grappling Hook pulls player toward boss!
+          // TimeKeeper Grappling Hook: reel player directly in + 24t root + immediate 12t telegraphed swordCombo slash!
           const owner = state.enemies.find((e) => e.uid === proj.ownerUid);
-          if (owner && owner.state !== 'dead') {
-            const pullDir = Math.sign(owner.pos.x - player.pos.x);
-            player.vel.x = pullDir * 310;
-            player.vel.y = -120;
+          if (owner && owner.state !== 'dead' && owner.hp > 0) {
+            const arena = state.bossArenaState;
+            const minX =
+              arena.active && arena.lockedRightX > arena.lockedLeftX
+                ? arena.lockedLeftX + player.width * 0.5
+                : TILE_SIZE + player.width * 0.5;
+            const maxX =
+              arena.active && arena.lockedRightX > arena.lockedLeftX
+                ? arena.lockedRightX - player.width * 0.5
+                : (state.tileGrid.width - 1) * TILE_SIZE - player.width * 0.5;
+            const reelX = Math.max(minX, Math.min(maxX, owner.pos.x + owner.facing * 26));
+            player.pos.x = reelX;
+            player.prevPos.x = reelX;
+            player.vel.x = 0;
+            player.vel.y = -40;
+            applyStatus(player.statusEffects, 'root', 24, 0, owner.uid);
+            // Force Time Keeper immediately into 12t telegraphed follow-up slash!
+            owner.facing = player.pos.x >= owner.pos.x ? 1 : -1;
+            owner.state = 'windup';
+            owner.bossAttackId = 'swordCombo';
+            owner.stateTicks = 12;
+            owner.telegraphTicks = 12;
+            owner.hitPlayerThisSwing = false;
+            state.events.push({
+              type: 'enemyTelegraph',
+              x: owner.pos.x,
+              y: owner.pos.y - owner.height * 0.55 - 10,
+              enemyUid: owner.uid,
+              unparriable: false,
+            });
           }
-          damagePlayer(state, proj.damage, 'Grappling Hook', rng);
+          damagePlayer(state, proj.damage, 'Grappling Hook', rng, false, {
+            attackerX: proj.pos.x,
+          });
           consumed = true;
         } else if (proj.kind === 'grenade' || proj.kind === 'cluster') {
-          detonateProjectile(state, proj, rng, col);
-          consumed = true;
+          // Fuse bombs (Worm death-eggs, Grenadier, Cannibal, HoTK flurry) wait for their floor fuse and remain parriable!
+          // Pirate Captain's rolling cannonball & non-fuse impact grenades detonate on contact.
+          if (proj.rollsOnFloor || proj.floorFuseTicks === undefined) {
+            detonateProjectile(state, proj, rng, col);
+            consumed = true;
+          }
         } else {
-          if (damagePlayer(state, proj.damage, proj.kind === 'acidSpit' ? 'Acid Spit' : 'Projectile', rng)) {
+          const isUnparriableShockwave = proj.kind === 'shockwave';
+          if (
+            damagePlayer(
+              state,
+              proj.damage,
+              proj.kind === 'acidSpit'
+                ? 'Acid Spit'
+                : isUnparriableShockwave
+                  ? 'Shockwave'
+                  : 'Projectile',
+              rng,
+              false,
+              {
+                attackerX: proj.pos.x,
+                unblockable: isUnparriableShockwave,
+                unrollable: proj.unrollable,
+              }
+            )
+          ) {
             if (proj.applyStatus) {
               applyStatus(player.statusEffects, proj.applyStatus, 180, 12, proj.ownerUid);
             }
@@ -3014,6 +3944,8 @@ export function stepProjectilesAndTurrets(
     if (proj.ttlTicks <= 0) {
       if (proj.kind === 'grenade' || proj.kind === 'cluster') {
         detonateProjectile(state, proj, rng, col);
+      } else {
+        refundMissedProjectileAmmo(state, proj);
       }
       state.projectiles.splice(i, 1);
     }
@@ -3021,16 +3953,26 @@ export function stepProjectilesAndTurrets(
 
   // 2. Step Turrets, Wolf Traps & Boss Banners
   for (let i = state.turrets.length - 1; i >= 0; i--) {
-    const turret = state.turrets[i];
+    const turret = state.turrets[i]!;
     turret.ttlTicks -= 1;
 
     if (turret.kind === 'bossBanner') {
-      // Sovereign Hand Explosive Banner: detonates when timer hits 0!
       if (turret.ttlTicks <= 0) {
+        state.events.push({
+          type: 'explosion',
+          x: turret.pos.x,
+          y: turret.pos.y,
+          radius: turret.range,
+          color: '#ff4757',
+          element: 'fire',
+        });
         spawnParticle(state, turret.pos.x, turret.pos.y, 0, 0, turret.range, '#ff4757', 24, 'ring', true, 0);
         state.screenShake = Math.max(state.screenShake, 8);
         if (Math.hypot(player.pos.x - turret.pos.x, player.pos.y - turret.pos.y) <= turret.range) {
-          damagePlayer(state, turret.damage, 'Explosive Banner', rng);
+          damagePlayer(state, turret.damage, 'Explosive Banner', rng, false, {
+            attackerX: turret.pos.x,
+            unblockable: true,
+          });
         }
         state.turrets.splice(i, 1);
       }
@@ -3060,17 +4002,12 @@ export function stepProjectilesAndTurrets(
     if (turret.kind === 'wolfTrap') {
       if (turret.rootedEnemyUid == null) {
         for (let j = 0; j < state.enemies.length; j++) {
-          const e = state.enemies[j];
-          if (e.state === 'dead' || e.hp <= 0) continue;
+          const e = state.enemies[j]!;
+          if (e.state === 'dead' || e.hp <= 0 || e.buried) continue;
           if (Math.hypot(e.pos.x - turret.pos.x, e.pos.y - turret.pos.y) <= turret.range) {
             turret.rootedEnemyUid = e.uid;
-            const rootDur = e.isBoss ? 150 : 300;
-            applyStatus(e.statusEffects, 'root', rootDur, 0, 0);
-            if (!e.isBoss) {
-              e.state = 'rooted';
-              e.stateTicks = rootDur;
-            }
-            // Crisp metallic jaw-snap sparks + gold ring + ROOTED! text + transient flash light
+            const baseRootDur = e.isBoss ? 150 : 300;
+            const applied = applyEnemyStatus(state, e, 'root', baseRootDur, 0, rng, col);
             spawnParticle(state, turret.pos.x, turret.pos.y, 0, 0, 32, '#ffd859', 16, 'ring', true, 0);
             for (let s = 0; s < 8; s++) {
               const ang = (s / 8) * Math.PI * 2;
@@ -3100,7 +4037,7 @@ export function stepProjectilesAndTurrets(
               'text',
               true,
               0,
-              'ROOTED!'
+              applied ? 'ROOTED!' : 'RESIST!'
             );
             spawnTransientLight(
               state,
@@ -3113,7 +4050,7 @@ export function stepProjectilesAndTurrets(
               'slash'
             );
             damageEnemy(state, e, turret.damage, false, 35, 0, 0, rng, 'skill', undefined, col);
-            turret.ttlTicks = Math.min(turret.ttlTicks, rootDur);
+            turret.ttlTicks = Math.min(turret.ttlTicks, baseRootDur);
             break;
           }
         }
@@ -3121,15 +4058,20 @@ export function stepProjectilesAndTurrets(
       continue;
     }
 
-    // Sinew Slicer & Heavy Turret firing logic
+    // Sinew Slicer & Heavy Turret: 320px player tether range!
+    const distToPlayer = Math.hypot(turret.pos.x - player.pos.x, turret.pos.y - player.pos.y);
+    if (distToPlayer > 320) {
+      continue;
+    }
+
     if (turret.fireCooldownTicks > 0) {
       turret.fireCooldownTicks -= 1;
     } else {
       let nearest: EnemyState | null = null;
       let bestDist = turret.range;
       for (let j = 0; j < state.enemies.length; j++) {
-        const e = state.enemies[j];
-        if (e.state === 'dead' || e.hp <= 0) continue;
+        const e = state.enemies[j]!;
+        if (e.state === 'dead' || e.hp <= 0 || e.buried) continue;
         const d = Math.hypot(e.pos.x - turret.pos.x, e.pos.y - turret.pos.y);
         if (d < bestDist && col.hasLineOfSight(state.tileGrid, turret.pos.x, turret.pos.y - 8, e.pos.x, e.pos.y)) {
           bestDist = d;
@@ -3167,7 +4109,6 @@ export function stepProjectilesAndTurrets(
           parriable: false,
           hitIds: [],
         });
-        // Bright turret muzzle sparks!
         for (let m = 0; m < 4; m++) {
           spawnParticle(
             state,
@@ -3189,7 +4130,7 @@ export function stepProjectilesAndTurrets(
 
   // 3. Step Dynamic Hazards (burningOil, toxicCloud, shockwaveZone)
   for (let i = state.hazards.length - 1; i >= 0; i--) {
-    const hz = state.hazards[i];
+    const hz = state.hazards[i]!;
     if (hz.ttlTicks > 0) {
       hz.ttlTicks -= 1;
       if (hz.ttlTicks === 0) {
@@ -3198,7 +4139,6 @@ export function stepProjectilesAndTurrets(
       }
     }
 
-    // Continuous visible flame particles over burningOil zones
     if (hz.kind === 'burningOil' && state.tick % 4 === 0) {
       spawnParticle(
         state,
@@ -3221,8 +4161,8 @@ export function stepProjectilesAndTurrets(
 
     if (hz.owner === 'player') {
       for (let j = 0; j < state.enemies.length; j++) {
-        const e = state.enemies[j];
-        if (e.state === 'dead' || e.hp <= 0) continue;
+        const e = state.enemies[j]!;
+        if (e.state === 'dead' || e.hp <= 0 || e.buried) continue;
         if (aabbOverlap(cx, cy, hz.rect.w, hz.rect.h, e.pos.x, e.pos.y, e.width, e.height)) {
           if (hz.kind === 'burningOil') {
             applyStatus(e.statusEffects, 'oil', 180, 0, 0);
@@ -3237,7 +4177,7 @@ export function stepProjectilesAndTurrets(
       if (aabbOverlap(cx, cy, hz.rect.w, hz.rect.h, player.pos.x, player.pos.y, player.width, player.height)) {
         const label =
           hz.kind === 'spikes' ? 'Spikes' : hz.kind === 'acid' ? 'Toxic Acid' : 'Hazard';
-        damagePlayer(state, hz.damage, label, rng);
+        damagePlayer(state, hz.damage, label, rng, false, { unblockable: true });
       }
     }
   }
