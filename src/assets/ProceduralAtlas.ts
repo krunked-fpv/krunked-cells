@@ -1,0 +1,2326 @@
+// =============================================================================
+// KRUNKED CELLS — PROCEDURAL PIXEL-ART ATLAS (ALBEDO + SOBEL NORMAL + EMISSIVE)
+// Generates three pixel-aligned 2048x1024 RGBA textures at startup with
+// sculpted heightfields -> tangent-space normal maps (Y-down world space) and
+// crisp emissive glow masks. Zero DOM dependencies required for getAtlasKeys().
+// =============================================================================
+
+export interface SpriteRegion {
+  key: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  u0: number;
+  v0: number;
+  u1: number;
+  v1: number;
+  pivotX: number;
+  pivotY: number;
+}
+
+export interface ProceduralAtlasData {
+  width: number;
+  height: number;
+  albedoPixels: Uint8Array;
+  normalPixels: Uint8Array;
+  emissivePixels: Uint8Array;
+  albedoCanvas: HTMLCanvasElement | null;
+  normalCanvas: HTMLCanvasElement | null;
+  emissiveCanvas: HTMLCanvasElement | null;
+  regions: Record<string, SpriteRegion>;
+  keys: string[];
+}
+
+export const TILESET_THEMES = [
+  'prison',
+  'promenade',
+  'sewer',
+  'ramparts',
+  'bridge',
+  'stilt',
+  'clock',
+  'castle',
+  'throne',
+  'passage',
+] as const;
+
+export type TilesetTheme = (typeof TILESET_THEMES)[number];
+
+export const ENEMY_ARCHETYPE_IDS = [
+  'Zombie',
+  'Archer',
+  'Grenader',
+  'Shield',
+  'Mage360',
+  'Runner',
+  'BatKamikaze',
+  'BatDasher',
+  'Worm',
+  'Protector',
+  'Scorpio',
+  'Comboter',
+  'Ninja',
+  'LeapingDuelyst',
+  'ClusterGrenader',
+  'PirateChief',
+  'CastleKnight',
+  'Lancer',
+] as const;
+
+export const BOSS_ARCHETYPE_IDS = ['Behemoth', 'TimeKeeper', 'KingsHand'] as const;
+
+export const WEAPON_ICON_IDS = [
+  'StartSword',
+  'QuickSword',
+  'DualDaggers',
+  'BackStabber',
+  'Bleeder',
+  'BroadSword',
+  'StunMace',
+  'SpeedBlade',
+  'ImpaleSpear',
+  'Rapier',
+  'Whip',
+  'CloseCombatBow',
+  'FastBow',
+  'FrostBow',
+  'ThrowingKnife',
+  'Fireball',
+  'StartShield',
+  'StunShield',
+  'BleedShield',
+  'ForceShield',
+] as const;
+
+export const SKILL_ICON_IDS = [
+  'SinewSlicer',
+  'HeavyTurret',
+  'InfantryGrenade',
+  'FireGrenade',
+  'IceGrenade',
+  'ClusterGrenade',
+  'Phaser',
+  'WolfTrap',
+  'WaveOfDenial',
+  'CorruptedPower',
+  'KnifeDance',
+  'Tonic',
+] as const;
+
+const ATLAS_W = 2048;
+const ATLAS_H = 1024;
+const PAD = 2;
+
+type RGBA = readonly [number, number, number, number];
+type RGB = readonly [number, number, number];
+
+// Deterministic integer hash for crisp pixel masonry grain & cracks
+function hash2(x: number, y: number, seed: number): number {
+  let n = Math.imul(x, 374761393) ^ Math.imul(y, 668265263) ^ Math.imul(seed, 1442695041);
+  n = Math.imul(n ^ (n >>> 13), 1274126177);
+  return ((n ^ (n >>> 16)) >>> 0) / 4294967295;
+}
+
+function clampByte(v: number): number {
+  return v < 0 ? 0 : v > 255 ? 255 : v | 0;
+}
+
+function hexRgb(hex: string): RGB {
+  const clean = hex.startsWith('#') ? hex.slice(1) : hex;
+  const n = parseInt(clean, 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+function mixRgb(a: RGB, b: RGB, t: number): RGB {
+  const k = t < 0 ? 0 : t > 1 ? 1 : t;
+  return [
+    clampByte(a[0] + (b[0] - a[0]) * k),
+    clampByte(a[1] + (b[1] - a[1]) * k),
+    clampByte(a[2] + (b[2] - a[2]) * k),
+  ];
+}
+
+function scaleRgb(c: RGB, mul: number): RGB {
+  return [clampByte(c[0] * mul), clampByte(c[1] * mul), clampByte(c[2] * mul)];
+}
+
+// =============================================================================
+// Atlas Canvas Surface + Sculpted Heightfield -> Tangent-Space Sobel Normals
+// =============================================================================
+
+class PixelAtlasBuilder {
+  readonly width = ATLAS_W;
+  readonly height = ATLAS_H;
+  readonly albedo = new Uint8Array(ATLAS_W * ATLAS_H * 4);
+  readonly normal = new Uint8Array(ATLAS_W * ATLAS_H * 4);
+  readonly emissive = new Uint8Array(ATLAS_W * ATLAS_H * 4);
+  private readonly heightMap = new Float32Array(ATLAS_W * ATLAS_H);
+  private readonly customNormalFlag = new Uint8Array(ATLAS_W * ATLAS_H);
+
+  readonly regions: Record<string, SpriteRegion> = {};
+  private cursorX = PAD;
+  private cursorY = PAD;
+  private rowH = 0;
+
+  // Current active region bounds for local drawing
+  private rx = 0;
+  private ry = 0;
+  private rw = 0;
+  private rh = 0;
+
+  constructor() {
+    // Initialize normal buffer to flat up (+Z = 255)
+    for (let i = 0; i < ATLAS_W * ATLAS_H; i++) {
+      const o = i * 4;
+      this.normal[o] = 128;
+      this.normal[o + 1] = 128;
+      this.normal[o + 2] = 255;
+      this.normal[o + 3] = 255;
+    }
+  }
+
+  alloc(key: string, w: number, h: number, pivotX = 0.5, pivotY = 1.0): SpriteRegion {
+    if (this.cursorX + w + PAD > this.width) {
+      this.cursorX = PAD;
+      this.cursorY += this.rowH + PAD;
+      this.rowH = 0;
+    }
+    if (this.cursorY + h + PAD > this.height) {
+      throw new Error(`ProceduralAtlas overflow placing ${key} (${w}x${h}) at y=${this.cursorY}`);
+    }
+    const x = this.cursorX;
+    const y = this.cursorY;
+    this.cursorX += w + PAD;
+    if (h > this.rowH) this.rowH = h;
+
+    const region: SpriteRegion = {
+      key,
+      x,
+      y,
+      w,
+      h,
+      u0: x / this.width,
+      v0: y / this.height,
+      u1: (x + w) / this.width,
+      v1: (y + h) / this.height,
+      pivotX,
+      pivotY,
+    };
+    this.regions[key] = region;
+    this.rx = x;
+    this.ry = y;
+    this.rw = w;
+    this.rh = h;
+    return region;
+  }
+
+  alias(aliasKey: string, existingKey: string): void {
+    const src = this.regions[existingKey];
+    if (src && !this.regions[aliasKey]) {
+      this.regions[aliasKey] = { ...src, key: aliasKey };
+    }
+  }
+
+  px(
+    lx: number,
+    ly: number,
+    r: number,
+    g: number,
+    b: number,
+    a = 255,
+    height = 0.5,
+    er = 0,
+    eg = 0,
+    eb = 0,
+    ea = 0
+  ): void {
+    const ix = lx | 0;
+    const iy = ly | 0;
+    if (ix < 0 || iy < 0 || ix >= this.rw || iy >= this.rh) return;
+    const gx = this.rx + ix;
+    const gy = this.ry + iy;
+    const idx = gy * this.width + gx;
+    const o = idx * 4;
+    if (a >= 255 || this.albedo[o + 3] === 0) {
+      this.albedo[o] = clampByte(r);
+      this.albedo[o + 1] = clampByte(g);
+      this.albedo[o + 2] = clampByte(b);
+      this.albedo[o + 3] = clampByte(a);
+    } else if (a > 0) {
+      const sa = a / 255;
+      const da = 1 - sa;
+      this.albedo[o] = clampByte(r * sa + this.albedo[o] * da);
+      this.albedo[o + 1] = clampByte(g * sa + this.albedo[o + 1] * da);
+      this.albedo[o + 2] = clampByte(b * sa + this.albedo[o + 2] * da);
+      this.albedo[o + 3] = clampByte(Math.min(255, this.albedo[o + 3] + a));
+    }
+    this.heightMap[idx] = height;
+    if (ea > 0) {
+      this.emissive[o] = clampByte(Math.max(this.emissive[o], er));
+      this.emissive[o + 1] = clampByte(Math.max(this.emissive[o + 1], eg));
+      this.emissive[o + 2] = clampByte(Math.max(this.emissive[o + 2], eb));
+      this.emissive[o + 3] = clampByte(Math.max(this.emissive[o + 3], ea));
+    }
+  }
+
+  pxRgb(lx: number, ly: number, rgb: RGB, height = 0.5, em?: RGB, emA = 0): void {
+    if (em && emA > 0) {
+      this.px(lx, ly, rgb[0], rgb[1], rgb[2], 255, height, em[0], em[1], em[2], emA);
+    } else {
+      this.px(lx, ly, rgb[0], rgb[1], rgb[2], 255, height);
+    }
+  }
+
+  setNormalDirect(lx: number, ly: number, nx: number, ny: number, nz: number): void {
+    const ix = lx | 0;
+    const iy = ly | 0;
+    if (ix < 0 || iy < 0 || ix >= this.rw || iy >= this.rh) return;
+    const gx = this.rx + ix;
+    const gy = this.ry + iy;
+    const idx = gy * this.width + gx;
+    const len = Math.hypot(nx, ny, nz) || 1;
+    const o = idx * 4;
+    this.normal[o] = clampByte(((nx / len) * 0.5 + 0.5) * 255);
+    this.normal[o + 1] = clampByte(((ny / len) * 0.5 + 0.5) * 255);
+    this.normal[o + 2] = clampByte(((nz / len) * 0.5 + 0.5) * 255);
+    this.normal[o + 3] = 255;
+    this.customNormalFlag[idx] = 1;
+  }
+
+  rect(
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    rgb: RGB,
+    height = 0.5,
+    bevel = 0,
+    em?: RGB,
+    emA = 0
+  ): void {
+    for (let dy = 0; dy < h; dy++) {
+      for (let dx = 0; dx < w; dx++) {
+        let hh = height;
+        let col = rgb;
+        if (bevel > 0) {
+          const ex = Math.min(dx, w - 1 - dx);
+          const ey = Math.min(dy, h - 1 - dy);
+          const edge = Math.min(ex, ey);
+          if (edge < bevel) {
+            hh = height * (0.45 + 0.55 * (edge / bevel));
+            if (dy < bevel || dx < bevel) {
+              col = scaleRgb(rgb, 1.14);
+            } else {
+              col = scaleRgb(rgb, 0.78);
+            }
+          }
+        }
+        this.pxRgb(x + dx, y + dy, col, hh, em, emA);
+      }
+    }
+  }
+
+  ellipse(
+    cx: number,
+    cy: number,
+    rx: number,
+    ry: number,
+    rgb: RGB,
+    baseHeight = 0.65,
+    domeScale = 0.35,
+    em?: RGB,
+    emA = 0,
+    outline?: RGB
+  ): void {
+    const x0 = Math.floor(cx - rx - 1);
+    const x1 = Math.ceil(cx + rx + 1);
+    const y0 = Math.floor(cy - ry - 1);
+    const y1 = Math.ceil(cy + ry + 1);
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        const nx = (x - cx) / Math.max(0.5, rx);
+        const ny = (y - cy) / Math.max(0.5, ry);
+        const d2 = nx * nx + ny * ny;
+        if (d2 <= 1.0) {
+          const dome = Math.sqrt(Math.max(0, 1 - d2));
+          // Slight pixel shading from upper-left to make silhouette rich even before lighting
+          const shade = 0.84 + 0.24 * Math.max(0, -nx * 0.4 - ny * 0.65 + dome * 0.45);
+          const col = outline && d2 > 0.78 ? outline : scaleRgb(rgb, shade);
+          this.pxRgb(x, y, col, baseHeight + dome * domeScale, em, emA);
+        }
+      }
+    }
+  }
+
+  line(
+    x0: number,
+    y0: number,
+    x1: number,
+    y1: number,
+    rgb: RGB,
+    thickness = 1,
+    height = 0.75,
+    em?: RGB,
+    emA = 0
+  ): void {
+    const steps = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0), 1) * 2;
+    const rad = Math.max(0, (thickness - 1) * 0.5);
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const px = x0 + (x1 - x0) * t;
+      const py = y0 + (y1 - y0) * t;
+      if (rad <= 0.2) {
+        this.pxRgb(Math.round(px), Math.round(py), rgb, height, em, emA);
+      } else {
+        for (let oy = -Math.ceil(rad); oy <= Math.ceil(rad); oy++) {
+          for (let ox = -Math.ceil(rad); ox <= Math.ceil(rad); ox++) {
+            const dist = Math.hypot(ox, oy);
+            if (dist <= rad + 0.35) {
+              const hLocal = height + (1 - dist / (rad + 0.5)) * 0.15;
+              this.pxRgb(Math.round(px + ox), Math.round(py + oy), rgb, hLocal, em, emA);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Computes genuine 3x3 Sobel tangent-space normal maps strictly within the
+   * current region bounds.
+   * Convention (World Y-Down):
+   *   nx = -gx * strength   (left-facing edge => nx < 0, catches light on left)
+   *   ny = -gy * strength   (top-facing edge  => ny < 0, catches overhead light)
+   *   nz = +1.0             (outward toward viewer)
+   */
+  bakeRegionNormals(strength = 3.2, tileWrap = false): void {
+    const rx = this.rx;
+    const ry = this.ry;
+    const rw = this.rw;
+    const rh = this.rh;
+
+    const sampleH = (lx: number, ly: number): number => {
+      let sx = lx;
+      let sy = ly;
+      if (tileWrap) {
+        sx = ((lx % rw) + rw) % rw;
+        sy = ((ly % rh) + rh) % rh;
+      } else {
+        sx = lx < 0 ? 0 : lx >= rw ? rw - 1 : lx;
+        sy = ly < 0 ? 0 : ly >= rh ? rh - 1 : ly;
+      }
+      const idx = (ry + sy) * this.width + (rx + sx);
+      if (this.albedo[idx * 4 + 3] < 20) return 0.0;
+      return this.heightMap[idx];
+    };
+
+    for (let ly = 0; ly < rh; ly++) {
+      for (let lx = 0; lx < rw; lx++) {
+        const idx = (ry + ly) * this.width + (rx + lx);
+        if (this.customNormalFlag[idx] === 1) continue;
+        const o = idx * 4;
+        if (this.albedo[o + 3] < 10) {
+          this.normal[o] = 128;
+          this.normal[o + 1] = 128;
+          this.normal[o + 2] = 255;
+          this.normal[o + 3] = 255;
+          continue;
+        }
+        const tl = sampleH(lx - 1, ly - 1);
+        const tc = sampleH(lx, ly - 1);
+        const tr = sampleH(lx + 1, ly - 1);
+        const ml = sampleH(lx - 1, ly);
+        const mr = sampleH(lx + 1, ly);
+        const bl = sampleH(lx - 1, ly + 1);
+        const bc = sampleH(lx, ly + 1);
+        const br = sampleH(lx + 1, ly + 1);
+
+        const gx = (tr + 2 * mr + br) - (tl + 2 * ml + bl);
+        const gy = (bl + 2 * bc + br) - (tl + 2 * tc + tr);
+
+        let nx = -gx * strength;
+        let ny = -gy * strength;
+        let nz = 1.0;
+        const invLen = 1 / Math.hypot(nx, ny, nz);
+        nx *= invLen;
+        ny *= invLen;
+        nz *= invLen;
+
+        this.normal[o] = clampByte((nx * 0.5 + 0.5) * 255);
+        this.normal[o + 1] = clampByte((ny * 0.5 + 0.5) * 255);
+        this.normal[o + 2] = clampByte((nz * 0.5 + 0.5) * 255);
+        this.normal[o + 3] = 255;
+      }
+    }
+  }
+
+  /** Adds a crisp 1px dark silhouette outline around opaque sprite pixels. */
+  addOutline(outlineColor: RGB = [16, 14, 24], edgeHeight = 0.22): void {
+    const rw = this.rw;
+    const rh = this.rh;
+    const rx = this.rx;
+    const ry = this.ry;
+    const mask = new Uint8Array(rw * rh);
+
+    for (let y = 0; y < rh; y++) {
+      for (let x = 0; x < rw; x++) {
+        const a = this.albedo[((ry + y) * this.width + (rx + x)) * 4 + 3];
+        if (a > 120) mask[y * rw + x] = 1;
+      }
+    }
+
+    for (let y = 0; y < rh; y++) {
+      for (let x = 0; x < rw; x++) {
+        if (mask[y * rw + x] === 1) continue;
+        const neighbor =
+          (x > 0 && mask[y * rw + (x - 1)] === 1) ||
+          (x < rw - 1 && mask[y * rw + (x + 1)] === 1) ||
+          (y > 0 && mask[(y - 1) * rw + x] === 1) ||
+          (y < rh - 1 && mask[(y + 1) * rw + x] === 1);
+        if (neighbor) {
+          this.pxRgb(x, y, outlineColor, edgeHeight);
+        }
+      }
+    }
+  }
+}
+
+// =============================================================================
+// Biome Tileset Palettes (Rich Medieval / Gothic / Toxic / Brass / Royal Art)
+// =============================================================================
+
+interface TilesetPalette {
+  stoneBase: RGB;
+  stoneHi: RGB;
+  stoneDark: RGB;
+  mortar: RGB;
+  trimTop: RGB;
+  trimAccent: RGB;
+  wood: RGB;
+  woodHi: RGB;
+  bgStone: RGB;
+  bgAccent: RGB;
+  glow: RGB;
+  style: 'masonry' | 'moss' | 'pipe' | 'wood' | 'brass' | 'marble';
+}
+
+const TILESET_PALETTES: Record<TilesetTheme, TilesetPalette> = {
+  prison: {
+    stoneBase: hexRgb('#4c546e'),
+    stoneHi: hexRgb('#737fa0'),
+    stoneDark: hexRgb('#2a3044'),
+    mortar: hexRgb('#141826'),
+    trimTop: hexRgb('#8794b8'),
+    trimAccent: hexRgb('#3f8f7a'),
+    wood: hexRgb('#734d34'),
+    woodHi: hexRgb('#a3714d'),
+    bgStone: hexRgb('#252a3d'),
+    bgAccent: hexRgb('#39415e'),
+    glow: hexRgb('#4de8ff'),
+    style: 'masonry',
+  },
+  promenade: {
+    stoneBase: hexRgb('#5c6368'),
+    stoneHi: hexRgb('#858f94'),
+    stoneDark: hexRgb('#323a3f'),
+    mortar: hexRgb('#191f24'),
+    trimTop: hexRgb('#3c8a57'),
+    trimAccent: hexRgb('#62b872'),
+    wood: hexRgb('#6e4e38'),
+    woodHi: hexRgb('#997154'),
+    bgStone: hexRgb('#2a3238'),
+    bgAccent: hexRgb('#3b4e4a'),
+    glow: hexRgb('#ffcf54'),
+    style: 'moss',
+  },
+  sewer: {
+    stoneBase: hexRgb('#475948'),
+    stoneHi: hexRgb('#6f8569'),
+    stoneDark: hexRgb('#243326'),
+    mortar: hexRgb('#111a13'),
+    trimTop: hexRgb('#5fa832'),
+    trimAccent: hexRgb('#94f24b'),
+    wood: hexRgb('#5c4c36'),
+    woodHi: hexRgb('#826d4f'),
+    bgStone: hexRgb('#1f2e22'),
+    bgAccent: hexRgb('#344d38'),
+    glow: hexRgb('#80ff38'),
+    style: 'pipe',
+  },
+  ramparts: {
+    stoneBase: hexRgb('#756159'),
+    stoneHi: hexRgb('#a88c80'),
+    stoneDark: hexRgb('#42332e'),
+    mortar: hexRgb('#211816'),
+    trimTop: hexRgb('#c29c88'),
+    trimAccent: hexRgb('#e07c53'),
+    wood: hexRgb('#784c32'),
+    woodHi: hexRgb('#ab704c'),
+    bgStone: hexRgb('#362928'),
+    bgAccent: hexRgb('#543f3c'),
+    glow: hexRgb('#ff9e44'),
+    style: 'masonry',
+  },
+  bridge: {
+    stoneBase: hexRgb('#454c66'),
+    stoneHi: hexRgb('#6f799e'),
+    stoneDark: hexRgb('#23283d'),
+    mortar: hexRgb('#121524'),
+    trimTop: hexRgb('#7f8eb8'),
+    trimAccent: hexRgb('#d4533b'),
+    wood: hexRgb('#5c4034'),
+    woodHi: hexRgb('#876150'),
+    bgStone: hexRgb('#1e2236'),
+    bgAccent: hexRgb('#313a59'),
+    glow: hexRgb('#ff5733'),
+    style: 'masonry',
+  },
+  stilt: {
+    stoneBase: hexRgb('#5e574e'),
+    stoneHi: hexRgb('#877e71'),
+    stoneDark: hexRgb('#36312c'),
+    mortar: hexRgb('#1a1714'),
+    trimTop: hexRgb('#876342'),
+    trimAccent: hexRgb('#52997e'),
+    wood: hexRgb('#7d5536'),
+    woodHi: hexRgb('#b07d54'),
+    bgStone: hexRgb('#2b2926'),
+    bgAccent: hexRgb('#474038'),
+    glow: hexRgb('#ffbe4f'),
+    style: 'wood',
+  },
+  clock: {
+    stoneBase: hexRgb('#5c4654'),
+    stoneHi: hexRgb('#8c6c7f'),
+    stoneDark: hexRgb('#30222c'),
+    mortar: hexRgb('#1a1017'),
+    trimTop: hexRgb('#cfa04a'),
+    trimAccent: hexRgb('#ffe082'),
+    wood: hexRgb('#734636'),
+    woodHi: hexRgb('#a86c54'),
+    bgStone: hexRgb('#2e1c28'),
+    bgAccent: hexRgb('#593b47'),
+    glow: hexRgb('#52f2e2'),
+    style: 'brass',
+  },
+  castle: {
+    stoneBase: hexRgb('#b5a998'),
+    stoneHi: hexRgb('#e3d7c3'),
+    stoneDark: hexRgb('#6e655c'),
+    mortar: hexRgb('#36302d'),
+    trimTop: hexRgb('#b82e3d'),
+    trimAccent: hexRgb('#f2c15a'),
+    wood: hexRgb('#825038'),
+    woodHi: hexRgb('#b87856'),
+    bgStone: hexRgb('#4f4a52'),
+    bgAccent: hexRgb('#7d6c6e'),
+    glow: hexRgb('#ffd269'),
+    style: 'marble',
+  },
+  throne: {
+    stoneBase: hexRgb('#7c879e'),
+    stoneHi: hexRgb('#b3c0db'),
+    stoneDark: hexRgb('#424a5e'),
+    mortar: hexRgb('#1f2433'),
+    trimTop: hexRgb('#d9b04c'),
+    trimAccent: hexRgb('#6ad2ff'),
+    wood: hexRgb('#694a3a'),
+    woodHi: hexRgb('#966d56'),
+    bgStone: hexRgb('#2c344a'),
+    bgAccent: hexRgb('#4d5a7a'),
+    glow: hexRgb('#6ad2ff'),
+    style: 'marble',
+  },
+  passage: {
+    stoneBase: hexRgb('#5c4957'),
+    stoneHi: hexRgb('#876e80'),
+    stoneDark: hexRgb('#30252e'),
+    mortar: hexRgb('#181117'),
+    trimTop: hexRgb('#967385'),
+    trimAccent: hexRgb('#ff9f43'),
+    wood: hexRgb('#7a5036'),
+    woodHi: hexRgb('#ad7653'),
+    bgStone: hexRgb('#291d26'),
+    bgAccent: hexRgb('#473242'),
+    glow: hexRgb('#ffaa44'),
+    style: 'masonry',
+  },
+};
+
+// =============================================================================
+// Tileset Baking (Sculpted Beveled Bricks, Moss, Pipes, Brass, Marble)
+// =============================================================================
+
+function paintBrickTile(
+  b: PixelAtlasBuilder,
+  pal: TilesetPalette,
+  seed: number,
+  variant: 'top' | 'mid' | 'deep' | 'var'
+): void {
+  const S = 24;
+  // Brick rows: 3 rows of 8px each with staggered mortar joints
+  const rowH = 8;
+  for (let y = 0; y < S; y++) {
+    const row = Math.floor(y / rowH);
+    const ly = y - row * rowH;
+    const offset = row % 2 === 0 ? 0 : 6;
+    const brickW = 12;
+
+    for (let x = 0; x < S; x++) {
+      const shiftedX = (x + offset) % S;
+      const colIdx = Math.floor(shiftedX / brickW);
+      const lx = shiftedX - colIdx * brickW;
+
+      const brickSeed = seed * 31 + row * 17 + colIdx * 13;
+      const grain = hash2(x, y, brickSeed);
+      const brickTint = 0.90 + hash2(colIdx, row, seed) * 0.22;
+
+      const isMortar = ly === 0 || lx === 0;
+      const isTopBevel = ly === 1 || ly === 2;
+      const isBotBevel = ly === rowH - 1;
+      const isLeftBevel = lx === 1;
+      const isRightBevel = lx === brickW - 1;
+
+      let rgb: RGB;
+      let h: number;
+
+      if (isMortar) {
+        rgb = pal.mortar;
+        h = 0.08;
+      } else {
+        const baseMix = variant === 'deep' ? 0.55 : variant === 'var' ? 0.32 : 0.15;
+        let base = mixRgb(pal.stoneBase, pal.stoneDark, baseMix);
+        base = scaleRgb(base, brickTint * (0.94 + grain * 0.12));
+
+        // Sculpted stone dome heightfield (strong Sobel bevel response!)
+        const ex = Math.min(lx, brickW - 1 - lx);
+        const ey = Math.min(ly, rowH - 1 - ly);
+        const bevelFactor = Math.min(1, Math.min(ex, ey) / 2.5);
+        h = 0.35 + bevelFactor * 0.58 + (grain - 0.5) * 0.08;
+
+        if (isTopBevel || isLeftBevel) {
+          rgb = mixRgb(base, pal.stoneHi, isTopBevel ? 0.42 : 0.25);
+        } else if (isBotBevel || isRightBevel) {
+          rgb = mixRgb(base, pal.stoneDark, 0.48);
+        } else {
+          rgb = base;
+        }
+
+        // Style-specific details
+        if (pal.style === 'brass' && row === 1 && (lx === 2 || lx === brickW - 2) && ly === 4) {
+          // Brass rivets
+          rgb = pal.trimTop;
+          h = 0.98;
+        } else if (pal.style === 'marble' && grain > 0.84) {
+          // Subtle pale marble veining
+          rgb = mixRgb(rgb, pal.stoneHi, 0.35);
+        } else if (pal.style === 'wood') {
+          // Horizontal wood plank grain
+          const woodWave = Math.sin(x * 0.45 + row * 2.1) * 0.5 + 0.5;
+          rgb = mixRgb(pal.wood, pal.woodHi, woodWave * 0.38);
+          if (ly === 0 || ly === 4) {
+            rgb = pal.mortar;
+            h = 0.12;
+          }
+        }
+
+        // Variant cracks / weathered chips
+        if (variant === 'var' && ((x + y * 2) % 13 === 0) && grain > 0.45) {
+          rgb = pal.mortar;
+          h = 0.14;
+        }
+      }
+
+      // Top floor lip / moss / carpet / brass trim
+      if (variant === 'top' && y < 5) {
+        if (pal.style === 'moss') {
+          const drape = 2 + Math.floor(hash2(x, 0, seed + 7) * 3.2);
+          if (y < drape) {
+            rgb = y === 0 ? pal.trimAccent : pal.trimTop;
+            h = 0.88 - y * 0.06;
+          }
+        } else if (pal.style === 'pipe') {
+          if (y < 3) {
+            rgb = y === 0 ? pal.trimAccent : pal.trimTop;
+            h = 0.92;
+            if (y === 0 && (x % 5 === 1)) {
+              b.pxRgb(x, y, pal.trimAccent, 0.95, pal.glow, 180);
+              continue;
+            }
+          }
+        } else {
+          if (y === 0) {
+            rgb = mixRgb(pal.trimTop, [255, 255, 255], 0.18);
+            h = 0.96;
+          } else if (y <= 2) {
+            rgb = pal.trimTop;
+            h = 0.88;
+          } else if (y === 3) {
+            rgb = pal.mortar;
+            h = 0.16;
+          }
+        }
+      }
+
+      b.pxRgb(x, y, rgb, h);
+    }
+  }
+  b.bakeRegionNormals(3.6, true);
+}
+
+function paintOneWayTile(b: PixelAtlasBuilder, pal: TilesetPalette): void {
+  const S = 24;
+  // Thick sculpted wooden/iron beam ledge at y=0..7 + diagonal brackets y=8..14
+  for (let y = 0; y < 8; y++) {
+    for (let x = 0; x < S; x++) {
+      const grain = hash2(x, y, 77);
+      const isBand = x === 3 || x === 4 || x === 19 || x === 20;
+      let col: RGB;
+      let h = 0.72;
+      if (isBand) {
+        col = y < 2 ? pal.stoneHi : pal.stoneDark;
+        h = 0.92;
+      } else if (y === 0) {
+        col = mixRgb(pal.woodHi, [255, 240, 210], 0.25);
+        h = 0.95;
+      } else if (y === 1 || y === 2) {
+        col = scaleRgb(pal.woodHi, 0.92 + grain * 0.14);
+        h = 0.86;
+      } else if (y <= 5) {
+        col = scaleRgb(pal.wood, 0.88 + grain * 0.16);
+        h = 0.74;
+      } else if (y === 6) {
+        col = scaleRgb(pal.wood, 0.55);
+        h = 0.42;
+      } else {
+        col = pal.mortar;
+        h = 0.18;
+      }
+      b.pxRgb(x, y, col, h);
+    }
+  }
+  // Support struts underneath
+  for (let i = 0; i < 6; i++) {
+    b.pxRgb(2 + i, 8 + i, pal.stoneDark, 0.65);
+    b.pxRgb(3 + i, 8 + i, pal.stoneBase, 0.75);
+    b.pxRgb(21 - i, 8 + i, pal.stoneDark, 0.65);
+    b.pxRgb(20 - i, 8 + i, pal.stoneBase, 0.75);
+  }
+  b.bakeRegionNormals(3.2, false);
+}
+
+function paintBgWallTile(b: PixelAtlasBuilder, pal: TilesetPalette, seed: number, kind: 'wall' | 'arch' | 'pillar'): void {
+  const S = 24;
+  if (kind === 'pillar') {
+    // Cylindrical fluted column! Direct cylindrical normal map for luscious moving torchlight!
+    for (let y = 0; y < S; y++) {
+      for (let x = 4; x < 20; x++) {
+        const u = ((x - 4) / 15) * 2 - 1; // -1..1
+        const flute = Math.sin((x - 4) * 1.45) * 0.12;
+        const nx = Math.max(-0.92, Math.min(0.92, u * 0.88 + flute));
+        const nz = Math.sqrt(Math.max(0.08, 1 - nx * nx));
+        const shade = 0.65 + nz * 0.45;
+        const isRing = y === 0 || y === 1 || y === 22 || y === 23;
+        const col = scaleRgb(isRing ? pal.stoneHi : pal.stoneBase, shade);
+        b.pxRgb(x, y, col, 0.7);
+        b.setNormalDirect(x, y, nx, isRing ? (y < 2 ? -0.3 : 0.3) : 0, nz);
+      }
+    }
+    return;
+  }
+
+  for (let y = 0; y < S; y++) {
+    const row = Math.floor(y / 6);
+    const ly = y - row * 6;
+    const offset = row % 2 === 0 ? 0 : 6;
+    for (let x = 0; x < S; x++) {
+      const sx = (x + offset) % S;
+      const lx = sx % 12;
+      const g = hash2(x, y, seed + 51);
+      const isSeam = ly === 0 || lx === 0;
+      let col = isSeam ? pal.mortar : scaleRgb(pal.bgStone, 0.88 + g * 0.22);
+      let h = isSeam ? 0.12 : 0.46 + g * 0.1;
+
+      if (kind === 'arch') {
+        const dx = (x - 11.5) / 8.5;
+        const dy = (y - 9.0) / 11.0;
+        const inArch = (y > 9 && Math.abs(x - 11.5) < 7.5) || (dx * dx + dy * dy < 1.0 && y <= 10);
+        const onRim =
+          !inArch &&
+          ((y > 8 && Math.abs(x - 11.5) < 9.5) || (dx * dx + dy * dy < 1.48 && y <= 10));
+        if (inArch) {
+          // Deep iron-grated alcove
+          const isBar = x === 8 || x === 12 || x === 16 || y === 12 || y === 18;
+          col = isBar ? pal.stoneDark : scaleRgb(pal.mortar, 0.65);
+          h = isBar ? 0.62 : 0.04;
+        } else if (onRim) {
+          col = pal.bgAccent;
+          h = 0.78;
+        }
+      }
+      b.pxRgb(x, y, col, h);
+    }
+  }
+  b.bakeRegionNormals(2.6, true);
+}
+
+function paintCrackedOrSecretTile(b: PixelAtlasBuilder, pal: TilesetPalette, seed: number, isSecret: boolean): void {
+  paintBrickTile(b, pal, seed + (isSecret ? 99 : 44), 'mid');
+  if (isSecret) {
+    // Faint glowing ancient glyph in center
+    const pts: Array<[number, number]> = [
+      [12, 6], [11, 7], [13, 7], [10, 9], [14, 9], [12, 11],
+      [9, 13], [15, 13], [12, 15], [12, 17],
+    ];
+    for (const [px, py] of pts) {
+      b.pxRgb(px, py, mixRgb(pal.stoneHi, pal.glow, 0.55), 0.3, pal.glow, 175);
+    }
+  } else {
+    // Deep diagonal fracture fissures with subtle amber/cyan crack glow
+    b.line(3, 2, 11, 11, pal.mortar, 2, 0.05);
+    b.line(11, 11, 20, 21, pal.mortar, 2, 0.05);
+    b.line(18, 4, 11, 11, pal.mortar, 1, 0.05);
+    b.line(11, 11, 5, 20, pal.mortar, 1, 0.05);
+    b.line(4, 3, 19, 20, pal.glow, 1, 0.12, pal.glow, 165);
+  }
+  b.bakeRegionNormals(3.4, false);
+}
+
+// =============================================================================
+// Universal Tiles, Props, Doors, Chests, Shrines & NPCs
+// =============================================================================
+
+function paintUniversalTiles(b: PixelAtlasBuilder): void {
+  // Ladder (24x24)
+  b.alloc('tile:ladder', 24, 24, 0.5, 0.5);
+  const railDark = hexRgb('#4a3122');
+  const railHi = hexRgb('#916344');
+  const iron = hexRgb('#737f94');
+  for (let y = 0; y < 24; y++) {
+    for (const rx of [4, 18]) {
+      b.pxRgb(rx, y, railDark, 0.55);
+      b.pxRgb(rx + 1, y, railHi, 0.88);
+      b.pxRgb(rx + 2, y, railDark, 0.55);
+    }
+  }
+  for (const ry of [4, 10, 16, 22]) {
+    for (let x = 5; x <= 18; x++) {
+      b.pxRgb(x, ry - 1, railHi, 0.85);
+      b.pxRgb(x, ry, railDark, 0.65);
+    }
+    b.pxRgb(5, ry - 1, iron, 0.95);
+    b.pxRgb(18, ry - 1, iron, 0.95);
+  }
+  b.bakeRegionNormals(3.0, false);
+
+  // Chain (24x24)
+  b.alloc('tile:chain', 24, 24, 0.5, 0.5);
+  const chDark = hexRgb('#373d4f');
+  const chMid = hexRgb('#68738f');
+  const chHi = hexRgb('#a8b5d4');
+  for (let link = 0; link < 4; link++) {
+    const cy = link * 6 + 3;
+    if (link % 2 === 0) {
+      for (let dy = -2; dy <= 2; dy++) {
+        b.pxRgb(10, cy + dy, dy === -2 ? chHi : chMid, 0.82);
+        b.pxRgb(13, cy + dy, dy === 2 ? chDark : chMid, 0.82);
+      }
+      b.pxRgb(11, cy - 2, chHi, 0.92);
+      b.pxRgb(12, cy - 2, chHi, 0.92);
+      b.pxRgb(11, cy + 2, chDark, 0.7);
+      b.pxRgb(12, cy + 2, chDark, 0.7);
+    } else {
+      for (let dy = -2; dy <= 2; dy++) {
+        b.pxRgb(11, cy + dy, chHi, 0.95);
+        b.pxRgb(12, cy + dy, chDark, 0.78);
+      }
+    }
+  }
+  b.bakeRegionNormals(3.2, false);
+
+  // Spikes (24x24)
+  b.alloc('tile:spikes', 24, 24, 0.5, 1.0);
+  const steelHi = hexRgb('#cfd8ea');
+  const steelMid = hexRgb('#7e8ba3');
+  const steelDark = hexRgb('#394154');
+  const crimson = hexRgb('#b82838');
+  for (let s = 0; s < 3; s++) {
+    const cx = s * 8 + 4;
+    for (let y = 6; y < 24; y++) {
+      const halfW = Math.floor(((y - 6) / 18) * 3.8);
+      for (let dx = -halfW; dx <= halfW; dx++) {
+        const isTip = y < 10;
+        const col = isTip ? crimson : dx < 0 ? steelHi : dx === 0 ? steelMid : steelDark;
+        const h = 0.95 - Math.abs(dx) * 0.18;
+        b.pxRgb(cx + dx, y, col, h);
+      }
+    }
+  }
+  b.bakeRegionNormals(3.6, false);
+
+  // Acid (2 animated frames, strongly emissive toxic green bubbles!)
+  for (let f = 0; f < 2; f++) {
+    b.alloc(`tile:acid_${f}`, 24, 24, 0.5, 0.5);
+    const acidDeep = hexRgb('#1f5e10');
+    const acidMid = hexRgb('#44b81a');
+    const acidBright = hexRgb('#a8ff4d');
+    for (let y = 0; y < 24; y++) {
+      for (let x = 0; x < 24; x++) {
+        const wave = Math.sin((x + f * 12) * 0.52) * 1.4;
+        if (y < 2 + wave) continue;
+        const nearTop = y < 6 + wave;
+        const col = nearTop ? acidBright : y < 12 ? acidMid : acidDeep;
+        const emA = nearTop ? 235 : 130;
+        b.pxRgb(x, y, col, nearTop ? 0.82 : 0.45, nearTop ? acidBright : acidMid, emA);
+      }
+    }
+    // Glowing rising bubbles
+    b.ellipse(6 + f * 7, 13 - f * 3, 2.2, 2.2, acidBright, 0.9, 0.1, acidBright, 240);
+    b.ellipse(17 - f * 5, 18 - f * 2, 1.8, 1.8, acidBright, 0.9, 0.1, acidBright, 220);
+    b.bakeRegionNormals(2.0, true);
+  }
+
+  // Water (2 animated frames)
+  for (let f = 0; f < 2; f++) {
+    b.alloc(`tile:water_${f}`, 24, 24, 0.5, 0.5);
+    const wDeep = hexRgb('#22396e');
+    const wMid = hexRgb('#3a65ad');
+    const wFoam = hexRgb('#a6dcff');
+    for (let y = 0; y < 24; y++) {
+      for (let x = 0; x < 24; x++) {
+        const wave = Math.sin((x + f * 12) * 0.48) * 1.3;
+        if (y < 2 + wave) continue;
+        const nearTop = y < 5 + wave;
+        const col = nearTop ? wFoam : y < 13 ? wMid : wDeep;
+        b.px(x, y, col[0], col[1], col[2], nearTop ? 225 : 185, nearTop ? 0.8 : 0.4, nearTop ? wFoam[0] : 0, nearTop ? wFoam[1] : 0, nearTop ? wFoam[2] : 0, nearTop ? 95 : 0);
+      }
+    }
+    b.bakeRegionNormals(1.8, true);
+  }
+}
+
+function paintPropsAndNpcs(b: PixelAtlasBuilder): void {
+  const ironDark = hexRgb('#2a2e3d');
+  const ironMid = hexRgb('#525a70');
+  const ironHi = hexRgb('#8d99b8');
+  const goldDark = hexRgb('#8a6220');
+  const goldMid = hexRgb('#d9a438');
+  const goldHi = hexRgb('#ffe885');
+  const flameRed = hexRgb('#ff4e1c');
+  const flameOrg = hexRgb('#ffa426');
+  const flameYel = hexRgb('#fff49c');
+
+  // Braziers (3 flame frames, 24x32)
+  for (let f = 0; f < 3; f++) {
+    b.alloc(`prop:brazier_${f}`, 24, 32, 0.5, 1.0);
+    // Iron bowl & pedestal
+    b.rect(5, 16, 14, 5, ironMid, 0.78, 1);
+    b.rect(7, 21, 10, 3, ironDark, 0.65);
+    b.rect(10, 24, 4, 6, ironMid, 0.72);
+    b.rect(6, 29, 12, 3, ironHi, 0.82, 1);
+    // Glowing coal bed
+    b.rect(7, 14, 10, 3, flameRed, 0.85, 0, flameRed, 235);
+    // Animated multi-layered flame
+    const sway = (f - 1) * 1.5;
+    b.ellipse(12 + sway * 0.5, 11, 5.2, 6.2, flameRed, 0.7, 0.2, flameRed, 245);
+    b.ellipse(12 + sway, 10, 3.6, 5.2, flameOrg, 0.8, 0.2, flameOrg, 255);
+    b.ellipse(12 + sway * 0.8, 11.5, 2.0, 3.0, flameYel, 0.9, 0.1, flameYel, 255);
+    // Rising spark pixel
+    b.pxRgb(11 + f * 2, 3 + (f % 2), flameYel, 0.9, flameYel, 255);
+    b.bakeRegionNormals(3.0, false);
+  }
+
+  // Wall Torches (3 flame frames, 16x24)
+  for (let f = 0; f < 3; f++) {
+    b.alloc(`prop:torch_${f}`, 16, 24, 0.5, 0.85);
+    b.rect(6, 12, 4, 10, hexRgb('#5c3d28'), 0.72, 1);
+    b.rect(5, 11, 6, 3, ironHi, 0.85);
+    const sway = (f - 1) * 1.1;
+    b.ellipse(8 + sway * 0.4, 8, 3.8, 4.8, flameRed, 0.75, 0.2, flameRed, 240);
+    b.ellipse(8 + sway, 7.5, 2.4, 3.6, flameOrg, 0.85, 0.15, flameOrg, 255);
+    b.ellipse(8 + sway * 0.6, 8.5, 1.3, 2.0, flameYel, 0.92, 0.08, flameYel, 255);
+    b.bakeRegionNormals(2.6, false);
+  }
+
+  // Gothic Banners (2 sway frames, 18x36)
+  for (let f = 0; f < 2; f++) {
+    b.alloc(`prop:banner_${f}`, 18, 36, 0.5, 0.0);
+    b.rect(1, 1, 16, 3, goldMid, 0.9, 1);
+    const crimson = hexRgb('#8f1d2c');
+    const crimsonHi = hexRgb('#c42d40');
+    for (let y = 4; y < 34; y++) {
+      const sway = Math.round(Math.sin(y * 0.22 + f * 1.4) * (y / 22));
+      const cut = y > 26 ? Math.max(0, y - 26) : 0;
+      for (let x = 3; x <= 14; x++) {
+        if (Math.abs(x - 8.5) < cut * 0.6) continue;
+        const fold = Math.sin((x + sway) * 0.7) * 0.5 + 0.5;
+        const isTrim = x === 3 || x === 14 || (y === 14 && x > 5 && x < 12);
+        const col = isTrim ? goldHi : mixRgb(crimson, crimsonHi, fold);
+        b.pxRgb(x + sway, y, col, 0.55 + fold * 0.35);
+      }
+    }
+    b.bakeRegionNormals(2.8, false);
+  }
+
+  // Hanging Cage (24x36)
+  b.alloc('prop:cage', 24, 36, 0.5, 0.0);
+  b.rect(11, 0, 2, 8, ironMid, 0.8);
+  b.rect(4, 8, 16, 3, ironHi, 0.88, 1);
+  b.rect(4, 31, 16, 3, ironHi, 0.88, 1);
+  for (const bx of [5, 9, 14, 18]) {
+    b.rect(bx, 11, 2, 20, ironMid, 0.82);
+  }
+  // Skull inside cage
+  b.ellipse(12, 27, 3.2, 3.2, hexRgb('#d9d2c1'), 0.8, 0.2);
+  b.pxRgb(11, 27, hexRgb('#1a141e'), 0.2);
+  b.pxRgb(13, 27, hexRgb('#1a141e'), 0.2);
+  b.bakeRegionNormals(3.0, false);
+
+  // Lore Skeleton (28x20)
+  b.alloc('prop:skeleton', 28, 20, 0.5, 1.0);
+  const bone = hexRgb('#d4cbb8');
+  const boneDark = hexRgb('#877e6e');
+  b.ellipse(9, 8, 3.6, 3.8, bone, 0.85, 0.15);
+  b.pxRgb(8, 8, hexRgb('#1c1420'), 0.1);
+  b.pxRgb(10, 8, hexRgb('#1c1420'), 0.1);
+  b.line(10, 12, 16, 17, bone, 2, 0.72);
+  b.line(12, 13, 22, 18, boneDark, 2, 0.65);
+  b.rect(18, 14, 6, 4, hexRgb('#f0deb4'), 0.82, 0, hexRgb('#ffd875'), 95); // lore note
+  b.bakeRegionNormals(2.8, false);
+
+  // Doors (wood, wood_open, gold, exit, boss)
+  const oak = hexRgb('#6e462c');
+  const oakHi = hexRgb('#9e6842');
+  b.alloc('prop:door_wood', 16, 48, 0.5, 1.0);
+  b.rect(2, 2, 12, 46, oak, 0.72, 2);
+  for (let x = 5; x <= 11; x += 3) b.line(x, 3, x, 46, hexRgb('#3d2517'), 1, 0.45);
+  b.rect(2, 10, 12, 3, ironHi, 0.92, 1);
+  b.rect(2, 34, 12, 3, ironHi, 0.92, 1);
+  b.rect(10, 22, 3, 4, goldHi, 0.95);
+  b.bakeRegionNormals(3.4, false);
+
+  b.alloc('prop:door_wood_open', 16, 48, 0.5, 1.0);
+  b.rect(1, 0, 3, 48, oakHi, 0.78, 1);
+  b.rect(12, 0, 3, 48, oak, 0.78, 1);
+  b.rect(1, 0, 14, 4, ironMid, 0.85, 1);
+  b.bakeRegionNormals(2.8, false);
+
+  b.alloc('prop:door_gold', 20, 52, 0.5, 1.0);
+  b.rect(2, 2, 16, 50, goldDark, 0.78, 2);
+  b.rect(4, 5, 12, 44, goldMid, 0.85, 1);
+  b.ellipse(10, 24, 4.2, 5.2, goldHi, 0.95, 0.05, hexRgb('#ffe875'), 210);
+  b.bakeRegionNormals(3.4, false);
+
+  b.alloc('prop:door_exit', 32, 56, 0.5, 1.0);
+  // Towering gothic stone archway with glowing cyan-violet mist portal
+  const portalCyan = hexRgb('#4ee8ff');
+  const portalDeep = hexRgb('#193366');
+  b.rect(2, 12, 28, 44, ironMid, 0.75, 2);
+  b.ellipse(16, 16, 14, 14, ironHi, 0.82, 0.15);
+  b.rect(7, 18, 18, 38, portalDeep, 0.25, 0, portalDeep, 160);
+  b.ellipse(16, 20, 9, 10, portalDeep, 0.25, 0.05, portalCyan, 190);
+  b.ellipse(16, 34, 6, 16, portalCyan, 0.3, 0.05, portalCyan, 245);
+  b.bakeRegionNormals(3.2, false);
+
+  b.alloc('prop:door_boss', 24, 56, 0.5, 1.0);
+  b.rect(2, 2, 20, 54, hexRgb('#2a1d2b'), 0.75, 2);
+  for (const bx of [5, 11, 17]) b.rect(bx, 4, 2, 50, ironHi, 0.9);
+  b.ellipse(12, 26, 5, 6, hexRgb('#ff3b3b'), 0.92, 0.08, hexRgb('#ff4422'), 235);
+  b.bakeRegionNormals(3.4, false);
+
+  // Treasure Chests (normal, cursed, boss — closed & open)
+  const paintChest = (key: string, w: number, h: number, body: RGB, trim: RGB, glow: RGB, open: boolean, cursed: boolean): void => {
+    b.alloc(key, w, h, 0.5, 1.0);
+    const topY = open ? 8 : 5;
+    b.rect(3, topY + 6, w - 6, h - topY - 7, body, 0.75, 2);
+    b.rect(2, topY, w - 4, 7, open ? scaleRgb(body, 0.7) : scaleRgb(body, 1.1), 0.85, 1);
+    b.rect(2, topY + 5, w - 4, 2, trim, 0.94);
+    b.rect(Math.floor(w / 2) - 2, topY + 4, 4, 5, trim, 0.98, 0, glow, open ? 240 : 140);
+    if (open) {
+      b.rect(5, topY + 2, w - 10, 4, glow, 0.9, 0, glow, 245);
+    }
+    if (cursed) {
+      // Glowing demonic eyes on cursed chest!
+      b.ellipse(w * 0.34, topY + 10, 2.2, 2.0, glow, 0.95, 0.05, glow, 255);
+      b.ellipse(w * 0.66, topY + 10, 2.2, 2.0, glow, 0.95, 0.05, glow, 255);
+    }
+    b.addOutline();
+    b.bakeRegionNormals(3.4, false);
+  };
+
+  paintChest('prop:chest_closed', 28, 22, oak, goldMid, goldHi, false, false);
+  paintChest('prop:chest_open', 28, 22, oak, goldMid, goldHi, true, false);
+  paintChest('prop:chest_cursed_closed', 30, 26, hexRgb('#2d1a38'), hexRgb('#75309e'), hexRgb('#ff3366'), false, true);
+  paintChest('prop:chest_cursed_open', 30, 26, hexRgb('#2d1a38'), hexRgb('#75309e'), hexRgb('#ff3366'), true, true);
+  paintChest('prop:chest_boss_closed', 34, 26, hexRgb('#6e2330'), goldHi, hexRgb('#ffe875'), false, false);
+  paintChest('prop:chest_boss_open', 34, 26, hexRgb('#6e2330'), goldHi, hexRgb('#ffe875'), true, false);
+
+  // Teleporter Rune Monolith (idle & active, 28x44)
+  for (const active of [false, true]) {
+    b.alloc(active ? 'prop:teleporter_active' : 'prop:teleporter_idle', 28, 44, 0.5, 1.0);
+    b.rect(6, 36, 16, 8, ironMid, 0.85, 2);
+    b.rect(8, 10, 12, 26, hexRgb('#353d54'), 0.78, 2);
+    b.ellipse(14, 10, 6, 7, hexRgb('#4a5473'), 0.82, 0.15);
+    const crys = active ? hexRgb('#52f2ff') : hexRgb('#7a55bd');
+    const emA = active ? 255 : 150;
+    // Floating rune crystal
+    b.ellipse(14, 20, 3.6, 7.2, crys, 0.95, 0.05, crys, emA);
+    b.pxRgb(14, 18, [255, 255, 255], 1.0, [255, 255, 255], emA);
+    b.addOutline();
+    b.bakeRegionNormals(3.2, false);
+  }
+
+  // Health Fountain (full & empty, 44x36)
+  for (const full of [true, false]) {
+    b.alloc(full ? 'prop:fountain_full' : 'prop:fountain_empty', 44, 36, 0.5, 1.0);
+    b.rect(6, 22, 32, 14, hexRgb('#67738a'), 0.82, 2);
+    b.rect(16, 8, 12, 16, hexRgb('#7a87a1'), 0.85, 2);
+    b.ellipse(22, 10, 8, 4, hexRgb('#95a3bd'), 0.9, 0.1);
+    if (full) {
+      const heal = hexRgb('#42f59b');
+      const healHi = hexRgb('#b8ffe0');
+      b.rect(19, 10, 6, 14, heal, 0.88, 0, heal, 235);
+      b.rect(9, 21, 26, 4, healHi, 0.92, 0, heal, 245);
+    }
+    b.addOutline();
+    b.bakeRegionNormals(3.2, false);
+  }
+
+  // Scroll Altar & Challenge Rift
+  b.alloc('prop:scroll_altar', 24, 34, 0.5, 1.0);
+  b.rect(5, 20, 14, 14, hexRgb('#69718a'), 0.82, 2);
+  b.rect(3, 18, 18, 4, hexRgb('#9aa5c4'), 0.9, 1);
+  b.rect(9, 6, 6, 9, hexRgb('#ffe8a3'), 0.92, 1, hexRgb('#ffd452'), 230);
+  b.addOutline();
+  b.bakeRegionNormals(3.0, false);
+
+  b.alloc('prop:challenge_rift', 28, 36, 0.5, 1.0);
+  const riftCol = hexRgb('#c44dff');
+  const riftCore = hexRgb('#ff8ce8');
+  b.ellipse(14, 20, 8, 13, riftCol, 0.85, 0.15, riftCol, 240);
+  b.ellipse(14, 20, 3.5, 8, riftCore, 0.95, 0.05, riftCore, 255);
+  b.bakeRegionNormals(2.4, false);
+
+  // Passage NPCs: Collector, Guillain, Blacksmith Forge
+  b.alloc('prop:npc_collector', 34, 44, 0.5, 1.0);
+  b.ellipse(16, 28, 10, 14, hexRgb('#2e334d'), 0.78, 0.22); // robe
+  b.ellipse(16, 11, 7, 8, hexRgb('#3d4363'), 0.86, 0.14); // deep hood
+  b.pxRgb(14, 12, hexRgb('#4ee8ff'), 0.95, hexRgb('#4ee8ff'), 255);
+  b.pxRgb(18, 12, hexRgb('#4ee8ff'), 0.95, hexRgb('#4ee8ff'), 255);
+  // Giant glowing cell syringe on back!
+  b.line(22, 6, 29, 28, hexRgb('#4ee8ff'), 4, 0.92, hexRgb('#4ee8ff'), 240);
+  b.line(21, 5, 23, 9, goldHi, 3, 0.95);
+  b.addOutline();
+  b.bakeRegionNormals(3.2, false);
+
+  b.alloc('prop:npc_guillain', 26, 32, 0.5, 1.0);
+  b.ellipse(13, 21, 8, 9, hexRgb('#3a4f45'), 0.78, 0.22);
+  b.ellipse(12, 10, 5.5, 5.5, hexRgb('#537364'), 0.86, 0.14);
+  b.pxRgb(14, 10, hexRgb('#62ff9e'), 0.95, hexRgb('#62ff9e'), 255);
+  // Glowing emerald mutation vial
+  b.ellipse(20, 19, 3.2, 4.0, hexRgb('#52ff91'), 0.92, 0.08, hexRgb('#52ff91'), 245);
+  b.addOutline();
+  b.bakeRegionNormals(3.0, false);
+
+  b.alloc('prop:npc_forge', 38, 40, 0.5, 1.0);
+  b.rect(4, 22, 16, 18, hexRgb('#474d5e'), 0.82, 2); // stone hearth
+  b.ellipse(12, 21, 6, 5, flameOrg, 0.9, 0.1, flameOrg, 250);
+  // Anvil + Blacksmith silhouette
+  b.rect(22, 29, 13, 5, ironHi, 0.92, 1);
+  b.rect(25, 34, 7, 6, ironDark, 0.85);
+  b.ellipse(28, 18, 6.5, 9, hexRgb('#693f32'), 0.82, 0.18);
+  b.ellipse(28, 8, 4.5, 4.5, hexRgb('#d9a882'), 0.88, 0.12);
+  b.addOutline();
+  b.bakeRegionNormals(3.2, false);
+}
+
+// =============================================================================
+// Prisoner (Hero) — Multi-Frame Hand-Crafted Pixel Art + Homunculus Flame Head
+// =============================================================================
+
+function paintHeroPose(
+  b: PixelAtlasBuilder,
+  key: string,
+  pose:
+    | 'idle'
+    | 'run'
+    | 'jump'
+    | 'fall'
+    | 'wall'
+    | 'roll'
+    | 'dive'
+    | 'attack'
+    | 'parry'
+    | 'heal'
+    | 'hurt'
+    | 'dead',
+  frame: number
+): void {
+  const W = 32;
+  const H = 38;
+  b.alloc(key, W, H, 0.5, 1.0);
+
+  const tunic = hexRgb('#2a364a');
+  const tunicHi = hexRgb('#445875');
+  const cloak = hexRgb('#3b2236');
+  const leather = hexRgb('#6e4832');
+  const leatherHi = hexRgb('#9e6d4d');
+  const scarfRed = hexRgb('#c72638');
+  const scarfHi = hexRgb('#f04152');
+  const steel = hexRgb('#bcc8de');
+  const cyanCollar = hexRgb('#4de8ff');
+  const greenFlask = hexRgb('#4aff9e');
+
+  if (pose === 'roll') {
+    const cy = 26;
+    const rot = frame * 2.1;
+    b.ellipse(16, cy, 9.5, 8.5, tunic, 0.72, 0.28);
+    b.ellipse(16 + Math.cos(rot) * 3, cy + Math.sin(rot) * 2, 6, 4.5, scarfRed, 0.85, 0.15);
+    b.ellipse(16 - Math.cos(rot) * 4, cy - Math.sin(rot) * 2, 3.5, 3.5, leatherHi, 0.9, 0.1);
+    b.ellipse(16 + Math.cos(rot + 1.4) * 5, cy + Math.sin(rot + 1.4) * 3, 2.8, 2.8, cyanCollar, 0.95, 0.05, cyanCollar, 235);
+    b.addOutline();
+    b.bakeRegionNormals(3.2, false);
+    return;
+  }
+
+  if (pose === 'dead') {
+    b.ellipse(16, 33, 12, 4.5, tunic, 0.65, 0.25);
+    b.ellipse(12, 32, 6, 3, scarfRed, 0.78, 0.15);
+    b.ellipse(22, 31, 3, 2.5, cyanCollar, 0.85, 0.05, cyanCollar, 140);
+    b.addOutline();
+    b.bakeRegionNormals(2.8, false);
+    return;
+  }
+
+  // Dynamic limb kinematics per pose
+  const bob = pose === 'idle' ? (frame % 2 === 0 ? 0 : 1) : pose === 'run' ? (frame % 2 === 0 ? -1 : 1) : 0;
+  const lean = pose === 'run' ? 2 : pose === 'attack' ? 3 : pose === 'hurt' ? -2 : pose === 'dive' ? 0 : 0;
+  const torsoX = 16 + lean;
+  const torsoY = 20 + bob;
+
+  // Legs
+  if (pose === 'run') {
+    const phase = (frame / 6) * Math.PI * 2;
+    const lx1 = torsoX + Math.sin(phase) * 7;
+    const ly1 = 35 - Math.max(0, Math.cos(phase) * 4);
+    const lx2 = torsoX - Math.sin(phase) * 7;
+    const ly2 = 35 - Math.max(0, -Math.cos(phase) * 4);
+    b.line(torsoX - 1, torsoY + 6, lx2, ly2, leather, 3, 0.68);
+    b.line(torsoX + 1, torsoY + 6, lx1, ly1, leatherHi, 3, 0.78);
+  } else if (pose === 'jump') {
+    b.line(torsoX - 2, torsoY + 5, torsoX - 5, torsoY + 13, leather, 3, 0.68);
+    b.line(torsoX + 2, torsoY + 5, torsoX + 5, torsoY + 11, leatherHi, 3, 0.78);
+  } else if (pose === 'fall') {
+    b.line(torsoX - 2, torsoY + 5, torsoX - 4, torsoY + 14, leather, 3, 0.68);
+    b.line(torsoX + 2, torsoY + 5, torsoX + 4, torsoY + 15, leatherHi, 3, 0.78);
+  } else if (pose === 'dive') {
+    b.line(torsoX - 2, torsoY + 5, torsoX - 3, 36, leatherHi, 3, 0.85);
+    b.line(torsoX + 2, torsoY + 5, torsoX + 3, 36, steel, 3, 0.92, cyanCollar, 180);
+  } else if (pose === 'wall') {
+    b.line(torsoX - 1, torsoY + 5, torsoX + 4, torsoY + 12, leatherHi, 3, 0.78);
+    b.line(torsoX - 2, torsoY + 6, torsoX + 3, torsoY + 16, leather, 3, 0.7);
+  } else {
+    const stance = pose === 'attack' ? 5 : 3;
+    b.line(torsoX - 2, torsoY + 6, torsoX - stance - 1, 36, leather, 3, 0.7);
+    b.line(torsoX + 2, torsoY + 6, torsoX + stance + 1, 36, leatherHi, 3, 0.78);
+  }
+
+  // Flowing back cloak hem
+  b.ellipse(torsoX - 3, torsoY + 4, 5.2, 6.8, cloak, 0.62, 0.18);
+
+  // Armored gothic torso + chest strap + belt
+  b.ellipse(torsoX, torsoY, 5.6, 7.2, tunic, 0.74, 0.24);
+  b.ellipse(torsoX + 1, torsoY - 1, 3.8, 5.2, tunicHi, 0.84, 0.16);
+  b.rect(torsoX - 4, torsoY + 3, 9, 2, leatherHi, 0.88);
+  b.pxRgb(torsoX + 1, torsoY + 3, hexRgb('#ffd452'), 0.95); // belt buckle
+
+  // Crimson scarf wrap around neck
+  b.ellipse(torsoX, torsoY - 6, 5.4, 2.8, scarfRed, 0.88, 0.12);
+  b.rect(torsoX - 4, torsoY - 7, 8, 2, scarfHi, 0.92);
+
+  // Glowing cyan homunculus neck collar ring (flame head draws dynamically above!)
+  b.rect(torsoX - 2, torsoY - 9, 5, 2, cyanCollar, 0.95, 0, cyanCollar, 220);
+
+  // Arms + action props
+  if (pose === 'attack') {
+    const swingAng = frame === 0 ? -0.45 : frame === 1 ? 0.1 : 0.4;
+    const ax = torsoX + 9;
+    const ay = torsoY - 2 + Math.round(swingAng * 8);
+    b.line(torsoX + 2, torsoY - 3, ax, ay, leatherHi, 3, 0.86);
+    // Gleaming curved blade held out
+    b.line(ax, ay, ax + 6, ay - 6 + frame * 5, steel, 2, 0.95, hexRgb('#d6ecff'), 120);
+  } else if (pose === 'parry') {
+    b.line(torsoX + 2, torsoY - 2, torsoX + 8, torsoY - 1, leatherHi, 3, 0.86);
+    b.rect(torsoX + 7, torsoY - 7, 4, 14, hexRgb('#d9a438'), 0.95, 1, hexRgb('#ffe885'), 160);
+  } else if (pose === 'heal') {
+    b.line(torsoX + 2, torsoY - 3, torsoX + 4, torsoY - 11, leatherHi, 2, 0.86);
+    b.ellipse(torsoX + 4, torsoY - 14, 3.0, 3.8, greenFlask, 0.95, 0.05, greenFlask, 255);
+  } else if (pose === 'wall') {
+    b.line(torsoX + 1, torsoY - 3, torsoX + 6, torsoY - 7, leatherHi, 3, 0.86);
+  } else {
+    const armSwing = pose === 'run' ? Math.cos((frame / 6) * Math.PI * 2) * 4 : 0;
+    b.line(torsoX + 1, torsoY - 2, torsoX + 4 + armSwing, torsoY + 4, leatherHi, 2.5, 0.84);
+    // Sheathed dagger/hilt silhouette at hip
+    b.line(torsoX - 4, torsoY + 3, torsoX - 8, torsoY + 6, steel, 1.5, 0.82);
+  }
+
+  b.addOutline();
+  b.bakeRegionNormals(3.3, false);
+}
+
+function paintHomunculusHeadFrames(b: PixelAtlasBuilder): void {
+  const smokeTeal = hexRgb('#1f6678');
+  const plasmaCyan = hexRgb('#38e8ff');
+  const flameAmber = hexRgb('#ff8c24');
+  const eyeGold = hexRgb('#fff7a8');
+
+  for (let f = 0; f < 4; f++) {
+    b.alloc(`hero:head_flame_${f}`, 20, 22, 0.5, 0.85);
+    const sway = Math.sin((f / 4) * Math.PI * 2) * 1.8;
+    // Outer smoky dark-teal plasma plume
+    b.ellipse(10 + sway * 0.6, 10, 6.2, 7.8, smokeTeal, 0.68, 0.22, smokeTeal, 175);
+    // Upper dancing flame tip
+    b.ellipse(10 + sway * 1.4, 5.5, 3.2, 4.8, plasmaCyan, 0.78, 0.16, plasmaCyan, 240);
+    // Warm amber-orange inner plasma blaze (iconic Dead Cells dual-tone homunculus fire!)
+    b.ellipse(10 + sway * 0.4, 12.5, 4.6, 5.4, flameAmber, 0.86, 0.14, flameAmber, 255);
+    // Incandescent bright glowing single eye
+    b.ellipse(11.5, 13, 2.1, 1.8, eyeGold, 0.98, 0.02, eyeGold, 255);
+    // Floating stray embers
+    b.pxRgb(8 + ((f * 3) % 6), 2 + (f % 2), flameAmber, 0.9, flameAmber, 255);
+    b.pxRgb(13 - ((f * 2) % 5), 4 + ((f + 1) % 2), plasmaCyan, 0.9, plasmaCyan, 255);
+    b.bakeRegionNormals(2.0, false);
+  }
+}
+
+// =============================================================================
+// 18 Distinct Enemy Archetypes (2 Frames Each)
+// =============================================================================
+
+interface EnemyVisualSpec {
+  id: string;
+  w: number;
+  h: number;
+  body: RGB;
+  accent: RGB;
+  armor: RGB;
+  eyeGlow: RGB;
+  style:
+    | 'zombie'
+    | 'archer'
+    | 'grenader'
+    | 'shield'
+    | 'mage'
+    | 'runner'
+    | 'bat'
+    | 'worm'
+    | 'protector'
+    | 'scorpio'
+    | 'knight'
+    | 'ninja'
+    | 'pirate'
+    | 'lancer';
+}
+
+const ENEMY_VISUALS: EnemyVisualSpec[] = [
+  { id: 'Zombie', w: 26, h: 30, body: hexRgb('#526e4c'), accent: hexRgb('#3d2f2b'), armor: hexRgb('#738f68'), eyeGlow: hexRgb('#b8ff4d'), style: 'zombie' },
+  { id: 'Archer', w: 26, h: 32, body: hexRgb('#404963'), accent: hexRgb('#875b3d'), armor: hexRgb('#c7c2b0'), eyeGlow: hexRgb('#ff4f4f'), style: 'archer' },
+  { id: 'Grenader', w: 28, h: 32, body: hexRgb('#7a2936'), accent: hexRgb('#403d4d'), armor: hexRgb('#b83b4a'), eyeGlow: hexRgb('#ff9b3d'), style: 'grenader' },
+  { id: 'Shield', w: 30, h: 32, body: hexRgb('#495066'), accent: hexRgb('#808ca8'), armor: hexRgb('#c9d4eb'), eyeGlow: hexRgb('#ffd452'), style: 'shield' },
+  { id: 'Mage360', w: 26, h: 34, body: hexRgb('#4d2b6e'), accent: hexRgb('#8e44c9'), armor: hexRgb('#cfa8ff'), eyeGlow: hexRgb('#52f2ff'), style: 'mage' },
+  { id: 'Runner', w: 26, h: 30, body: hexRgb('#382b3b'), accent: hexRgb('#bd2d3b'), armor: hexRgb('#69506b'), eyeGlow: hexRgb('#ff4040'), style: 'runner' },
+  { id: 'BatKamikaze', w: 24, h: 20, body: hexRgb('#3d6e35'), accent: hexRgb('#65b842'), armor: hexRgb('#9dff57'), eyeGlow: hexRgb('#c4ff4d'), style: 'bat' },
+  { id: 'BatDasher', w: 26, h: 20, body: hexRgb('#6e2348'), accent: hexRgb('#b53369'), armor: hexRgb('#e86495'), eyeGlow: hexRgb('#ffe052'), style: 'bat' },
+  { id: 'Worm', w: 30, h: 24, body: hexRgb('#5c7034'), accent: hexRgb('#91b842'), armor: hexRgb('#424f25'), eyeGlow: hexRgb('#a8ff3d'), style: 'worm' },
+  { id: 'Protector', w: 26, h: 34, body: hexRgb('#594c38'), accent: hexRgb('#cfa04a'), armor: hexRgb('#48a3b8'), eyeGlow: hexRgb('#52f2ff'), style: 'protector' },
+  { id: 'Scorpio', w: 32, h: 26, body: hexRgb('#5c334a'), accent: hexRgb('#8f4a6b'), armor: hexRgb('#361d2b'), eyeGlow: hexRgb('#8cff3d'), style: 'scorpio' },
+  { id: 'Comboter', w: 32, h: 36, body: hexRgb('#35394f'), accent: hexRgb('#8a2b36'), armor: hexRgb('#8f9cb8'), eyeGlow: hexRgb('#ff6242'), style: 'knight' },
+  { id: 'Ninja', w: 26, h: 32, body: hexRgb('#1f3845'), accent: hexRgb('#c42b3b'), armor: hexRgb('#4a7082'), eyeGlow: hexRgb('#ff4f5e'), style: 'ninja' },
+  { id: 'LeapingDuelyst', w: 28, h: 34, body: hexRgb('#4a2033'), accent: hexRgb('#d4374a'), armor: hexRgb('#a6b4cc'), eyeGlow: hexRgb('#ffcf4d'), style: 'ninja' },
+  { id: 'ClusterGrenader', w: 32, h: 34, body: hexRgb('#474c5c'), accent: hexRgb('#b5462a'), armor: hexRgb('#828ca3'), eyeGlow: hexRgb('#ff9233'), style: 'grenader' },
+  { id: 'PirateChief', w: 36, h: 40, body: hexRgb('#3b3242'), accent: hexRgb('#ad2d3b'), armor: hexRgb('#d9a438'), eyeGlow: hexRgb('#ffd452'), style: 'pirate' },
+  { id: 'CastleKnight', w: 38, h: 44, body: hexRgb('#c7bfb4'), accent: hexRgb('#b82838'), armor: hexRgb('#f0c85a'), eyeGlow: hexRgb('#62e1ff'), style: 'knight' },
+  { id: 'Lancer', w: 34, h: 36, body: hexRgb('#68748f'), accent: hexRgb('#2e62b5'), armor: hexRgb('#d4def2'), eyeGlow: hexRgb('#73d4ff'), style: 'lancer' },
+];
+
+function paintEnemyFrame(b: PixelAtlasBuilder, spec: EnemyVisualSpec, frame: number): void {
+  const { w, h, body, accent, armor, eyeGlow, style } = spec;
+  const cx = Math.floor(w * 0.5);
+  const atk = frame === 1;
+  const lunge = atk ? 3 : 0;
+
+  if (style === 'bat') {
+    const wingY = atk ? 4 : 13;
+    b.line(cx - 2, 10, 2, wingY, body, 3, 0.72);
+    b.line(cx + 2, 10, w - 3, wingY, body, 3, 0.72);
+    b.ellipse(cx, 11, 5.5, 5.0, accent, 0.84, 0.16, spec.id === 'BatKamikaze' ? eyeGlow : undefined, spec.id === 'BatKamikaze' ? 165 : 0);
+    b.pxRgb(cx + 2, 10, eyeGlow, 0.96, eyeGlow, 255);
+    b.pxRgb(cx + 4, 10, eyeGlow, 0.96, eyeGlow, 255);
+  } else if (style === 'worm') {
+    for (let seg = 0; seg < 4; seg++) {
+      const sx = 6 + seg * 6 + (atk && seg === 3 ? 2 : 0);
+      const sy = h - 7 - Math.sin(seg * 1.1 + frame) * 2.5;
+      b.ellipse(sx, sy, 4.5, 4.2, seg % 2 === 0 ? body : accent, 0.82, 0.18);
+    }
+    b.ellipse(w - 6, h - 10, 3.6, 3.6, eyeGlow, 0.92, 0.08, eyeGlow, 230);
+  } else if (style === 'scorpio') {
+    b.ellipse(cx, h - 8, 9, 5, body, 0.82, 0.18);
+    b.ellipse(cx + 2, h - 10, 7, 3.5, accent, 0.88, 0.12);
+    // Curved tail with glowing venom stinger
+    b.line(cx - 6, h - 9, cx - 10, h - 18, armor, 3, 0.8);
+    b.line(cx - 10, h - 18, cx - 2 + lunge, h - 22, accent, 2.5, 0.88);
+    b.ellipse(cx + lunge, h - 22, 2.4, 2.4, eyeGlow, 0.96, 0.04, eyeGlow, 255);
+    // Legs & claws
+    for (let i = -1; i <= 1; i++) b.line(cx + i * 4, h - 5, cx + i * 5, h - 1, armor, 1.5, 0.7);
+    b.pxRgb(cx + 7, h - 10, eyeGlow, 0.95, eyeGlow, 255);
+  } else if (style === 'mage') {
+    // Levitating hooded inquisitor
+    const fy = atk ? -2 : 0;
+    b.ellipse(cx, h - 13 + fy, 6.5, 11, body, 0.78, 0.22);
+    b.ellipse(cx, 9 + fy, 5.2, 5.5, accent, 0.88, 0.12);
+    b.pxRgb(cx + 2, 9 + fy, eyeGlow, 0.96, eyeGlow, 255);
+    // Floating glowing rune orb / staff
+    b.line(cx + 6, 8 + fy, cx + 6, h - 5 + fy, armor, 2, 0.84);
+    b.ellipse(cx + 6 + lunge, 7 + fy, 3.4, 3.4, eyeGlow, 0.96, 0.04, eyeGlow, 255);
+  } else if (style === 'shield') {
+    b.line(cx - 3, h - 10, cx - 4, h - 1, body, 3, 0.72);
+    b.line(cx + 2, h - 10, cx + 3, h - 1, body, 3, 0.72);
+    b.ellipse(cx - 2, h - 16, 6.5, 8.5, body, 0.8, 0.2);
+    b.ellipse(cx - 1, 8, 5, 5, armor, 0.88, 0.12);
+    b.pxRgb(cx + 1, 8, eyeGlow, 0.95, eyeGlow, 255);
+    // Massive front iron tower shield!
+    b.rect(cx + 4 + lunge, 7, 7, 22, armor, 0.95, 2);
+    b.rect(cx + 6 + lunge, 14, 3, 8, accent, 0.98);
+  } else {
+    // Humanoid fighters: zombie, archer, grenader, runner, protector, knight, ninja, pirate, lancer
+    const headY = Math.max(7, Math.floor(h * 0.24));
+    const torsoY = Math.floor(h * 0.56);
+    const torsoRx = Math.max(5.5, w * 0.22);
+    const torsoRy = Math.max(6.5, h * 0.23);
+
+    // Legs
+    b.line(cx - 3, torsoY + torsoRy - 2, cx - 5 - (atk ? 2 : 0), h - 1, accent, 3, 0.72);
+    b.line(cx + 3, torsoY + torsoRy - 2, cx + 5 + lunge, h - 1, body, 3, 0.78);
+    // Torso & pauldrons
+    b.ellipse(cx + lunge * 0.4, torsoY, torsoRx, torsoRy, body, 0.78, 0.22);
+    b.ellipse(cx + lunge * 0.4, torsoY - 2, torsoRx * 0.85, torsoRy * 0.55, armor, 0.88, 0.14);
+    // Head / helmet / hat
+    b.ellipse(cx + lunge * 0.6, headY, Math.max(4.5, w * 0.17), Math.max(4.5, h * 0.15), style === 'zombie' ? body : armor, 0.88, 0.12);
+    if (style === 'pirate') {
+      // Tricorn pirate hat
+      b.rect(cx - 8 + lunge, headY - 6, 17, 4, hexRgb('#261d2b'), 0.92, 1);
+      b.rect(cx - 4 + lunge, headY - 9, 9, 4, accent, 0.94);
+    } else if (style === 'knight') {
+      // Royal horned / plumed helm
+      b.line(cx - 2, headY - 4, cx - 5, headY - 10, accent, 2.5, 0.9);
+      b.line(cx + 2, headY - 4, cx + 5, headY - 10, accent, 2.5, 0.9);
+    }
+    // Glowing eye(s)
+    b.pxRgb(cx + 2 + lunge * 0.6, headY, eyeGlow, 0.96, eyeGlow, 255);
+    b.pxRgb(cx + 3 + lunge * 0.6, headY, eyeGlow, 0.96, eyeGlow, 255);
+
+    // Signature weapon / silhouette prop
+    if (style === 'archer') {
+      b.line(cx + 6 + lunge, headY, cx + 8 + lunge, torsoY + 6, accent, 2, 0.9);
+      b.line(cx + 2, torsoY, cx + 11 + lunge, torsoY, eyeGlow, 1.5, 0.95, eyeGlow, 210);
+    } else if (style === 'grenader') {
+      b.ellipse(cx + 7 + lunge, torsoY - (atk ? 5 : 1), 3.6, 3.6, hexRgb('#2a2d3b'), 0.92, 0.08);
+      b.pxRgb(cx + 8 + lunge, torsoY - (atk ? 9 : 5), eyeGlow, 0.98, eyeGlow, 255);
+    } else if (style === 'protector') {
+      b.rect(cx + 5, 4, 4, h - 8, accent, 0.9, 1);
+      b.ellipse(cx + 7, 7, 3.6, 4.2, eyeGlow, 0.95, 0.05, eyeGlow, 245);
+    } else if (style === 'lancer') {
+      b.line(cx - 4, torsoY, w - 1, torsoY - (atk ? 1 : 4), armor, 2.5, 0.94, eyeGlow, 140);
+    } else if (style === 'knight' || style === 'pirate') {
+      const bx = atk ? w - 2 : cx + 8;
+      const by = atk ? torsoY + 2 : 4;
+      b.line(cx + 4, torsoY - 2, bx, by, hexRgb('#d8e2f5'), 3, 0.94, eyeGlow, atk ? 170 : 60);
+    } else if (style === 'ninja' || style === 'runner') {
+      b.line(cx + 3, torsoY, w - 2, torsoY + (atk ? 2 : -5), hexRgb('#dce8ff'), 2, 0.94, eyeGlow, 160);
+      // Trailing headband
+      b.line(cx - 2, headY, cx - 9, headY + (atk ? 1 : 3), accent, 2, 0.85);
+    } else {
+      // Zombie clawed reach
+      b.line(cx + 3, torsoY - 2, cx + 10 + lunge, torsoY - (atk ? 4 : 1), armor, 2.5, 0.88);
+    }
+  }
+
+  b.addOutline();
+  b.bakeRegionNormals(3.4, false);
+}
+
+// =============================================================================
+// 3 Monumental Multi-Phase Bosses (2 Frames Each)
+// =============================================================================
+
+function paintBosses(b: PixelAtlasBuilder): void {
+  // 1. Behemoth — The Iron Concierge (64x74)
+  for (let f = 0; f < 2; f++) {
+    b.alloc(`boss:Behemoth_${f}`, 64, 74, 0.5, 1.0);
+    const atk = f === 1;
+    const iron = hexRgb('#44495c');
+    const ironHi = hexRgb('#79829e');
+    const ironDark = hexRgb('#232633');
+    const molten = hexRgb('#ff5722');
+    const coreYel = hexRgb('#ffd452');
+
+    // Heavy pillar legs
+    b.rect(16, 48, 12, 24, ironDark, 0.82, 2);
+    b.rect(36 + (atk ? 3 : 0), 48, 12, 24, iron, 0.86, 2);
+    // Massive hunched iron torso
+    b.ellipse(32, 34, 21, 20, iron, 0.82, 0.25);
+    b.ellipse(30, 29, 17, 13, ironHi, 0.9, 0.14);
+    // Glowing molten furnace ribcage cracks!
+    b.line(23, 27, 41, 27, molten, 3, 0.65, molten, 255);
+    b.line(25, 34, 39, 34, molten, 2.5, 0.65, molten, 245);
+    b.ellipse(32, 30, 5, 5, coreYel, 0.92, 0.08, coreYel, 255);
+    // Horned iron mask head
+    b.ellipse(34, 13, 9, 9, ironHi, 0.92, 0.12);
+    b.line(26, 9, 20, 2, ironHi, 3, 0.9);
+    b.line(42, 9, 48, 2, ironHi, 3, 0.9);
+    // Blazing crimson eye slit
+    b.rect(31, 12, 9, 3, coreYel, 0.98, 0, molten, 255);
+    // Colossal spiked gauntlet arm
+    const gx = atk ? 54 : 50;
+    const gy = atk ? 34 : 44;
+    b.line(44, 26, gx, gy, ironHi, 8, 0.9);
+    b.ellipse(gx, gy, 8, 8, ironDark, 0.94, 0.08);
+    b.ellipse(gx + 2, gy, 4, 4, molten, 0.96, 0.04, molten, 250);
+    // Chains hanging from back
+    b.line(14, 34, 8, 56, ironHi, 2.5, 0.85);
+    b.addOutline();
+    b.bakeRegionNormals(3.8, false);
+  }
+  b.alias('boss:Behemoth', 'boss:Behemoth_0');
+  b.alias('Behemoth', 'boss:Behemoth_0');
+
+  // 2. TimeKeeper — The Chrono Warden (52x58)
+  for (let f = 0; f < 2; f++) {
+    b.alloc(`boss:TimeKeeper_${f}`, 52, 58, 0.5, 1.0);
+    const atk = f === 1;
+    const cloak = hexRgb('#232d52');
+    const cloakHi = hexRgb('#3f528c');
+    const gold = hexRgb('#e0b145');
+    const chrono = hexRgb('#4ef5e2');
+    const white = hexRgb('#e8ffff');
+
+    // Floating bronze halo clock gear behind shoulders
+    b.ellipse(26, 18, 16, 16, gold, 0.72, 0.12, gold, 130);
+    b.ellipse(26, 18, 11, 11, hexRgb('#151d36'), 0.45, 0.05);
+    // Sweeping assassin cloak & athletic legs
+    b.line(22, 38, 16, 56, cloak, 4, 0.78);
+    b.line(30, 38, 36 + (atk ? 4 : 0), 56, cloakHi, 4, 0.82);
+    b.ellipse(26, 31, 12, 14, cloak, 0.82, 0.2);
+    b.ellipse(26, 29, 9, 10, cloakHi, 0.88, 0.14);
+    b.rect(20, 34, 12, 3, gold, 0.94);
+    // Hooded head + glowing cyan eyes
+    b.ellipse(27, 14, 7.5, 8.5, cloakHi, 0.92, 0.12);
+    b.pxRgb(29, 14, chrono, 0.98, chrono, 255);
+    b.pxRgb(31, 14, white, 0.98, chrono, 255);
+    // Twin luminous chronoblades!
+    b.line(32, 26, atk ? 50 : 46, atk ? 22 : 10, chrono, 3, 0.96, chrono, 255);
+    b.line(20, 28, 4, atk ? 20 : 40, chrono, 3, 0.96, chrono, 240);
+    b.addOutline();
+    b.bakeRegionNormals(3.4, false);
+  }
+  b.alias('boss:TimeKeeper', 'boss:TimeKeeper_0');
+  b.alias('TimeKeeper', 'boss:TimeKeeper_0');
+
+  // 3. KingsHand — The Sovereign Hand (76x84)
+  for (let f = 0; f < 2; f++) {
+    b.alloc(`boss:KingsHand_${f}`, 76, 84, 0.5, 1.0);
+    const atk = f === 1;
+    const plate = hexRgb('#3d5a8a');
+    const plateHi = hexRgb('#739ed9');
+    const gold = hexRgb('#f0c24b');
+    const cape = hexRgb('#a81f32');
+    const cyan = hexRgb('#6ad2ff');
+
+    // Tattered royal crimson cape
+    b.ellipse(26, 48, 18, 26, cape, 0.65, 0.2);
+    // Monumental armored legs
+    b.rect(24, 54, 12, 28, plate, 0.84, 2);
+    b.rect(42, 54, 12, 28, plateHi, 0.88, 2);
+    b.rect(23, 62, 14, 4, gold, 0.94);
+    b.rect(41, 62, 14, 4, gold, 0.94);
+    // Broad chestplate & spiked royal pauldrons
+    b.ellipse(38, 36, 20, 20, plate, 0.85, 0.22);
+    b.ellipse(38, 32, 16, 13, plateHi, 0.92, 0.14);
+    b.ellipse(22, 26, 10, 9, gold, 0.94, 0.12);
+    b.ellipse(54, 26, 10, 9, gold, 0.94, 0.12);
+    // Crowned Sovereign Helm
+    b.ellipse(39, 14, 9, 10, plateHi, 0.94, 0.12);
+    b.rect(31, 4, 16, 4, gold, 0.96);
+    b.rect(32, 1, 3, 4, gold, 0.98);
+    b.rect(38, 0, 3, 5, gold, 0.98);
+    b.rect(44, 1, 3, 4, gold, 0.98);
+    // Radiant cyan visor glow
+    b.rect(36, 13, 10, 3, cyan, 0.98, 0, cyan, 255);
+    // Giant Symmetrical Twin-Ended Lance!
+    if (atk) {
+      b.line(4, 38, 74, 34, gold, 4, 0.95);
+      b.line(58, 35, 74, 34, cyan, 5, 0.98, cyan, 255);
+      b.line(4, 38, 16, 37, cyan, 4, 0.96, cyan, 230);
+    } else {
+      b.line(18, 66, 66, 8, gold, 4, 0.95);
+      b.line(54, 22, 68, 6, cyan, 5, 0.98, cyan, 255);
+      b.line(14, 70, 24, 58, cyan, 4, 0.96, cyan, 220);
+    }
+    b.addOutline();
+    b.bakeRegionNormals(3.8, false);
+  }
+  b.alias('boss:KingsHand', 'boss:KingsHand_0');
+  b.alias('KingsHand', 'boss:KingsHand_0');
+}
+
+// =============================================================================
+// Pickups, Turrets, Projectiles, Weapons/Skills Icons, VFX & Pixel Font
+// =============================================================================
+
+function paintPickupsTurretsProjectiles(b: PixelAtlasBuilder): void {
+  const gold = hexRgb('#ffd447');
+  const goldHi = hexRgb('#fff7b2');
+  const cyan = hexRgb('#4ee8ff');
+  const red = hexRgb('#ff4252');
+  const violet = hexRgb('#b85cff');
+  const green = hexRgb('#4dff88');
+  const steel = hexRgb('#d0dcf0');
+
+  // Pickups (16x16)
+  b.alloc('pickup:gold', 12, 12, 0.5, 0.5);
+  b.ellipse(6, 6, 4.2, 4.5, gold, 0.9, 0.1, gold, 180);
+  b.ellipse(5, 5, 1.8, 2.0, goldHi, 0.98, 0.02, goldHi, 220);
+  b.addOutline();
+  b.bakeRegionNormals(3.0, false);
+
+  b.alloc('pickup:cell', 14, 16, 0.5, 0.5);
+  b.ellipse(7, 8, 5.0, 6.0, hexRgb('#1f9ec9'), 0.85, 0.15, cyan, 235);
+  b.ellipse(7, 7, 3.0, 3.6, cyan, 0.95, 0.05, cyan, 255);
+  b.pxRgb(6, 6, [255, 255, 255], 1.0, [255, 255, 255], 255);
+  b.bakeRegionNormals(2.4, false);
+
+  b.alloc('pickup:food', 16, 14, 0.5, 0.5);
+  b.ellipse(9, 7, 5.5, 4.5, hexRgb('#c76b30'), 0.86, 0.14);
+  b.line(2, 7, 6, 7, hexRgb('#f0e8d5'), 2.5, 0.9);
+  b.addOutline();
+  b.bakeRegionNormals(3.0, false);
+
+  const paintScroll = (key: string, c1: RGB, c2: RGB): void => {
+    b.alloc(key, 16, 18, 0.5, 0.5);
+    b.rect(4, 3, 8, 12, hexRgb('#f0dfb8'), 0.88, 1, c1, 140);
+    b.rect(2, 2, 12, 3, c1, 0.94, 0, c1, 240);
+    b.rect(2, 13, 12, 3, c2, 0.94, 0, c2, 240);
+    b.rect(6, 7, 4, 4, c1, 0.95, 0, c1, 255);
+    b.addOutline();
+    b.bakeRegionNormals(2.8, false);
+  };
+  paintScroll('pickup:scroll_brutality', red, red);
+  paintScroll('pickup:scroll_tactics', violet, violet);
+  paintScroll('pickup:scroll_survival', green, green);
+  paintScroll('pickup:scroll_dual', gold, violet);
+
+  b.alloc('pickup:flask', 14, 18, 0.5, 0.5);
+  b.rect(5, 2, 4, 4, hexRgb('#b8956a'), 0.88);
+  b.ellipse(7, 11, 5, 5.5, green, 0.9, 0.1, green, 245);
+  b.addOutline();
+  b.bakeRegionNormals(2.8, false);
+
+  b.alloc('pickup:blueprint', 16, 16, 0.5, 0.5);
+  b.rect(2, 3, 12, 10, hexRgb('#20579e'), 0.86, 1, cyan, 190);
+  b.line(4, 6, 12, 6, cyan, 1, 0.95, cyan, 255);
+  b.line(4, 9, 10, 9, cyan, 1, 0.95, cyan, 255);
+  b.addOutline();
+  b.bakeRegionNormals(2.8, false);
+
+  // Gear pedestal drop icons (18x18)
+  b.alloc('pickup:gear_sword', 18, 18, 0.5, 0.5);
+  b.line(4, 14, 14, 4, steel, 3, 0.94, cyan, 120);
+  b.line(4, 10, 8, 14, gold, 2.5, 0.96);
+  b.addOutline();
+  b.bakeRegionNormals(3.0, false);
+
+  b.alloc('pickup:gear_bow', 18, 18, 0.5, 0.5);
+  b.line(5, 3, 13, 9, hexRgb('#a86e42'), 2.5, 0.9);
+  b.line(13, 9, 5, 15, hexRgb('#a86e42'), 2.5, 0.9);
+  b.line(5, 4, 5, 14, hexRgb('#e0e6f0'), 1, 0.85);
+  b.addOutline();
+  b.bakeRegionNormals(3.0, false);
+
+  b.alloc('pickup:gear_shield', 18, 18, 0.5, 0.5);
+  b.ellipse(9, 9, 6, 7, hexRgb('#5c6f94'), 0.9, 0.1);
+  b.rect(8, 3, 2, 12, gold, 0.96);
+  b.addOutline();
+  b.bakeRegionNormals(3.2, false);
+
+  b.alloc('pickup:gear_skill', 18, 18, 0.5, 0.5);
+  b.ellipse(9, 9, 6, 6, violet, 0.9, 0.1, violet, 210);
+  b.ellipse(9, 9, 2.5, 2.5, goldHi, 0.98, 0.02, goldHi, 255);
+  b.addOutline();
+  b.bakeRegionNormals(3.0, false);
+
+  // Turrets & Deployables (24x24 / 24x40)
+  b.alloc('turret:sinew', 22, 22, 0.5, 1.0);
+  b.rect(5, 15, 12, 7, hexRgb('#4c5469'), 0.84, 1);
+  b.ellipse(11, 10, 7, 7, steel, 0.94, 0.06, red, 130);
+  b.ellipse(11, 10, 2.5, 2.5, red, 0.98, 0.02, red, 240);
+  b.addOutline();
+  b.bakeRegionNormals(3.2, false);
+
+  b.alloc('turret:heavy', 26, 22, 0.5, 1.0);
+  b.rect(5, 14, 16, 8, hexRgb('#695036'), 0.84, 1);
+  b.rect(4, 7, 19, 6, gold, 0.92, 1);
+  b.rect(20, 8, 4, 4, hexRgb('#ff8c38'), 0.96, 0, hexRgb('#ff8c38'), 230);
+  b.addOutline();
+  b.bakeRegionNormals(3.2, false);
+
+  b.alloc('turret:wolfTrap', 22, 10, 0.5, 1.0);
+  b.rect(2, 6, 18, 4, hexRgb('#5e6880'), 0.88, 1);
+  for (let x = 4; x <= 18; x += 4) b.pxRgb(x, 4, steel, 0.96);
+  b.pxRgb(11, 6, red, 0.98, red, 220);
+  b.addOutline();
+  b.bakeRegionNormals(3.0, false);
+
+  b.alloc('turret:bossBanner', 22, 42, 0.5, 1.0);
+  b.rect(10, 2, 2, 40, gold, 0.92);
+  b.rect(4, 6, 14, 22, hexRgb('#a81f32'), 0.84, 1, red, 180);
+  b.ellipse(11, 16, 4, 5, goldHi, 0.95, 0.05, goldHi, 255);
+  b.addOutline();
+  b.bakeRegionNormals(3.0, false);
+
+  // Projectiles
+  const projDefs: Array<[string, number, number, RGB, RGB]> = [
+    ['proj:arrow', 14, 6, hexRgb('#c7975c'), hexRgb('#e8f2ff')],
+    ['proj:knife', 12, 6, steel, red],
+    ['proj:fireball', 14, 14, hexRgb('#ff621c'), hexRgb('#fff08a')],
+    ['proj:iceArrow', 16, 6, hexRgb('#52d4ff'), hexRgb('#e0faff')],
+    ['proj:lightning', 18, 8, hexRgb('#66e8ff'), [255, 255, 255]],
+    ['proj:enemyBolt', 14, 8, hexRgb('#ff3d5c'), hexRgb('#ffd4a3')],
+    ['proj:grenade', 12, 12, hexRgb('#383e4f'), hexRgb('#ff9b3d')],
+    ['proj:cluster', 14, 14, hexRgb('#593a40'), hexRgb('#ff5733')],
+    ['proj:shuriken', 12, 12, cyan, [255, 255, 255]],
+    ['proj:shockwave', 22, 16, hexRgb('#ff7b38'), hexRgb('#ffe885')],
+    ['proj:fallingSword', 10, 24, cyan, goldHi],
+    ['proj:hook', 14, 10, gold, cyan],
+    ['proj:laserBeam', 24, 8, hexRgb('#ff2e63'), hexRgb('#ffc7d9')],
+    ['proj:acidSpit', 12, 12, hexRgb('#57e82a'), hexRgb('#c8ff75')],
+  ];
+  for (const [key, w, h, c1, c2] of projDefs) {
+    b.alloc(key, w, h, 0.5, 0.5);
+    if (key === 'proj:fallingSword') {
+      b.rect(4, 2, 2, 18, c1, 0.94, 0, c1, 240);
+      b.rect(2, 5, 6, 2, c2, 0.96, 0, c2, 240);
+    } else if (w > h * 1.4) {
+      b.rect(1, Math.floor(h / 2) - 1, w - 2, 3, c1, 0.88, 0, c1, 220);
+      b.rect(w - 5, Math.floor(h / 2) - 2, 4, 4, c2, 0.96, 0, c2, 255);
+    } else {
+      b.ellipse(w / 2, h / 2, w * 0.4, h * 0.4, c1, 0.88, 0.12, c1, 240);
+      b.ellipse(w / 2, h / 2, w * 0.2, h * 0.2, c2, 0.96, 0.04, c2, 255);
+    }
+    b.bakeRegionNormals(2.4, false);
+  }
+
+  // Register weapon & skill sprite keys (16x16 icons) so every catalog spriteKey resolves cleanly!
+  for (let i = 0; i < WEAPON_ICON_IDS.length; i++) {
+    const id = WEAPON_ICON_IDS[i];
+    const key = `weapon:${id}`;
+    const isShield = id.includes('Shield');
+    const isBow = id.includes('Bow') || id === 'ThrowingKnife' || id === 'Fireball';
+    b.alloc(key, 16, 16, 0.5, 0.5);
+    const hueCol: RGB = isShield
+      ? hexRgb('#52c97a')
+      : isBow
+      ? hexRgb('#b062ff')
+      : hexRgb('#ff5766');
+    if (isShield) {
+      b.ellipse(8, 8, 5.5, 6.5, hueCol, 0.9, 0.1);
+      b.rect(7, 3, 2, 10, goldHi, 0.96);
+    } else if (isBow) {
+      b.line(4, 3, 12, 8, hueCol, 2.5, 0.9);
+      b.line(12, 8, 4, 13, hueCol, 2.5, 0.9);
+      b.pxRgb(12, 8, goldHi, 0.96, goldHi, 220);
+    } else {
+      b.line(3, 13, 13, 3, steel, 2.5, 0.94, hueCol, 160);
+      b.line(3, 9, 7, 13, gold, 2, 0.96);
+    }
+    b.addOutline();
+    b.bakeRegionNormals(2.8, false);
+    b.alias(id, key);
+  }
+
+  for (let i = 0; i < SKILL_ICON_IDS.length; i++) {
+    const id = SKILL_ICON_IDS[i];
+    const key = `skill:${id}`;
+    b.alloc(key, 16, 16, 0.5, 0.5);
+    const col: RGB = id.includes('Grenade')
+      ? hexRgb('#ff6b38')
+      : id.includes('Turret') || id === 'SinewSlicer' || id === 'WaveOfDenial' || id === 'Phaser'
+      ? hexRgb('#a85cff')
+      : hexRgb('#42e38d');
+    b.ellipse(8, 8, 5.5, 5.5, col, 0.9, 0.1, col, 210);
+    b.ellipse(8, 8, 2.2, 2.2, [255, 255, 255], 0.98, 0.02, col, 255);
+    b.addOutline();
+    b.bakeRegionNormals(2.8, false);
+    b.alias(id, key);
+  }
+}
+
+function paintVfxAndPixelFont(b: PixelAtlasBuilder): void {
+  // 4x4 Solid White Pixel (for colored quads, scarf chain, beams, bars)
+  b.alloc('vfx:white_px', 4, 4, 0.5, 0.5);
+  for (let y = 0; y < 4; y++) {
+    for (let x = 0; x < 4; x++) {
+      b.px(x, y, 255, 255, 255, 255, 0.5);
+      b.setNormalDirect(x, y, 0, 0, 1);
+    }
+  }
+
+  // Sweeping Crescent Weapon Slash Arcs (3 frames + heavy cleave) — tinted dynamically by vertex color!
+  const paintSlash = (key: string, w: number, h: number, thickness: number, arcStart: number, arcEnd: number): void => {
+    b.alloc(key, w, h, 0.25, 0.5);
+    const cx = w * 0.24;
+    const cy = h * 0.52;
+    const rx = w * 0.72;
+    const ry = h * 0.46;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const dx = (x - cx) / rx;
+        const dy = (y - cy) / ry;
+        const dist = Math.hypot(dx, dy);
+        const ang = Math.atan2(dy, dx);
+        if (ang < arcStart || ang > arcEnd) continue;
+        const angNorm = (ang - arcStart) / (arcEnd - arcStart);
+        const taper = Math.sin(angNorm * Math.PI); // thin tips, wide leading belly
+        const outerR = 1.0;
+        const innerR = Math.max(0.15, outerR - thickness * taper);
+        if (dist <= outerR && dist >= innerR) {
+          const edgeFrac = (dist - innerR) / Math.max(0.01, outerR - innerR);
+          const alpha = clampByte((0.35 + 0.65 * Math.pow(edgeFrac, 0.7)) * taper * 255);
+          const core = edgeFrac > 0.72 ? 255 : clampByte(190 + edgeFrac * 65);
+          b.px(x, y, core, core, 255, alpha, 0.9, core, core, 255, alpha);
+          b.setNormalDirect(x, y, 0, 0, 1);
+        }
+      }
+    }
+  };
+  paintSlash('vfx:slash_0', 48, 36, 0.44, -1.25, 1.15);
+  paintSlash('vfx:slash_1', 48, 36, 0.38, -1.05, 1.35);
+  paintSlash('vfx:slash_2', 52, 40, 0.52, -1.4, 1.25);
+  paintSlash('vfx:slash_heavy', 64, 44, 0.56, -1.5, 1.4);
+
+  // Iconic Golden `!` Enemy Attack Telegraph Glyph (16x22)
+  b.alloc('vfx:telegraph', 16, 22, 0.5, 1.0);
+  const goldCore = hexRgb('#fff7a8');
+  const goldMid = hexRgb('#ffbb24');
+  const goldOut = hexRgb('#ff5e1a');
+  // Starburst outer halo
+  b.line(8, 1, 8, 20, goldOut, 5, 0.9, goldOut, 200);
+  b.rect(6, 3, 4, 10, goldMid, 0.95, 0, goldMid, 255);
+  b.rect(7, 4, 2, 8, goldCore, 1.0, 0, goldCore, 255);
+  b.rect(6, 15, 4, 4, goldMid, 0.95, 0, goldMid, 255);
+  b.rect(7, 16, 2, 2, goldCore, 1.0, 0, goldCore, 255);
+  b.addOutline([24, 12, 8]);
+  b.bakeRegionNormals(2.0, false);
+
+  // Concentric Golden Parry Starburst Ring (48x48)
+  b.alloc('vfx:parry_ring', 48, 48, 0.5, 0.5);
+  for (let y = 0; y < 48; y++) {
+    for (let x = 0; x < 48; x++) {
+      const dx = x - 23.5;
+      const dy = y - 23.5;
+      const r = Math.hypot(dx, dy);
+      const ang = Math.atan2(dy, dx);
+      const star = Math.abs(Math.cos(ang * 4));
+      const ring = Math.exp(-Math.pow((r - 18) / 2.2, 2));
+      const flare = r < 22 ? Math.pow(star, 8) * (1 - r / 22) : 0;
+      const intensity = Math.min(1, ring + flare * 0.9);
+      if (intensity > 0.08) {
+        const a = clampByte(intensity * 255);
+        b.px(x, y, 255, 240, 150, a, 0.9, 255, 220, 100, a);
+        b.setNormalDirect(x, y, 0, 0, 1);
+      }
+    }
+  }
+
+  // Concierge Crimson Aura Ring (64x64)
+  b.alloc('vfx:aura_ring', 64, 64, 0.5, 0.5);
+  for (let y = 0; y < 64; y++) {
+    for (let x = 0; x < 64; x++) {
+      const dx = x - 31.5;
+      const dy = y - 31.5;
+      const r = Math.hypot(dx, dy);
+      const ang = Math.atan2(dy, dx);
+      const jag = Math.sin(ang * 12) * 1.6;
+      const d = Math.abs(r - (27 + jag));
+      if (d < 4.5) {
+        const k = 1 - d / 4.5;
+        const a = clampByte(k * 235);
+        b.px(x, y, 255, clampByte(70 + k * 140), clampByte(35 + k * 45), a, 0.9, 255, clampByte(55 + k * 110), 25, a);
+        b.setNormalDirect(x, y, 0, 0, 1);
+      }
+    }
+  }
+
+  // Hexagonal Cyan Shield Dome (48x48)
+  b.alloc('vfx:shield_dome', 48, 48, 0.5, 0.5);
+  for (let y = 0; y < 48; y++) {
+    for (let x = 0; x < 48; x++) {
+      const dx = x - 23.5;
+      const dy = y - 23.5;
+      const r = Math.hypot(dx, dy);
+      if (r <= 22.5 && r >= 18.0) {
+        const k = 1 - Math.abs(r - 20.5) / 2.5;
+        const grid = ((x + y) % 6 === 0 || (x - y + 64) % 6 === 0) ? 1.25 : 0.85;
+        const a = clampByte(Math.min(1, k * grid) * 215);
+        b.px(x, y, 100, 240, 255, a, 0.9, 80, 235, 255, a);
+        b.setNormalDirect(x, y, 0, 0, 1);
+      } else if (r < 18.0) {
+        const grid = ((x + y) % 8 === 0) ? 45 : 18;
+        b.px(x, y, 80, 225, 255, grid, 0.7, 60, 210, 255, grid);
+        b.setNormalDirect(x, y, 0, 0, 1);
+      }
+    }
+  }
+
+  // Crisp VFX Particle Sprites (spark, ember, drop, cog)
+  b.alloc('vfx:spark', 8, 8, 0.5, 0.5);
+  b.line(1, 4, 6, 4, [255, 255, 255], 1, 0.95, [255, 255, 255], 255);
+  b.line(4, 1, 4, 6, [255, 255, 255], 1, 0.95, [255, 255, 255], 255);
+  b.ellipse(4, 4, 1.6, 1.6, [255, 255, 255], 1.0, 0, [255, 255, 255], 255);
+
+  b.alloc('vfx:ember', 6, 6, 0.5, 0.5);
+  b.ellipse(3, 3, 2.2, 2.2, [255, 240, 200], 0.95, 0.05, [255, 230, 180], 255);
+
+  b.alloc('vfx:drop', 6, 10, 0.5, 0.5);
+  b.line(3, 1, 3, 8, [220, 245, 255], 2, 0.9, [200, 240, 255], 180);
+
+  b.alloc('vfx:cog', 12, 12, 0.5, 0.5);
+  const brass = hexRgb('#e0b145');
+  b.ellipse(6, 6, 4.2, 4.2, brass, 0.9, 0.1, brass, 110);
+  b.ellipse(6, 6, 1.6, 1.6, hexRgb('#1a141c'), 0.2, 0);
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2;
+    b.pxRgb(Math.round(6 + Math.cos(a) * 5), Math.round(6 + Math.sin(a) * 5), brass, 0.95);
+  }
+  b.bakeRegionNormals(2.6, false);
+
+  // Crisp 5x7 Pixel Bitmap Font Glyphs for floating world combat numbers & CRIT/PARRY popups!
+  const FONT_GLYPHS: Record<string, string[]> = {
+    '0': ['01110', '10001', '10011', '10101', '11001', '10001', '01110'],
+    '1': ['00100', '01100', '00100', '00100', '00100', '00100', '01110'],
+    '2': ['01110', '10001', '00001', '00110', '01000', '10000', '11111'],
+    '3': ['11110', '00001', '00001', '01110', '00001', '00001', '11110'],
+    '4': ['00010', '00110', '01010', '10010', '11111', '00010', '00010'],
+    '5': ['11111', '10000', '11110', '00001', '00001', '10001', '01110'],
+    '6': ['01110', '10000', '11110', '10001', '10001', '10001', '01110'],
+    '7': ['11111', '00001', '00010', '00100', '01000', '01000', '01000'],
+    '8': ['01110', '10001', '10001', '01110', '10001', '10001', '01110'],
+    '9': ['01110', '10001', '10001', '01111', '00001', '00010', '01100'],
+    '+': ['00000', '00100', '00100', '11111', '00100', '00100', '00000'],
+    '-': ['00000', '00000', '00000', '11111', '00000', '00000', '00000'],
+    '!': ['00100', '00100', '00100', '00100', '00100', '00000', '00100'],
+    C: ['01110', '10001', '10000', '10000', '10000', '10001', '01110'],
+    R: ['11110', '10001', '10001', '11110', '10100', '10010', '10001'],
+    I: ['01110', '00100', '00100', '00100', '00100', '00100', '01110'],
+    T: ['11111', '00100', '00100', '00100', '00100', '00100', '00100'],
+    P: ['11110', '10001', '10001', '11110', '10000', '10000', '10000'],
+    A: ['01110', '10001', '10001', '11111', '10001', '10001', '10001'],
+    Y: ['10001', '10001', '01010', '00100', '00100', '00100', '00100'],
+  };
+
+  for (const [ch, rows] of Object.entries(FONT_GLYPHS)) {
+    b.alloc(`font:${ch}`, 7, 9, 0.5, 0.5);
+    for (let y = 0; y < 7; y++) {
+      for (let x = 0; x < 5; x++) {
+        if (rows[y][x] === '1') {
+          b.px(x + 1, y + 1, 255, 255, 255, 255, 0.95, 255, 255, 255, 210);
+          b.setNormalDirect(x + 1, y + 1, 0, 0, 1);
+        }
+      }
+    }
+    b.addOutline([12, 10, 18], 0.5);
+  }
+}
+
+// =============================================================================
+// Public Atlas Key Inventory (Zero DOM dependency — safe for Node / Gate A!)
+// =============================================================================
+
+let cachedKeys: string[] | null = null;
+
+export function getAtlasKeys(): string[] {
+  if (cachedKeys) return cachedKeys;
+  const keys: string[] = [];
+
+  for (const t of TILESET_THEMES) {
+    keys.push(
+      `tile:${t}:solid_top`,
+      `tile:${t}:solid_mid`,
+      `tile:${t}:solid_deep`,
+      `tile:${t}:solid_var`,
+      `tile:${t}:oneway`,
+      `tile:${t}:bg_wall`,
+      `tile:${t}:bg_arch`,
+      `tile:${t}:bg_pillar`,
+      `tile:${t}:cracked_floor`,
+      `tile:${t}:secret_wall`,
+      `tile:${t}:exit_gate`
+    );
+  }
+
+  keys.push(
+    'tile:ladder',
+    'tile:chain',
+    'tile:spikes',
+    'tile:acid_0',
+    'tile:acid_1',
+    'tile:water_0',
+    'tile:water_1',
+    'prop:brazier_0',
+    'prop:brazier_1',
+    'prop:brazier_2',
+    'prop:torch_0',
+    'prop:torch_1',
+    'prop:torch_2',
+    'prop:banner_0',
+    'prop:banner_1',
+    'prop:cage',
+    'prop:skeleton',
+    'prop:door_wood',
+    'prop:door_wood_open',
+    'prop:door_gold',
+    'prop:door_exit',
+    'prop:door_boss',
+    'prop:chest_closed',
+    'prop:chest_open',
+    'prop:chest_cursed_closed',
+    'prop:chest_cursed_open',
+    'prop:chest_boss_closed',
+    'prop:chest_boss_open',
+    'prop:teleporter_idle',
+    'prop:teleporter_active',
+    'prop:fountain_full',
+    'prop:fountain_empty',
+    'prop:scroll_altar',
+    'prop:challenge_rift',
+    'prop:npc_collector',
+    'prop:npc_guillain',
+    'prop:npc_forge',
+    'hero:idle_0',
+    'hero:idle_1',
+    'hero:idle_2',
+    'hero:idle_3',
+    'hero:run_0',
+    'hero:run_1',
+    'hero:run_2',
+    'hero:run_3',
+    'hero:run_4',
+    'hero:run_5',
+    'hero:jump',
+    'hero:fall',
+    'hero:wall_slide',
+    'hero:roll_0',
+    'hero:roll_1',
+    'hero:roll_2',
+    'hero:dive_slam',
+    'hero:attack_0',
+    'hero:attack_1',
+    'hero:attack_2',
+    'hero:parry',
+    'hero:heal',
+    'hero:hurt',
+    'hero:dead',
+    'hero:head_flame_0',
+    'hero:head_flame_1',
+    'hero:head_flame_2',
+    'hero:head_flame_3'
+  );
+
+  for (const id of ENEMY_ARCHETYPE_IDS) {
+    keys.push(`enemy:${id}`, `enemy:${id}_0`, `enemy:${id}_1`, id);
+  }
+  for (const id of BOSS_ARCHETYPE_IDS) {
+    keys.push(`boss:${id}`, `boss:${id}_0`, `boss:${id}_1`, id);
+  }
+
+  keys.push(
+    'pickup:gold',
+    'pickup:cell',
+    'pickup:food',
+    'pickup:scroll_brutality',
+    'pickup:scroll_tactics',
+    'pickup:scroll_survival',
+    'pickup:scroll_dual',
+    'pickup:flask',
+    'pickup:blueprint',
+    'pickup:gear_sword',
+    'pickup:gear_bow',
+    'pickup:gear_shield',
+    'pickup:gear_skill',
+    'turret:sinew',
+    'turret:heavy',
+    'turret:wolfTrap',
+    'turret:bossBanner',
+    'proj:arrow',
+    'proj:knife',
+    'proj:fireball',
+    'proj:iceArrow',
+    'proj:lightning',
+    'proj:enemyBolt',
+    'proj:grenade',
+    'proj:cluster',
+    'proj:shuriken',
+    'proj:shockwave',
+    'proj:fallingSword',
+    'proj:hook',
+    'proj:laserBeam',
+    'proj:acidSpit',
+    'vfx:white_px',
+    'vfx:slash_0',
+    'vfx:slash_1',
+    'vfx:slash_2',
+    'vfx:slash_heavy',
+    'vfx:telegraph',
+    'vfx:parry_ring',
+    'vfx:aura_ring',
+    'vfx:shield_dome',
+    'vfx:spark',
+    'vfx:ember',
+    'vfx:drop',
+    'vfx:cog'
+  );
+
+  for (const id of WEAPON_ICON_IDS) keys.push(`weapon:${id}`, id);
+  for (const id of SKILL_ICON_IDS) keys.push(`skill:${id}`, id);
+  for (const ch of '0123456789+-!CRITPAY') keys.push(`font:${ch}`);
+
+  cachedKeys = Array.from(new Set(keys));
+  return cachedKeys;
+}
+
+// =============================================================================
+// Smart Key Resolver & Atlas Builder Entrypoint
+// =============================================================================
+
+export function resolveSpriteRegion(
+  regions: Record<string, SpriteRegion>,
+  key: string,
+  fallbackKey = 'vfx:white_px'
+): SpriteRegion {
+  const direct = regions[key];
+  if (direct) return direct;
+  // Normalize common alternate naming conventions (e.g. enemy_Zombie -> enemy:Zombie)
+  const colonKey = key.replace('_', ':');
+  if (regions[colonKey]) return regions[colonKey];
+  if (regions[`enemy:${key}`]) return regions[`enemy:${key}`];
+  if (regions[`boss:${key}`]) return regions[`boss:${key}`];
+  if (regions[`weapon:${key}`]) return regions[`weapon:${key}`];
+  if (regions[`skill:${key}`]) return regions[`skill:${key}`];
+  return regions[fallbackKey] ?? Object.values(regions)[0];
+}
+
+function pixelsToCanvas(pixels: Uint8Array, w: number, h: number): HTMLCanvasElement | null {
+  if (typeof document === 'undefined') return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  const imgData = ctx.createImageData(w, h);
+  imgData.data.set(pixels);
+  ctx.putImageData(imgData, 0, 0);
+  return canvas;
+}
+
+export function buildProceduralAtlas(): ProceduralAtlasData {
+  const b = new PixelAtlasBuilder();
+
+  // 1. All 10 Biome Tilesets
+  for (let ti = 0; ti < TILESET_THEMES.length; ti++) {
+    const theme = TILESET_THEMES[ti];
+    const pal = TILESET_PALETTES[theme];
+    const seed = 101 + ti * 73;
+
+    b.alloc(`tile:${theme}:solid_top`, 24, 24, 0, 0);
+    paintBrickTile(b, pal, seed + 1, 'top');
+
+    b.alloc(`tile:${theme}:solid_mid`, 24, 24, 0, 0);
+    paintBrickTile(b, pal, seed + 2, 'mid');
+
+    b.alloc(`tile:${theme}:solid_deep`, 24, 24, 0, 0);
+    paintBrickTile(b, pal, seed + 3, 'deep');
+
+    b.alloc(`tile:${theme}:solid_var`, 24, 24, 0, 0);
+    paintBrickTile(b, pal, seed + 4, 'var');
+
+    b.alloc(`tile:${theme}:oneway`, 24, 24, 0, 0);
+    paintOneWayTile(b, pal);
+
+    b.alloc(`tile:${theme}:bg_wall`, 24, 24, 0, 0);
+    paintBgWallTile(b, pal, seed + 5, 'wall');
+
+    b.alloc(`tile:${theme}:bg_arch`, 24, 24, 0, 0);
+    paintBgWallTile(b, pal, seed + 6, 'arch');
+
+    b.alloc(`tile:${theme}:bg_pillar`, 24, 24, 0, 0);
+    paintBgWallTile(b, pal, seed + 7, 'pillar');
+
+    b.alloc(`tile:${theme}:cracked_floor`, 24, 24, 0, 0);
+    paintCrackedOrSecretTile(b, pal, seed + 8, false);
+
+    b.alloc(`tile:${theme}:secret_wall`, 24, 24, 0, 0);
+    paintCrackedOrSecretTile(b, pal, seed + 9, true);
+
+    b.alloc(`tile:${theme}:exit_gate`, 24, 24, 0, 0);
+    paintBgWallTile(b, pal, seed + 10, 'arch');
+  }
+
+  // 2. Universal Tiles & Props / Doors / Chests / Shrines / NPCs
+  paintUniversalTiles(b);
+  paintPropsAndNpcs(b);
+
+  // 3. Prisoner (Hero) Multi-Frame Animations + Homunculus Plasma Flame
+  for (let i = 0; i < 4; i++) paintHeroPose(b, `hero:idle_${i}`, 'idle', i);
+  for (let i = 0; i < 6; i++) paintHeroPose(b, `hero:run_${i}`, 'run', i);
+  paintHeroPose(b, 'hero:jump', 'jump', 0);
+  paintHeroPose(b, 'hero:fall', 'fall', 0);
+  paintHeroPose(b, 'hero:wall_slide', 'wall', 0);
+  for (let i = 0; i < 3; i++) paintHeroPose(b, `hero:roll_${i}`, 'roll', i);
+  paintHeroPose(b, 'hero:dive_slam', 'dive', 0);
+  for (let i = 0; i < 3; i++) paintHeroPose(b, `hero:attack_${i}`, 'attack', i);
+  paintHeroPose(b, 'hero:parry', 'parry', 0);
+  paintHeroPose(b, 'hero:heal', 'heal', 0);
+  paintHeroPose(b, 'hero:hurt', 'hurt', 0);
+  paintHeroPose(b, 'hero:dead', 'dead', 0);
+  paintHomunculusHeadFrames(b);
+
+  // 4. All 18 Enemy Archetypes (2 frames each)
+  for (const spec of ENEMY_VISUALS) {
+    for (let f = 0; f < 2; f++) {
+      b.alloc(`enemy:${spec.id}_${f}`, spec.w, spec.h, 0.5, 1.0);
+      paintEnemyFrame(b, spec, f);
+    }
+    b.alias(`enemy:${spec.id}`, `enemy:${spec.id}_0`);
+    b.alias(spec.id, `enemy:${spec.id}_0`);
+  }
+
+  // 5. All 3 Multi-Phase Bosses
+  paintBosses(b);
+
+  // 6. Pickups, Turrets, Projectiles, Weapons/Skills Icons, VFX & Bitmap Font
+  paintPickupsTurretsProjectiles(b);
+  paintVfxAndPixelFont(b);
+
+  const keys = Object.keys(b.regions);
+  return {
+    width: b.width,
+    height: b.height,
+    albedoPixels: b.albedo,
+    normalPixels: b.normal,
+    emissivePixels: b.emissive,
+    albedoCanvas: pixelsToCanvas(b.albedo, b.width, b.height),
+    normalCanvas: pixelsToCanvas(b.normal, b.width, b.height),
+    emissiveCanvas: pixelsToCanvas(b.emissive, b.width, b.height),
+    regions: b.regions,
+    keys,
+  };
+}
