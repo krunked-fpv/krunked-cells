@@ -18,19 +18,20 @@ import {
   CatalogLookup,
   FALLBACK_META_BLUEPRINTS,
   FALLBACK_MUTATIONS,
+  analyzeGearAffixes,
+  computeGearDpsSummary,
   escapeHtml,
-  estimateGearPower,
   formatGearBadge,
   formatTimer,
-  getAffixDisplayLabel,
   getBiomeDisplayName,
   getGearDisplayInfo,
   getMutationDisplayInfo,
+  getQualityCssClass,
   renderItemIconHtml,
   renderUiGlyphSvg,
 } from './HudOverlay';
 
-export type PassageTab = 'collector' | 'guillain' | 'forge' | 'exits';
+export type PassageTab = 'collector' | 'guillain' | 'forge' | 'legendaryForge' | 'exits';
 
 export interface PassageModalCallbacks {
   onDispatchCommand(cmd: SimCommand): void;
@@ -56,6 +57,7 @@ export class PassageModal {
   private activeTab: PassageTab = 'collector';
   private manualOpen = false;
   private lastActiveNpc: 'none' | 'collector' | 'guillain' | 'forge' = 'none';
+  private lastQuickBarPostBoss = false;
   private lastRenderSig = '';
 
   constructor(uiRoot: HTMLElement, callbacks: PassageModalCallbacks, catalog?: CatalogLookup) {
@@ -92,7 +94,7 @@ export class PassageModal {
 
   public forceRefreshIcons(): void {
     this.lastRenderSig = '';
-    this.renderQuickBar();
+    this.renderQuickBar(this.lastQuickBarPostBoss);
   }
 
   public isOpen(): boolean {
@@ -129,6 +131,15 @@ export class PassageModal {
       return;
     }
 
+    const isPostBoss = this.isPostBossPassage(state);
+    if (isPostBoss !== this.lastQuickBarPostBoss) {
+      this.lastQuickBarPostBoss = isPostBoss;
+      this.renderQuickBar(isPostBoss);
+    }
+    if (!isPostBoss && this.activeTab === 'legendaryForge') {
+      this.activeTab = 'collector';
+    }
+
     const npc = state.passageState.activeNpc;
     if (npc !== this.lastActiveNpc) {
       this.lastActiveNpc = npc;
@@ -157,7 +168,12 @@ export class PassageModal {
     this.quickBarEl.remove();
   }
 
-  private renderQuickBar(): void {
+  private isPostBossPassage(state: SimState): boolean {
+    const from = state.passageState.fromBiome;
+    return from === 'Bridge' || from === 'TopClockTower';
+  }
+
+  private renderQuickBar(showLegendaryForge = false): void {
     const cellIcon = renderItemIconHtml('Cell', this.artPackMode, this.customPackResolver, {
       size: 14,
       fallbackKind: 'cell',
@@ -165,12 +181,18 @@ export class PassageModal {
     });
     const mutIcon = renderUiGlyphSvg('mutation', 14, '#a855f7');
     const forgeIcon = renderUiGlyphSvg('forge', 14, '#fbbf24');
+    const starIcon = renderUiGlyphSvg('star', 14, '#ffd84d');
     const exitIcon = renderUiGlyphSvg('door', 14, '#22c55e');
 
     this.quickBarEl.innerHTML = `
       <button class="kc-btn kc-btn-sm kc-btn-cyan kc-btn-icon" data-open-tab="collector">${cellIcon}<span>Collector</span></button>
       <button class="kc-btn kc-btn-sm kc-btn-icon" data-open-tab="guillain">${mutIcon}<span>Guillain</span></button>
       <button class="kc-btn kc-btn-sm kc-btn-icon" data-open-tab="forge">${forgeIcon}<span>Minor Forge</span></button>
+      ${
+        showLegendaryForge
+          ? `<button class="kc-btn kc-btn-sm kc-btn-gold kc-btn-icon" data-open-tab="legendaryForge">${starIcon}<span>Legendary Forge</span></button>`
+          : ''
+      }
       <button class="kc-btn kc-btn-sm kc-btn-emerald kc-btn-icon" data-open-tab="exits">${exitIcon}<span>Fountain & Exits</span></button>
     `;
     this.quickBarEl.querySelectorAll<HTMLButtonElement>('[data-open-tab]').forEach((btn) => {
@@ -192,12 +214,13 @@ export class PassageModal {
     const gearKey = [p.loadout.weapon1, p.loadout.weapon2, p.loadout.skill1, p.loadout.skill2]
       .map((g) => (g ? `${g.uid}:${g.quality}:${g.affixes.join('.')}` : 'none'))
       .join('|');
-    return `${this.activeTab}|art:${this.artPackMode}|c${p.cells}|g${p.gold}|hp${Math.ceil(p.hp)}/${Math.ceil(p.maxHp)}|fl${p.flaskCharges}/${p.maxFlaskCharges}|f${ps.fountainUsed}|td${ps.timedDoorOpen}${ps.timedDoorClaimed}|kd${ps.killStreakDoorOpen}${ps.killStreakDoorClaimed}|rf${ps.reforgeCount}|m${p.mutations.join(',')}|ub${ms.unlockedBlueprints.length}|ft${ms.flaskTier}|gr${ms.goldReserveTier}|rs${ms.randomStarterUnlocked}|rc${ms.recycleUnlocked}|${progKey}|${gearKey}|nb${ps.nextBiomes.join(',')}`;
+    return `${this.activeTab}|fb:${ps.fromBiome}|art:${this.artPackMode}|c${p.cells}|g${p.gold}|hp${Math.ceil(p.hp)}/${Math.ceil(p.maxHp)}|fl${p.flaskCharges}/${p.maxFlaskCharges}|f${ps.fountainUsed}:${state.fountainRefillsLeft ?? -1}:${state.singleFlaskRefillsLeft ?? -1}|td${ps.timedDoorOpen}${ps.timedDoorClaimed}|kd${ps.killStreakDoorOpen}${ps.killStreakDoorClaimed}|fd${ps.flawlessBossDoorOpen ? 1 : 0}${ps.flawlessBossDoorClaimed ? 1 : 0}|lf${ms.legendaryForgePlus ?? 0}/${ms.legendaryForgePlusPlus ?? 0}|rf${ps.reforgeCount}|m${p.mutations.join(',')}|ub${ms.unlockedBlueprints.length}|ft${ms.flaskTier}|gr${ms.goldReserveTier}|rs${ms.randomStarterUnlocked}|rc${ms.recycleUnlocked}|${progKey}|${gearKey}|nb${ps.nextBiomes.join(',')}`;
   }
 
   private render(state: SimState): void {
     const p = state.player;
     const ps = state.passageState;
+    const postBoss = this.isPostBossPassage(state);
 
     const cellIcon = renderItemIconHtml('Cell', this.artPackMode, this.customPackResolver, {
       size: 16,
@@ -211,10 +234,11 @@ export class PassageModal {
     });
     const mutIcon = renderUiGlyphSvg('mutation', 15, '#a855f7');
     const forgeIcon = renderUiGlyphSvg('forge', 15, '#fbbf24');
+    const starIcon = renderUiGlyphSvg('star', 15, '#ffd84d');
     const exitIcon = renderUiGlyphSvg('door', 15, '#22c55e');
 
-    const tabBtn = (id: PassageTab, iconHtml: string, label: string) =>
-      `<button class="kc-tab ${this.activeTab === id ? 'is-active' : ''}" data-tab="${id}">${iconHtml}<span>${label}</span></button>`;
+    const tabBtn = (id: PassageTab, iconHtml: string, label: string, extraCls = '') =>
+      `<button class="kc-tab ${extraCls} ${this.activeTab === id ? 'is-active' : ''}" data-tab="${id}">${iconHtml}<span>${label}</span></button>`;
 
     let bodyHtml = '';
     if (this.activeTab === 'collector') {
@@ -223,6 +247,8 @@ export class PassageModal {
       bodyHtml = this.renderGuillainTab(state);
     } else if (this.activeTab === 'forge') {
       bodyHtml = this.renderForgeTab(state);
+    } else if (this.activeTab === 'legendaryForge' && postBoss) {
+      bodyHtml = this.renderLegendaryForgeTab(state);
     } else {
       bodyHtml = this.renderExitsTab(state);
     }
@@ -246,6 +272,7 @@ export class PassageModal {
           ${tabBtn('collector', cellIcon, 'The Collector')}
           ${tabBtn('guillain', mutIcon, 'Guillain (Mutations)')}
           ${tabBtn('forge', forgeIcon, 'Minor Forge')}
+          ${postBoss ? tabBtn('legendaryForge', starIcon, 'Legendary Forge', 'is-legendary-tab') : ''}
           ${tabBtn('exits', exitIcon, 'Fountain & Next Biome')}
         </div>
         <div class="kc-passage-body">
@@ -508,20 +535,34 @@ export class PassageModal {
           `;
         }
         const info = getGearDisplayInfo(gear, this.catalog);
+        const summary = computeGearDpsSummary(gear, state, this.catalog);
         const badge = formatGearBadge(gear.level, gear.quality);
+        const qClass = getQualityCssClass(gear.quality);
         const nextQ = NEXT_QUALITY[gear.quality];
-        const pwr = estimateGearPower(gear, state, this.catalog);
         const colorClass = gear.quality === 'L' ? 'kc-color-colorless' : `kc-color-${gear.color}`;
         const iconHtml = renderItemIconHtml(gear.defId, this.artPackMode, this.customPackResolver, {
           size: 34,
           alt: info.name,
         });
+        const analyzed = analyzeGearAffixes(gear, state, this.catalog);
         const affixesHtml =
-          gear.affixes.length > 0
-            ? `<ul class="kc-affix-list">${gear.affixes
-                .map((a) => `<li>${escapeHtml(getAffixDisplayLabel(a, this.catalog))}</li>`)
+          analyzed.length > 0
+            ? `<ul class="kc-affix-list kc-dc-affix-list">${analyzed
+                .map((af) => {
+                  const cls = af.isActiveSynergy
+                    ? 'kc-affix-item is-synergy'
+                    : af.isStar
+                      ? 'kc-affix-item is-star'
+                      : 'kc-affix-item';
+                  const prefix = af.isStar || af.isActiveSynergy ? '<span class="kc-affix-star">★</span>' : '<span class="kc-affix-dot">·</span>';
+                  return `<li class="${cls}">${prefix}<span class="kc-affix-text">${escapeHtml(af.label)}</span></li>`;
+                })
                 .join('')}</ul>`
             : `<div class="kc-npc-card-desc">No active affixes yet.</div>`;
+
+        const statStr = summary.isSkill
+          ? `${label} · DMG ${summary.dps}`
+          : `${label} · DPS ${summary.dps}${summary.critDps !== null ? ` · <span style="color:#ffd84d">CRIT ${summary.critDps}</span>` : ''}`;
 
         return `
           <div class="kc-npc-card ${colorClass}">
@@ -529,8 +570,8 @@ export class PassageModal {
               <div class="kc-npc-icon-frame ${colorClass}">${iconHtml}</div>
               <div class="kc-npc-card-titles">
                 <div class="kc-npc-card-head">
-                  <span class="kc-npc-card-name">${escapeHtml(info.name)} <span style="font-family:var(--font-mono);color:var(--gold-amber)">${escapeHtml(badge)}</span></span>
-                  <span class="kc-npc-tier">${label} · DPS ${pwr}</span>
+                  <span class="kc-npc-card-name">${escapeHtml(info.name)} <span class="kc-gear-badge ${qClass}" style="position:static">${escapeHtml(badge)}</span></span>
+                  <span class="kc-npc-tier">${statStr}</span>
                 </div>
                 ${affixesHtml}
               </div>
@@ -548,12 +589,105 @@ export class PassageModal {
       })
       .join('');
 
+    const legendaryCallout = this.isPostBossPassage(state)
+      ? `<div class="kc-legendary-forge-inline">${this.renderLegendaryForgeSection(state)}</div>`
+      : '';
+
     return `
       <div style="font-size:12px;color:var(--text-parchment)">
         Upgrade gear quality (<code>base → + → ++ → S</code>) or re-roll combat synergy affixes with <strong style="color:var(--gold-amber)">Gold</strong>.
       </div>
       <div class="kc-card-grid">${cards}</div>
+      ${legendaryCallout}
     `;
+  }
+
+  private renderLegendaryForgeSection(state: SimState): string {
+    const cells = Math.floor(state.player.cells);
+    const plusPct = Math.max(0, Math.min(100, Math.round(state.metaSnapshot.legendaryForgePlus ?? 0)));
+    const plusPlusPct = Math.max(0, Math.min(100, Math.round(state.metaSnapshot.legendaryForgePlusPlus ?? 0)));
+
+    const starIcon = renderUiGlyphSvg('star', 26, '#ffd84d');
+    const forgeIcon = renderUiGlyphSvg('forge', 26, '#38e8ff');
+
+    const renderTierCard = (
+      tier: 'plus' | 'plusPlus',
+      title: string,
+      qualityBadge: string,
+      badgeCls: string,
+      desc: string,
+      pct: number,
+      iconHtml: string
+    ): string => {
+      const maxed = pct >= 100;
+      return `
+        <div class="kc-npc-card kc-leg-forge-card ${maxed ? 'is-maxed' : ''}">
+          <div class="kc-npc-card-top">
+            <div class="kc-npc-icon-frame kc-leg-forge-icon">${iconHtml}</div>
+            <div class="kc-npc-card-titles">
+              <div class="kc-npc-card-head">
+                <span class="kc-npc-card-name">${escapeHtml(title)} <span class="kc-gear-badge ${badgeCls}" style="position:static">${escapeHtml(qualityBadge)}</span></span>
+                <span class="kc-npc-tier" style="color:${maxed ? 'var(--survival)' : '#ffd84d'}">${maxed ? 'MAXED (100%)' : `${pct}% CHANCE`}</span>
+              </div>
+              <div class="kc-npc-card-desc">${escapeHtml(desc)}</div>
+            </div>
+          </div>
+          <div class="kc-progress-track kc-leg-progress-track">
+            <div class="kc-progress-fill ${tier === 'plusPlus' ? 'is-gold' : ''}" style="width:${pct}%"></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;font-family:var(--font-mono);font-size:10px;color:var(--text-muted)">
+            <span>Permanent Drop Quality: <strong style="color:var(--text-bone)">${pct}%</strong></span>
+            <span>POST-BOSS FORGE</span>
+          </div>
+          ${
+            maxed
+              ? ''
+              : `<div class="kc-dev-row" style="margin-top:2px">
+                  <button class="kc-btn kc-btn-sm kc-btn-cyan" data-leg-forge="${tier}" data-amt="1" ${cells < 1 ? 'disabled' : ''}>+1 Cell</button>
+                  <button class="kc-btn kc-btn-sm kc-btn-cyan" data-leg-forge="${tier}" data-amt="5" ${cells < 1 ? 'disabled' : ''}>+5 Cells</button>
+                  <button class="kc-btn kc-btn-sm kc-btn-cyan" data-leg-forge="${tier}" data-amt="25" ${cells < 1 ? 'disabled' : ''}>+25 Cells</button>
+                  <button class="kc-btn kc-btn-sm kc-btn-gold" data-leg-forge="${tier}" data-amt="${Math.max(1, cells)}" ${cells < 1 ? 'disabled' : ''}>All (${cells})</button>
+                </div>`
+          }
+        </div>
+      `;
+    };
+
+    return `
+      <div class="kc-leg-forge-banner">
+        <div class="kc-leg-forge-heading">
+          ${renderUiGlyphSvg('star', 16, '#ffd84d')}
+          <span>The Legendary Forge — Permanent Drop Quality</span>
+        </div>
+        <div style="font-size:11px;color:var(--text-parchment)">
+          Invest glowing <strong style="color:var(--cell-cyan)">Cells</strong> after defeating a Boss to permanently raise the drop rate of <strong>+</strong> and <strong>++</strong> gear across all future runs.
+        </div>
+      </div>
+      <div class="kc-card-grid">
+        ${renderTierCard(
+          'plus',
+          'Forged Quality',
+          '+',
+          'kc-q-plus',
+          'Increases chance that found items spawn at + quality (+2 effective gear levels).',
+          plusPct,
+          forgeIcon
+        )}
+        ${renderTierCard(
+          'plusPlus',
+          'Superior Quality',
+          '++',
+          'kc-q-plusplus',
+          'Increases chance that found items spawn at ++ quality (+4 levels & +1 bonus scroll).',
+          plusPlusPct,
+          starIcon
+        )}
+      </div>
+    `;
+  }
+
+  private renderLegendaryForgeTab(state: SimState): string {
+    return this.renderLegendaryForgeSection(state);
   }
 
   private renderExitsTab(state: SimState): string {
@@ -563,6 +697,7 @@ export class PassageModal {
 
     const timerIcon = renderUiGlyphSvg('timer', 16, '#fbbf24');
     const crownIcon = renderUiGlyphSvg('crown', 16, '#fbbf24');
+    const starIcon = renderUiGlyphSvg('star', 16, '#ffd84d');
     const flaskIcon = renderItemIconHtml('HealthFlask', this.artPackMode, this.customPackResolver, {
       size: 30,
       fallbackKind: 'flask',
@@ -573,12 +708,47 @@ export class PassageModal {
       ? 'CLAIMED'
       : ps.timedDoorOpen
         ? 'UNLOCKED'
-        : `LOCKED (< ${formatTimer(ps.timedTargetTicks)})`;
+        : ps.timedTargetTicks > 0
+          ? `LOCKED (< ${formatTimer(ps.timedTargetTicks)})`
+          : 'NONE';
     const killText = ps.killStreakDoorClaimed
       ? 'CLAIMED'
       : ps.killStreakDoorOpen
         ? 'UNLOCKED'
-        : `LOCKED (${state.maxKillStreak}/${ps.killStreakTarget} Streak)`;
+        : ps.killStreakTarget > 0
+          ? `LOCKED (${state.maxKillStreak}/${ps.killStreakTarget} Streak)`
+          : 'NONE';
+
+    const showFlawlessDoor =
+      Boolean(ps.flawlessBossDoorOpen) ||
+      ps.fromBiome === 'Bridge' ||
+      ps.fromBiome === 'TopClockTower' ||
+      ps.fromBiome === 'Throne';
+    const flawlessText = ps.flawlessBossDoorClaimed
+      ? 'CLAIMED'
+      : ps.flawlessBossDoorOpen
+        ? 'UNLOCKED — LEGENDARY'
+        : 'LOCKED (Took Hit)';
+
+    const flawlessBadgeHtml = showFlawlessDoor
+      ? `
+        <div class="kc-door-badge ${ps.flawlessBossDoorOpen ? 'is-open is-flawless-open' : ''}">
+          <div style="display:flex;align-items:center;gap:9px">
+            ${starIcon}
+            <div>
+              <div style="font-weight:700;color:${ps.flawlessBossDoorOpen ? '#ffd84d' : 'var(--text-bone)'}">Flawless Boss Door</div>
+              <div style="font-size:11px;color:var(--text-muted)">Defeat Boss Untouched (Legendary Item + 25 Cells)</div>
+            </div>
+          </div>
+          <span style="font-family:var(--font-mono);font-size:11px;font-weight:800;color:${ps.flawlessBossDoorOpen ? '#ffd84d' : 'var(--text-muted)'}">${flawlessText}</span>
+        </div>
+      `
+      : '';
+
+    const fountainChargesNote =
+      state.fountainRefillsLeft !== undefined || state.singleFlaskRefillsLeft !== undefined
+        ? ` Remaining run refills: ${state.fountainRefillsLeft ?? 0} Full / ${state.singleFlaskRefillsLeft ?? 0} Flask.`
+        : '';
 
     const exitButtons = nextBiomes
       .map((biomeId) => {
@@ -632,6 +802,7 @@ export class PassageModal {
           </div>
           <span style="font-family:var(--font-mono);font-size:11px;color:${ps.killStreakDoorOpen ? 'var(--survival)' : 'var(--text-muted)'}">${killText}</span>
         </div>
+        ${flawlessBadgeHtml}
       </div>
 
       <div class="kc-npc-card" style="border-color:var(--cell-cyan)">
@@ -645,7 +816,7 @@ export class PassageModal {
               </span>
             </div>
             <div class="kc-npc-card-desc">
-              Restores HP (${Math.ceil(p.hp)}/${Math.ceil(p.maxHp)}) and refills Health Flask charges (${p.flaskCharges}/${p.maxFlaskCharges}) per Boss Cell difficulty rules.
+              Restores HP (${Math.ceil(p.hp)}/${Math.ceil(p.maxHp)}) and refills Health Flask charges (${p.flaskCharges}/${p.maxFlaskCharges}) per Boss Cell difficulty rules.${fountainChargesNote}
             </div>
           </div>
         </div>
@@ -714,6 +885,15 @@ export class PassageModal {
         const slot = btn.dataset.forgeReforge as 'weapon1' | 'weapon2' | 'skill1' | 'skill2';
         this.callbacks.onPlayUiClick?.('confirm');
         this.callbacks.onDispatchCommand({ type: 'forgeReforge', slot });
+      });
+    });
+
+    this.backdropEl.querySelectorAll<HTMLButtonElement>('[data-leg-forge]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const tier = btn.dataset.legForge as 'plus' | 'plusPlus';
+        const amount = Math.max(1, Number(btn.dataset.amt) || 1);
+        this.callbacks.onPlayUiClick?.('confirm');
+        this.callbacks.onDispatchCommand({ type: 'legendaryForgeInvest', tier, amount });
       });
     });
 

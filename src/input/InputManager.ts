@@ -57,6 +57,8 @@ const INTERACTIVE_UI_SELECTOR = [
   '.kc-title-backdrop',
   '.kc-dev-drawer',
   '.kc-loot-card',
+  '.kc-merchant-bar',
+  '.kc-tube-card',
   '.kc-minimap-shell',
   '.kc-interact-prompt',
   '.kc-flask-widget',
@@ -328,6 +330,9 @@ export class InputManager {
       frame.healPressed = this.latchedHeal || gp.healPressed;
       frame.interactPressed = this.latchedInteract || gp.interactPressed;
       frame.mapTogglePressed = this.latchedMapToggle || gp.mapTogglePressed;
+      if (gp.cameraPeekY !== 0) {
+        frame.cameraPeekY = gp.cameraPeekY;
+      }
     }
 
     // Always clear latched edges once consumed
@@ -614,6 +619,7 @@ export class InputManager {
     healPressed: boolean;
     interactPressed: boolean;
     mapTogglePressed: boolean;
+    cameraPeekY: number;
   } {
     const empty = {
       moveLeft: false,
@@ -632,6 +638,7 @@ export class InputManager {
       healPressed: false,
       interactPressed: false,
       mapTogglePressed: false,
+      cameraPeekY: 0,
     };
 
     if (typeof navigator === 'undefined' || typeof navigator.getGamepads !== 'function') {
@@ -662,6 +669,7 @@ export class InputManager {
     if (Math.hypot(rx, ry) > 0.3) {
       this.gamepadAimOffset = { x: rx, y: ry };
     }
+    const cameraPeekY = Math.abs(ry) > 0.45 ? Math.max(-1, Math.min(1, ry)) : 0;
 
     // Start (9) -> Pause, Select (8) -> Map
     if (pressed(9)) this.hotkeys.onTogglePause?.();
@@ -684,6 +692,7 @@ export class InputManager {
       healPressed: pressed(6),
       interactPressed: pressed(7) || pressed(10),
       mapTogglePressed: pressed(8),
+      cameraPeekY,
     };
 
     this.prevGamepadButtons = curr;
