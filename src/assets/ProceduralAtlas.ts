@@ -5,6 +5,12 @@
 // crisp emissive glow masks. Zero DOM dependencies required for getAtlasKeys().
 // =============================================================================
 
+import {
+  BUILTIN_BAKED_SPRITES,
+  BUILTIN_TITLE_BACKDROP,
+  type BakedPixelSprite,
+} from './builtinArtData';
+
 export interface SpriteRegion {
   key: string;
   x: number;
@@ -564,142 +570,142 @@ interface TilesetPalette {
 
 const TILESET_PALETTES: Record<TilesetTheme, TilesetPalette> = {
   prison: {
-    stoneBase: hexRgb('#4c546e'),
-    stoneHi: hexRgb('#737fa0'),
-    stoneDark: hexRgb('#2a3044'),
-    mortar: hexRgb('#141826'),
-    trimTop: hexRgb('#8794b8'),
-    trimAccent: hexRgb('#3f8f7a'),
-    wood: hexRgb('#734d34'),
-    woodHi: hexRgb('#a3714d'),
-    bgStone: hexRgb('#252a3d'),
-    bgAccent: hexRgb('#39415e'),
+    stoneBase: hexRgb('#2e384d'),
+    stoneHi: hexRgb('#4c5c7a'),
+    stoneDark: hexRgb('#192030'),
+    mortar: hexRgb('#0b0e18'),
+    trimTop: hexRgb('#5b6e8f'),
+    trimAccent: hexRgb('#377a66'),
+    wood: hexRgb('#543826'),
+    woodHi: hexRgb('#7d553a'),
+    bgStone: hexRgb('#171e2d'),
+    bgAccent: hexRgb('#28344c'),
     glow: hexRgb('#4de8ff'),
     style: 'masonry',
   },
   promenade: {
-    stoneBase: hexRgb('#5c6368'),
-    stoneHi: hexRgb('#858f94'),
-    stoneDark: hexRgb('#323a3f'),
-    mortar: hexRgb('#191f24'),
-    trimTop: hexRgb('#3c8a57'),
-    trimAccent: hexRgb('#62b872'),
-    wood: hexRgb('#6e4e38'),
-    woodHi: hexRgb('#997154'),
-    bgStone: hexRgb('#2a3238'),
-    bgAccent: hexRgb('#3b4e4a'),
+    stoneBase: hexRgb('#3b4045'),
+    stoneHi: hexRgb('#5c636b'),
+    stoneDark: hexRgb('#1e2429'),
+    mortar: hexRgb('#0e1217'),
+    trimTop: hexRgb('#2e6e44'),
+    trimAccent: hexRgb('#4fa360'),
+    wood: hexRgb('#543b2a'),
+    woodHi: hexRgb('#7a5840'),
+    bgStone: hexRgb('#1c2429'),
+    bgAccent: hexRgb('#2b3b3a'),
     glow: hexRgb('#ffcf54'),
     style: 'moss',
   },
   sewer: {
-    stoneBase: hexRgb('#475948'),
-    stoneHi: hexRgb('#6f8569'),
-    stoneDark: hexRgb('#243326'),
-    mortar: hexRgb('#111a13'),
-    trimTop: hexRgb('#5fa832'),
-    trimAccent: hexRgb('#94f24b'),
-    wood: hexRgb('#5c4c36'),
-    woodHi: hexRgb('#826d4f'),
-    bgStone: hexRgb('#1f2e22'),
-    bgAccent: hexRgb('#344d38'),
+    stoneBase: hexRgb('#2c3b2e'),
+    stoneHi: hexRgb('#496148'),
+    stoneDark: hexRgb('#152118'),
+    mortar: hexRgb('#0a120c'),
+    trimTop: hexRgb('#478524'),
+    trimAccent: hexRgb('#7ce03d'),
+    wood: hexRgb('#473b2a'),
+    woodHi: hexRgb('#69573f'),
+    bgStone: hexRgb('#142017'),
+    bgAccent: hexRgb('#253b29'),
     glow: hexRgb('#80ff38'),
     style: 'pipe',
   },
   ramparts: {
-    stoneBase: hexRgb('#756159'),
-    stoneHi: hexRgb('#a88c80'),
-    stoneDark: hexRgb('#42332e'),
-    mortar: hexRgb('#211816'),
-    trimTop: hexRgb('#c29c88'),
-    trimAccent: hexRgb('#e07c53'),
-    wood: hexRgb('#784c32'),
-    woodHi: hexRgb('#ab704c'),
-    bgStone: hexRgb('#362928'),
-    bgAccent: hexRgb('#543f3c'),
+    stoneBase: hexRgb('#4d403c'),
+    stoneHi: hexRgb('#756159'),
+    stoneDark: hexRgb('#29201e'),
+    mortar: hexRgb('#140f0e'),
+    trimTop: hexRgb('#917263'),
+    trimAccent: hexRgb('#c76a46'),
+    wood: hexRgb('#593824'),
+    woodHi: hexRgb('#855538'),
+    bgStone: hexRgb('#241c1c'),
+    bgAccent: hexRgb('#3d2e2c'),
     glow: hexRgb('#ff9e44'),
     style: 'masonry',
   },
   bridge: {
-    stoneBase: hexRgb('#454c66'),
-    stoneHi: hexRgb('#6f799e'),
-    stoneDark: hexRgb('#23283d'),
-    mortar: hexRgb('#121524'),
-    trimTop: hexRgb('#7f8eb8'),
-    trimAccent: hexRgb('#d4533b'),
-    wood: hexRgb('#5c4034'),
-    woodHi: hexRgb('#876150'),
-    bgStone: hexRgb('#1e2236'),
-    bgAccent: hexRgb('#313a59'),
+    stoneBase: hexRgb('#2c3347'),
+    stoneHi: hexRgb('#4a5575'),
+    stoneDark: hexRgb('#161a29'),
+    mortar: hexRgb('#0a0c16'),
+    trimTop: hexRgb('#5a6a8f'),
+    trimAccent: hexRgb('#b84530'),
+    wood: hexRgb('#473128'),
+    woodHi: hexRgb('#6b4c3e'),
+    bgStone: hexRgb('#141829'),
+    bgAccent: hexRgb('#242d47'),
     glow: hexRgb('#ff5733'),
     style: 'masonry',
   },
   stilt: {
-    stoneBase: hexRgb('#5e574e'),
-    stoneHi: hexRgb('#877e71'),
-    stoneDark: hexRgb('#36312c'),
-    mortar: hexRgb('#1a1714'),
-    trimTop: hexRgb('#876342'),
-    trimAccent: hexRgb('#52997e'),
-    wood: hexRgb('#7d5536'),
-    woodHi: hexRgb('#b07d54'),
-    bgStone: hexRgb('#2b2926'),
-    bgAccent: hexRgb('#474038'),
+    stoneBase: hexRgb('#403c36'),
+    stoneHi: hexRgb('#635c53'),
+    stoneDark: hexRgb('#211f1c'),
+    mortar: hexRgb('#100f0d'),
+    trimTop: hexRgb('#694c33'),
+    trimAccent: hexRgb('#3f7d67'),
+    wood: hexRgb('#5e3f28'),
+    woodHi: hexRgb('#8a5f3e'),
+    bgStone: hexRgb('#1d1c1a'),
+    bgAccent: hexRgb('#332e29'),
     glow: hexRgb('#ffbe4f'),
     style: 'wood',
   },
   clock: {
-    stoneBase: hexRgb('#5c4654'),
-    stoneHi: hexRgb('#8c6c7f'),
-    stoneDark: hexRgb('#30222c'),
-    mortar: hexRgb('#1a1017'),
-    trimTop: hexRgb('#cfa04a'),
-    trimAccent: hexRgb('#ffe082'),
-    wood: hexRgb('#734636'),
-    woodHi: hexRgb('#a86c54'),
-    bgStone: hexRgb('#2e1c28'),
-    bgAccent: hexRgb('#593b47'),
+    stoneBase: hexRgb('#3d2e38'),
+    stoneHi: hexRgb('#634b5b'),
+    stoneDark: hexRgb('#1f151c'),
+    mortar: hexRgb('#10090e'),
+    trimTop: hexRgb('#a87e36'),
+    trimAccent: hexRgb('#e0be65'),
+    wood: hexRgb('#573428'),
+    woodHi: hexRgb('#825240'),
+    bgStone: hexRgb('#20131c'),
+    bgAccent: hexRgb('#3d2732'),
     glow: hexRgb('#52f2e2'),
     style: 'brass',
   },
   castle: {
-    stoneBase: hexRgb('#b5a998'),
-    stoneHi: hexRgb('#e3d7c3'),
-    stoneDark: hexRgb('#6e655c'),
-    mortar: hexRgb('#36302d'),
-    trimTop: hexRgb('#b82e3d'),
-    trimAccent: hexRgb('#f2c15a'),
-    wood: hexRgb('#825038'),
-    woodHi: hexRgb('#b87856'),
-    bgStone: hexRgb('#4f4a52'),
-    bgAccent: hexRgb('#7d6c6e'),
+    stoneBase: hexRgb('#6e6863'),
+    stoneHi: hexRgb('#9c9489'),
+    stoneDark: hexRgb('#3b3736'),
+    mortar: hexRgb('#1c1a1c'),
+    trimTop: hexRgb('#8f2230'),
+    trimAccent: hexRgb('#cfa246'),
+    wood: hexRgb('#5e3927'),
+    woodHi: hexRgb('#8a583d'),
+    bgStone: hexRgb('#302d36'),
+    bgAccent: hexRgb('#4f454b'),
     glow: hexRgb('#ffd269'),
     style: 'marble',
   },
   throne: {
-    stoneBase: hexRgb('#7c879e'),
-    stoneHi: hexRgb('#b3c0db'),
-    stoneDark: hexRgb('#424a5e'),
-    mortar: hexRgb('#1f2433'),
-    trimTop: hexRgb('#d9b04c'),
-    trimAccent: hexRgb('#6ad2ff'),
-    wood: hexRgb('#694a3a'),
-    woodHi: hexRgb('#966d56'),
-    bgStone: hexRgb('#2c344a'),
-    bgAccent: hexRgb('#4d5a7a'),
+    stoneBase: hexRgb('#3c485e'),
+    stoneHi: hexRgb('#637594'),
+    stoneDark: hexRgb('#1e2536'),
+    mortar: hexRgb('#0e121e'),
+    trimTop: hexRgb('#b08d3c'),
+    trimAccent: hexRgb('#52b8e8'),
+    wood: hexRgb('#4d362b'),
+    woodHi: hexRgb('#735342'),
+    bgStone: hexRgb('#182033'),
+    bgAccent: hexRgb('#2c3954'),
     glow: hexRgb('#6ad2ff'),
     style: 'marble',
   },
   passage: {
-    stoneBase: hexRgb('#5c4957'),
-    stoneHi: hexRgb('#876e80'),
-    stoneDark: hexRgb('#30252e'),
-    mortar: hexRgb('#181117'),
-    trimTop: hexRgb('#967385'),
-    trimAccent: hexRgb('#ff9f43'),
-    wood: hexRgb('#7a5036'),
-    woodHi: hexRgb('#ad7653'),
-    bgStone: hexRgb('#291d26'),
-    bgAccent: hexRgb('#473242'),
+    stoneBase: hexRgb('#3d313b'),
+    stoneHi: hexRgb('#614f5e'),
+    stoneDark: hexRgb('#1f181f'),
+    mortar: hexRgb('#0f0b10'),
+    trimTop: hexRgb('#755868'),
+    trimAccent: hexRgb('#d98336'),
+    wood: hexRgb('#593a27'),
+    woodHi: hexRgb('#82583d'),
+    bgStone: hexRgb('#1d151c'),
+    bgAccent: hexRgb('#332430'),
     glow: hexRgb('#ffaa44'),
     style: 'masonry',
   },
@@ -718,54 +724,58 @@ function paintBrickTile(
   const S = 24;
 
   // Deep interior bedrock surrounded on all 4 sides by SOLID:
-  // Dead Cells signature dark atmospheric silhouette stone (zero noisy grid wallpaper!)
+  // Velvety obsidian dungeon rock with subtle recessed carved slabs (zero bright brick noise!)
   if (variant === 'deep') {
-    const deepBase = mixRgb(pal.mortar, pal.stoneDark, 0.36);
-    const deepFaint = mixRgb(pal.mortar, pal.stoneDark, 0.56);
+    const deepBase = scaleRgb(pal.mortar, 0.72);
+    const deepFaint = mixRgb(pal.mortar, pal.stoneDark, 0.22);
     for (let y = 0; y < S; y++) {
       for (let x = 0; x < S; x++) {
         const g = hash2(x, y, seed + 131);
-        const macro = hash2(Math.floor(x / 6), Math.floor(y / 6), seed + 19);
+        const macro = hash2(Math.floor(x / 8), Math.floor(y / 8), seed + 19);
         const isCrack =
-          ((x + y * 2) % 19 === 0 && g > 0.65) ||
-          ((y === 11 && x > 4 && x < 17) && macro > 0.55);
+          ((x + y * 2) % 23 === 0 && g > 0.78) ||
+          (y === 12 && x > 5 && x < 16 && macro > 0.68);
         const rgb = isCrack
-          ? scaleRgb(pal.mortar, 0.75)
-          : scaleRgb(mixRgb(deepBase, deepFaint, macro * 0.45), 0.88 + g * 0.18);
-        const h = isCrack ? 0.18 : 0.45 + macro * 0.08 + (g - 0.5) * 0.04;
+          ? scaleRgb(pal.mortar, 0.55)
+          : scaleRgb(mixRgb(deepBase, deepFaint, macro * 0.35), 0.90 + g * 0.14);
+        const h = isCrack ? 0.16 : 0.42 + macro * 0.05 + (g - 0.5) * 0.03;
         b.pxRgb(x, y, rgb, h);
       }
     }
-    b.bakeRegionNormals(1.0, true);
+    b.bakeRegionNormals(0.7, true);
     return;
   }
 
-  // Exposed masonry edges: irregular asymmetric hand-hewn stone blocks!
-  const rowHeights = [8, 8, 8];
-  const rowOffsets = [0, 9, 4];
-  const rowSplits = [14, 10, 15];
+  // Exposed masonry: organic hand-hewn uneven gothic stone courses (2 tall rough ashlar courses, NOT repetitive tiny bricks!)
+  const courseSplitY = variant === 'var' ? 11 : 13;
+  const xSplits = variant === 'var' ? [11, 17] : [15, 8];
+  const xOffsets = variant === 'mid' ? [3, 11] : [0, 5];
 
   for (let y = 0; y < S; y++) {
-    const row = Math.min(2, Math.floor(y / rowHeights[0]));
-    const ly = y - row * rowHeights[0];
-    const rowH = rowHeights[row];
-    const shiftedX = (xOff: number) => (xOff + rowOffsets[row]) % S;
-    const split = rowSplits[row];
+    const row = y < courseSplitY ? 0 : 1;
+    const ly = row === 0 ? y : y - courseSplitY;
+    const rowH = row === 0 ? courseSplitY : S - courseSplitY;
+    const split = xSplits[row];
+    const offX = xOffsets[row];
 
     for (let x = 0; x < S; x++) {
-      const sx = shiftedX(x);
+      const sx = (x + offX) % S;
       const colIdx = sx < split ? 0 : 1;
       const lx = colIdx === 0 ? sx : sx - split;
       const brickW = colIdx === 0 ? split : S - split;
 
-      const brickSeed = seed * 31 + row * 17 + colIdx * 13;
+      const brickSeed = seed * 37 + row * 19 + colIdx * 11;
       const grain = hash2(x, y, brickSeed);
-      const brickTint = 0.86 + hash2(colIdx, row, seed) * 0.24;
+      const chip = hash2(x + row * 7, y + colIdx * 5, seed + 91);
+      const brickTint = 0.84 + hash2(colIdx, row, seed) * 0.24;
 
-      const isMortar = ly === 0 || lx === 0;
-      const isTopBevel = ly === 1;
+      // Slightly chipped irregular mortar joints so corners look weathered and organic!
+      const cornerDist = Math.min(lx, brickW - 1 - lx) + Math.min(ly, rowH - 1 - ly);
+      const isChippedCorner = cornerDist <= 1 && chip > 0.42;
+      const isMortar = ly === 0 || lx === 0 || isChippedCorner;
+      const isTopBevel = ly === 1 && !isChippedCorner;
       const isBotBevel = ly === rowH - 1;
-      const isLeftBevel = lx === 1;
+      const isLeftBevel = lx === 1 && !isChippedCorner;
       const isRightBevel = lx === brickW - 1;
 
       let rgb: RGB;
@@ -773,55 +783,66 @@ function paintBrickTile(
 
       if (isMortar) {
         rgb = pal.mortar;
-        h = 0.08;
+        h = 0.06;
       } else {
-        const baseMix = variant === 'var' ? 0.44 : variant === 'mid' ? 0.34 : 0.22;
+        const baseMix = variant === 'var' ? 0.50 : variant === 'mid' ? 0.38 : 0.28;
         let base = mixRgb(pal.stoneBase, pal.stoneDark, baseMix);
-        base = scaleRgb(base, brickTint * (0.93 + grain * 0.14));
+        // Subtle painterly dithering + vertical age gradient darkening toward bottom of block
+        const vertShade = 1.06 - (ly / Math.max(1, rowH)) * 0.22;
+        base = scaleRgb(base, brickTint * vertShade * (0.90 + grain * 0.18));
 
-        // Sculpted stone heightfield with crisp bevel catch
         const ex = Math.min(lx, brickW - 1 - lx);
         const ey = Math.min(ly, rowH - 1 - ly);
-        const bevelFactor = Math.min(1, Math.min(ex, ey) / 2.2);
-        h = 0.36 + bevelFactor * 0.54 + (grain - 0.5) * 0.08;
+        const bevelFactor = Math.min(1, Math.min(ex, ey) / 2.5);
+        h = 0.34 + bevelFactor * 0.56 + (grain - 0.5) * 0.10;
 
-        if (isTopBevel || isLeftBevel) {
-          rgb = mixRgb(base, pal.stoneHi, isTopBevel ? 0.34 : 0.2);
+        if (isTopBevel) {
+          rgb = mixRgb(base, pal.stoneHi, 0.28);
+        } else if (isLeftBevel) {
+          rgb = mixRgb(base, pal.stoneHi, 0.16);
         } else if (isBotBevel || isRightBevel) {
-          rgb = mixRgb(base, pal.stoneDark, 0.52);
+          rgb = mixRgb(base, pal.stoneDark, 0.58);
         } else {
           rgb = base;
         }
 
-        // Style-specific details
+        // Weathered hairline cracks & stone pitting
+        if (grain > 0.90 && ly > 2 && ly < rowH - 2) {
+          rgb = mixRgb(rgb, pal.stoneDark, 0.45);
+          h *= 0.72;
+        }
+
+        // Style-specific architectural details
         if (pal.style === 'brass' && row === 1 && (lx === 2 || lx === brickW - 2) && ly === 4) {
           rgb = pal.trimTop;
-          h = 0.96;
-        } else if (pal.style === 'marble' && grain > 0.85) {
-          rgb = mixRgb(rgb, pal.stoneHi, 0.28);
+          h = 0.95;
+        } else if (pal.style === 'marble' && grain > 0.86) {
+          rgb = mixRgb(rgb, pal.stoneHi, 0.22);
         } else if (pal.style === 'wood') {
           const woodWave = Math.sin(x * 0.45 + row * 2.1) * 0.5 + 0.5;
-          rgb = mixRgb(pal.wood, pal.woodHi, woodWave * 0.34);
-          if (ly === 0 || ly === 4) {
+          rgb = mixRgb(pal.wood, pal.woodHi, woodWave * 0.32);
+          if (ly === 0 || ly === 5) {
             rgb = pal.mortar;
             h = 0.12;
           }
         }
 
-        // Variant cracks / weathered chips
-        if (variant === 'var' && ((x + y * 2) % 13 === 0) && grain > 0.42) {
+        if (variant === 'var' && ((x + y * 2) % 15 === 0) && grain > 0.45) {
           rgb = pal.mortar;
-          h = 0.14;
+          h = 0.12;
         }
       }
 
-      // Top floor lip / moss / carpet / brass trim
+      // Sculpted overhanging flagstone / moss / carpet top cap (5px beveled lip + dark cast shadow!)
       if (variant === 'top' && y < 6) {
         if (pal.style === 'moss') {
           const drape = 2 + Math.floor(hash2(x, 0, seed + 7) * 3.8);
           if (y < drape) {
             rgb = y === 0 ? pal.trimAccent : pal.trimTop;
             h = 0.88 - y * 0.06;
+          } else if (y === drape) {
+            rgb = pal.mortar;
+            h = 0.14;
           }
         } else if (pal.style === 'pipe') {
           if (y < 3) {
@@ -831,17 +852,28 @@ function paintBrickTile(
               b.pxRgb(x, y, pal.trimAccent, 0.95, pal.glow, 170);
               continue;
             }
-          }
-        } else {
-          if (y === 0) {
-            rgb = mixRgb(pal.trimTop, [255, 255, 255], 0.14);
-            h = 0.95;
-          } else if (y <= 2) {
-            rgb = pal.trimTop;
-            h = 0.86;
           } else if (y === 3) {
             rgb = pal.mortar;
-            h = 0.16;
+            h = 0.14;
+          }
+        } else {
+          const slabCrack = (x === 7 || x === 18) && y < 4;
+          if (slabCrack) {
+            rgb = pal.mortar;
+            h = 0.12;
+          } else if (y === 0) {
+            rgb = mixRgb(pal.trimTop, pal.stoneHi, 0.38);
+            h = 0.95;
+          } else if (y <= 2) {
+            rgb = scaleRgb(pal.trimTop, 0.88 + grain * 0.16);
+            h = 0.84;
+          } else if (y === 3) {
+            rgb = mixRgb(pal.stoneDark, pal.mortar, 0.65);
+            h = 0.30;
+          } else if (y === 4) {
+            // Cast shadow tucked cleanly underneath the overhanging flagstone lip!
+            rgb = mixRgb(rgb, pal.mortar, 0.72);
+            h = 0.18;
           }
         }
       }
@@ -849,65 +881,89 @@ function paintBrickTile(
       b.pxRgb(x, y, rgb, h);
     }
   }
-  b.bakeRegionNormals(3.1, true);
+  b.bakeRegionNormals(2.9, true);
 }
 
 function paintOneWayTile(b: PixelAtlasBuilder, pal: TilesetPalette): void {
   const S = 24;
-  // Thick sculpted wooden/iron beam ledge at y=0..7 + diagonal brackets y=8..14
-  for (let y = 0; y < 8; y++) {
+  // Sculpted gothic timber & forged-iron catwalk beam (y=0..8) + compact iron corbels (y=8..10)
+  for (let y = 0; y < 9; y++) {
     for (let x = 0; x < S; x++) {
       const grain = hash2(x, y, 77);
-      const isBand = x === 3 || x === 4 || x === 19 || x === 20;
+      const isIronStrap = x === 3 || x === 4 || x === 19 || x === 20;
+      const isPlankSeam = x === 11 && y >= 1 && y <= 6;
       let col: RGB;
       let h = 0.72;
-      if (isBand) {
-        col = y < 2 ? pal.stoneHi : pal.stoneDark;
-        h = 0.92;
+      if (isIronStrap) {
+        const isRivet = (x === 3 || x === 19) && (y === 2 || y === 5);
+        col = isRivet
+          ? pal.stoneHi
+          : y === 0
+          ? pal.stoneHi
+          : y <= 5
+          ? pal.stoneBase
+          : pal.stoneDark;
+        h = isRivet ? 0.98 : 0.9;
+      } else if (isPlankSeam) {
+        col = pal.mortar;
+        h = 0.24;
       } else if (y === 0) {
-        col = mixRgb(pal.woodHi, [255, 240, 210], 0.25);
-        h = 0.95;
+        col = mixRgb(pal.woodHi, [245, 224, 190], 0.18);
+        h = 0.94;
       } else if (y === 1 || y === 2) {
-        col = scaleRgb(pal.woodHi, 0.92 + grain * 0.14);
+        col = scaleRgb(pal.woodHi, 0.88 + grain * 0.16);
         h = 0.86;
-      } else if (y <= 5) {
-        col = scaleRgb(pal.wood, 0.88 + grain * 0.16);
-        h = 0.74;
-      } else if (y === 6) {
-        col = scaleRgb(pal.wood, 0.55);
-        h = 0.42;
+      } else if (y === 3) {
+        col = scaleRgb(pal.wood, 0.92 + grain * 0.14);
+        h = 0.78;
+      } else if (y <= 6) {
+        col = scaleRgb(pal.wood, 0.78 + grain * 0.14);
+        h = 0.68;
+      } else if (y === 7) {
+        col = scaleRgb(pal.wood, 0.45);
+        h = 0.36;
       } else {
         col = pal.mortar;
-        h = 0.18;
+        h = 0.14;
       }
       b.pxRgb(x, y, col, h);
     }
   }
-  // Support struts underneath
-  for (let i = 0; i < 6; i++) {
-    b.pxRgb(2 + i, 8 + i, pal.stoneDark, 0.65);
-    b.pxRgb(3 + i, 8 + i, pal.stoneBase, 0.75);
-    b.pxRgb(21 - i, 8 + i, pal.stoneDark, 0.65);
-    b.pxRgb(20 - i, 8 + i, pal.stoneBase, 0.75);
+  // Subtle compact iron bracket corbels tucked directly beneath the iron straps (no spiky comb teeth!)
+  for (const bx of [3, 19]) {
+    b.pxRgb(bx - 1, 9, pal.mortar, 0.3);
+    b.pxRgb(bx, 9, pal.stoneBase, 0.78);
+    b.pxRgb(bx + 1, 9, pal.stoneDark, 0.68);
+    b.pxRgb(bx + 2, 9, pal.mortar, 0.3);
+    b.pxRgb(bx, 10, pal.stoneDark, 0.52);
+    b.pxRgb(bx + 1, 10, pal.mortar, 0.28);
   }
-  b.bakeRegionNormals(3.2, false);
+  b.bakeRegionNormals(3.0, false);
 }
 
 function paintBgWallTile(b: PixelAtlasBuilder, pal: TilesetPalette, seed: number, kind: 'wall' | 'arch' | 'pillar'): void {
   const S = 24;
   if (kind === 'pillar') {
-    // Cylindrical fluted column! Direct cylindrical normal map for luscious moving torchlight!
+    // Recessed dark gothic carved masonry pilaster (blends naturally with bg_wall — NO bright flat grey stripe!)
     for (let y = 0; y < S; y++) {
-      for (let x = 4; x < 20; x++) {
-        const u = ((x - 4) / 15) * 2 - 1; // -1..1
-        const flute = Math.sin((x - 4) * 1.45) * 0.12;
-        const nx = Math.max(-0.92, Math.min(0.92, u * 0.88 + flute));
-        const nz = Math.sqrt(Math.max(0.08, 1 - nx * nx));
-        const shade = 0.65 + nz * 0.45;
-        const isRing = y === 0 || y === 1 || y === 22 || y === 23;
-        const col = scaleRgb(isRing ? pal.stoneHi : pal.stoneBase, shade);
-        b.pxRgb(x, y, col, 0.7);
-        b.setNormalDirect(x, y, nx, isRing ? (y < 2 ? -0.3 : 0.3) : 0, nz);
+      for (let x = 0; x < S; x++) {
+        const g = hash2(x, y, seed + 61);
+        if (x < 5 || x >= 19) {
+          // Flanking recessed background stonework
+          const isSeam = y % 8 === 0 || x === 0;
+          b.pxRgb(x, y, isSeam ? pal.mortar : scaleRgb(pal.bgStone, 0.82 + g * 0.18), isSeam ? 0.08 : 0.35);
+          continue;
+        }
+        const u = ((x - 5) / 13) * 2 - 1;
+        const flute = Math.sin((x - 5) * 1.55) * 0.14;
+        const nx = Math.max(-0.9, Math.min(0.9, u * 0.82 + flute));
+        const nz = Math.sqrt(Math.max(0.1, 1 - nx * nx));
+        const shade = 0.45 + nz * 0.48 + (g - 0.5) * 0.08;
+        const isCourse = y === 0 || y === 12;
+        const isEdge = x === 5 || x === 18;
+        const col = isCourse || isEdge ? pal.mortar : scaleRgb(pal.bgAccent, shade);
+        b.pxRgb(x, y, col, isCourse ? 0.18 : 0.62);
+        b.setNormalDirect(x, y, nx, isCourse ? 0.25 : 0, nz);
       }
     }
     return;
@@ -1160,17 +1216,31 @@ function paintPropsAndNpcs(b: PixelAtlasBuilder): void {
   b.pxRgb(13, 27, hexRgb('#1a141e'), 0.2);
   b.bakeRegionNormals(3.0, false);
 
-  // Lore Skeleton (28x20)
+  // Fallen Dungeon Warrior Remains (28x20) — weathered muted bone, ribcage, tattered cloak & rusted sword
   b.alloc('prop:skeleton', 28, 20, 0.5, 1.0);
-  const bone = hexRgb('#d4cbb8');
-  const boneDark = hexRgb('#877e6e');
-  b.ellipse(9, 8, 3.6, 3.8, bone, 0.85, 0.15);
-  b.pxRgb(8, 8, hexRgb('#1c1420'), 0.1);
-  b.pxRgb(10, 8, hexRgb('#1c1420'), 0.1);
-  b.line(10, 12, 16, 17, bone, 2, 0.72);
-  b.line(12, 13, 22, 18, boneDark, 2, 0.65);
-  b.rect(18, 14, 6, 4, hexRgb('#f0deb4'), 0.82, 0, hexRgb('#ffd875'), 95); // lore note
-  b.bakeRegionNormals(2.8, false);
+  const boneHiSk = hexRgb('#a89f8d');
+  const boneSk = hexRgb('#7d7567');
+  const boneDarkSk = hexRgb('#47423c');
+  const cloakTatter = hexRgb('#4d1c28');
+  const cloakSh = hexRgb('#261019');
+  // Tattered cloth mound & weathered ribcage
+  b.polygon([[3, 19], [7, 13], [19, 13], [24, 19]], cloakSh, 0.52, 0.16);
+  b.polygon([[6, 18], [9, 13], [16, 14], [19, 18]], cloakTatter, 0.64, 0.14);
+  for (let r = 0; r < 3; r++) {
+    b.line(11 + r * 2, 13, 12 + r * 2, 17, boneSk, 1.3, 0.78);
+  }
+  // Weathered shaded skull resting cleanly against rubble
+  b.ellipse(8, 12.5, 3.2, 3.0, boneSk, 0.82, 0.18);
+  b.ellipse(7.4, 11.4, 1.8, 1.4, boneHiSk, 0.88, 0.12);
+  b.pxRgb(7, 13, hexRgb('#15111c'), 0.18);
+  b.pxRgb(9, 13, hexRgb('#15111c'), 0.18);
+  b.pxRgb(8, 15, boneDarkSk, 0.35);
+  // Broken rusted blade & parchment lore scroll beside remains
+  b.line(18, 17, 25, 11, ironMid, 1.6, 0.84);
+  b.pxRgb(20, 15, goldDark, 0.9);
+  b.rect(17, 16, 5, 3, hexRgb('#9e8c68'), 0.78);
+  b.addOutline([12, 10, 18]);
+  b.bakeRegionNormals(2.9, false);
 
   // Doors (wood, wood_open, gold, exit, boss)
   const oak = hexRgb('#6e462c');
@@ -1453,30 +1523,21 @@ function paintPropsAndNpcs(b: PixelAtlasBuilder): void {
     b.bakeRegionNormals(3.1, false);
   }
 
-  // 5. Overhanging Lush Dungeon Moss Cap (24x12) — with subtle glowing spore specks
-  b.alloc('prop:moss_cap', 24, 12, 0.5, 0.0);
-  const mossDeep = hexRgb('#1a4a2c');
-  const mossMid = hexRgb('#2f7d47');
-  const mossHi = hexRgb('#62c472');
-  const sporeGlow = hexRgb('#a8ff75');
+  // 5. Overhanging Lush Dungeon Moss Cap (24x10) — organic dark-emerald tufts (NO bright repeating dots!)
+  b.alloc('prop:moss_cap', 24, 10, 0.5, 0.0);
+  const mossDeep = hexRgb('#112e1d');
+  const mossMid = hexRgb('#1f5432');
+  const mossHi = hexRgb('#377a47');
   for (let x = 0; x < 24; x++) {
-    const wave = Math.sin(x * 0.55) * 2.2 + Math.cos(x * 1.3) * 1.4;
-    const len = Math.max(2, Math.min(11, Math.round(5.5 + wave + hash2(x, 1, 711) * 3.0)));
+    const wave = Math.sin(x * 0.62) * 1.8 + Math.cos(x * 1.35) * 1.2;
+    const len = Math.max(2, Math.min(8, Math.round(3.8 + wave + hash2(x, 1, 711) * 2.2)));
     for (let y = 0; y < len; y++) {
       const g = hash2(x, y, 719);
-      const col = y === 0 ? mossHi : y < len - 2 ? mossMid : mossDeep;
-      const isSpore = y === len - 1 && g > 0.84;
-      b.pxRgb(
-        x,
-        y,
-        isSpore ? sporeGlow : scaleRgb(col, 0.88 + g * 0.22),
-        0.85 - y * 0.05,
-        isSpore ? sporeGlow : undefined,
-        isSpore ? 175 : 0
-      );
+      const col = y === 0 ? mossHi : y < len - 1 ? mossMid : mossDeep;
+      b.pxRgb(x, y, scaleRgb(col, 0.86 + g * 0.22), 0.78 - y * 0.06);
     }
   }
-  b.bakeRegionNormals(2.8, false);
+  b.bakeRegionNormals(2.4, false);
 
   // 6. Ornate Fluted Gothic Pillar (24x48) — carved capital, gilded rings & cylindrical normals!
   b.alloc('prop:pillar_ornate', 24, 48, 0.5, 1.0);
@@ -2875,6 +2936,7 @@ export function getAtlasKeys(): string[] {
     'prop:moss_cap',
     'prop:pillar_ornate',
     'prop:chain_hook',
+    'prop:gothic_arch',
     'hero:idle_0',
     'hero:idle_1',
     'hero:idle_2',
@@ -3004,6 +3066,511 @@ function pixelsToCanvas(pixels: Uint8Array, w: number, h: number): HTMLCanvasEle
   return canvas;
 }
 
+// =============================================================================
+// AAA Baked Original Krunked Pixel-Art RLE Decoder & Normal-Map Stamper
+// =============================================================================
+
+function decodeBase64Bytes(b64: string): Uint8Array {
+  if (typeof atob === 'function') {
+    const bin = atob(b64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+  const B = (globalThis as unknown as { Buffer?: { from(s: string, enc: string): Uint8Array } }).Buffer;
+  if (B) {
+    const buf = B.from(b64, 'base64');
+    return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+  }
+  return new Uint8Array(0);
+}
+
+interface DecodedBakedSprite {
+  w: number;
+  h: number;
+  indices: Uint8Array;
+  palR: Uint8Array;
+  palG: Uint8Array;
+  palB: Uint8Array;
+  emVal: Uint8Array;
+}
+
+function decodeBakedSprite(sp: BakedPixelSprite, opaqueBackdrop = false): DecodedBakedSprite {
+  const total = sp.w * sp.h;
+  const raw = decodeBase64Bytes(sp.rle);
+  const indices = new Uint8Array(total);
+  let di = 0;
+  let si = 0;
+  while (si < raw.length && di < total) {
+    const byte = raw[si++];
+    if ((byte & 0x80) !== 0) {
+      const run = byte & 0x7f;
+      const val = si < raw.length ? raw[si++] : 0;
+      const end = Math.min(total, di + run);
+      while (di < end) indices[di++] = val;
+    } else {
+      indices[di++] = byte;
+    }
+  }
+
+  const palCount = Math.floor(sp.pal.length / 6);
+  const offset = opaqueBackdrop ? 0 : 1;
+  const palR = new Uint8Array(palCount + offset);
+  const palG = new Uint8Array(palCount + offset);
+  const palB = new Uint8Array(palCount + offset);
+  const emVal = new Uint8Array(palCount + offset);
+
+  for (let i = 0; i < palCount; i++) {
+    const off = i * 6;
+    const n = parseInt(sp.pal.slice(off, off + 6), 16);
+    palR[i + offset] = (n >> 16) & 255;
+    palG[i + offset] = (n >> 8) & 255;
+    palB[i + offset] = n & 255;
+  }
+  for (let i = 0; i < sp.em.length; i++) {
+    const [pIdx, strength] = sp.em[i];
+    if (pIdx >= 0 && pIdx < emVal.length) {
+      emVal[pIdx] = clampByte(strength);
+    }
+  }
+
+  return { w: sp.w, h: sp.h, indices, palR, palG, palB, emVal };
+}
+
+interface StampBakedOpts {
+  shiftX?: number;
+  shiftY?: number;
+  topSwayX?: number;
+  topSwayCutoffFrac?: number;
+  tintMul?: readonly [number, number, number];
+  desaturate?: number;
+  emScale?: number;
+  normalStrength?: number;
+  pivotX?: number;
+  pivotY?: number;
+  /** Re-hue cyan portal/glow pixels into ominous crimson (for Boss Gates!) */
+  crimsonPortalSwap?: boolean;
+  /** Desaturate emerald healing water into dry stone basin (for used Healing Fountain!) */
+  emptyBasin?: boolean;
+  /** Carve glowing open chest cavity + raised golden treasure rim */
+  openChestGlow?: RGB;
+  /** Extra pinpoint emissive boost for sprites with dark warm eyes/cores (e.g. Behemoth, Sinew, Cursed Chest, Guillain) */
+  warmCoreBoost?: 'fire' | 'red_eye' | 'magic_violet' | 'cyan_rune';
+  /** Add subtle combat gleam or buckler/flask overlay on baked hero pose */
+  heroAccent?: 'attack0' | 'attack1' | 'attack2' | 'parry' | 'heal' | 'dive' | 'hurt';
+}
+
+function stampBakedSprite(
+  b: PixelAtlasBuilder,
+  key: string,
+  sp: BakedPixelSprite,
+  opts: StampBakedOpts = {}
+): void {
+  const dec = decodeBakedSprite(sp, false);
+  const { w, h, indices, palR, palG, palB, emVal } = dec;
+  const shiftX = opts.shiftX ?? 0;
+  const shiftY = opts.shiftY ?? 0;
+  const topSwayX = opts.topSwayX ?? 0;
+  const swayCutY = Math.floor(h * (opts.topSwayCutoffFrac ?? 0.45));
+  const tint = opts.tintMul;
+  const desat = opts.desaturate ?? 0;
+  const emScale = opts.emScale ?? 1.0;
+
+  b.alloc(key, w, h, opts.pivotX ?? sp.px, opts.pivotY ?? sp.py);
+
+  // Precompute 4-step interior distance field so baked pixel art gets genuine rounded 3D normal silhouettes!
+  const dist = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) {
+    dist[i] = indices[i] > 0 ? 1 : 0;
+  }
+  for (let pass = 1; pass <= 4; pass++) {
+    const next = new Uint8Array(dist);
+    for (let y = 1; y < h - 1; y++) {
+      const row = y * w;
+      for (let x = 1; x < w - 1; x++) {
+        const i = row + x;
+        if (
+          dist[i] >= pass &&
+          dist[i - 1] >= pass &&
+          dist[i + 1] >= pass &&
+          dist[i - w] >= pass &&
+          dist[i + w] >= pass
+        ) {
+          next[i] = pass + 1;
+        }
+      }
+    }
+    dist.set(next);
+  }
+
+  for (let y = 0; y < h; y++) {
+    const rowOff = y * w;
+    const rowSway = y < swayCutY ? topSwayX : 0;
+    for (let x = 0; x < w; x++) {
+      const pidx = indices[rowOff + x];
+      if (pidx === 0) continue;
+
+      const dx = x + shiftX + rowSway;
+      const dy = y + shiftY;
+      if (dx < 0 || dx >= w || dy < 0 || dy >= h) continue;
+
+      let r = palR[pidx];
+      let g = palG[pidx];
+      let bl = palB[pidx];
+      let em = clampByte(emVal[pidx] * emScale);
+
+      if (opts.crimsonPortalSwap && bl > 110 && g > 95 && r < bl + 15) {
+        const lum = Math.max(g, bl);
+        r = clampByte(Math.min(255, lum * 1.15));
+        g = clampByte(lum * 0.22);
+        bl = clampByte(lum * 0.25);
+        em = Math.max(em, clampByte(lum * 0.95));
+      }
+
+      if (opts.emptyBasin && g > r * 1.15 && g > 75) {
+        const grey = clampByte(0.28 * r + 0.52 * g + 0.2 * bl);
+        r = clampByte(grey * 0.52);
+        g = clampByte(grey * 0.54);
+        bl = clampByte(grey * 0.66);
+        em = 0;
+      }
+
+      if (opts.warmCoreBoost === 'fire') {
+        if (r > 118 && r > g * 1.25 && r > bl * 1.45 && y < h * 0.72) {
+          em = Math.max(em, clampByte(150 + (r - 115) * 1.1));
+        }
+      } else if (opts.warmCoreBoost === 'red_eye') {
+        if (r > 120 && r > g * 1.35 && r > bl * 1.35) {
+          em = Math.max(em, 235);
+        }
+      } else if (opts.warmCoreBoost === 'magic_violet') {
+        if ((r > 105 && bl > 110 && g < 95) || (r > 145 && g < 85 && bl > 85)) {
+          em = Math.max(em, 225);
+        }
+      } else if (opts.warmCoreBoost === 'cyan_rune') {
+        if (bl > 115 && g > 105 && r < 140) {
+          em = Math.max(em, 225);
+        }
+      }
+
+      if (tint) {
+        r = clampByte(r * tint[0]);
+        g = clampByte(g * tint[1]);
+        bl = clampByte(bl * tint[2]);
+      }
+
+      if (desat > 0) {
+        const gray = 0.299 * r + 0.587 * g + 0.114 * bl;
+        r = clampByte(r + (gray - r) * desat);
+        g = clampByte(g + (gray - g) * desat);
+        bl = clampByte(bl + (gray - bl) * desat);
+      }
+
+      const lum = (0.299 * r + 0.587 * g + 0.114 * bl) / 255;
+      const dome = Math.min(1, dist[rowOff + x] / 5.0);
+      const height = 0.24 + lum * 0.42 + dome * 0.34;
+
+      if (em > 0) {
+        b.px(dx, dy, r, g, bl, 255, Math.min(1, height + 0.1), r, g, bl, em);
+      } else {
+        b.px(dx, dy, r, g, bl, 255, height);
+      }
+    }
+  }
+
+  // Open chest interior treasure glow
+  if (opts.openChestGlow) {
+    const cg = opts.openChestGlow;
+    const bandY = Math.floor(h * 0.42);
+    const bandH = Math.max(4, Math.floor(h * 0.16));
+    const padX = Math.floor(w * 0.18);
+    b.rect(padX, bandY - 2, w - padX * 2, bandH + 2, hexRgb('#120c1c'), 0.25);
+    b.rect(padX + 2, bandY, w - (padX + 2) * 2, bandH - 1, cg, 0.94, 0, cg, 245);
+  }
+
+  // Crisp combat action accents for baked Hero poses
+  if (opts.heroAccent === 'attack0' || opts.heroAccent === 'attack1' || opts.heroAccent === 'attack2') {
+    const glow = opts.heroAccent === 'attack2' ? hexRgb('#ffe875') : hexRgb('#7af4ff');
+    const yOff = opts.heroAccent === 'attack0' ? -2 : opts.heroAccent === 'attack1' ? 2 : 0;
+    b.line(Math.floor(w * 0.55), Math.floor(h * 0.35) + yOff, w - 2, Math.floor(h * 0.52) + yOff, glow, 1.5, 0.96, glow, 235);
+  } else if (opts.heroAccent === 'parry') {
+    const gold = hexRgb('#ffd866');
+    const goldHi = hexRgb('#fff8cc');
+    b.polygon(
+      [
+        [w - 8, Math.floor(h * 0.36)],
+        [w - 2, Math.floor(h * 0.42)],
+        [w - 2, Math.floor(h * 0.68)],
+        [w - 7, Math.floor(h * 0.74)],
+        [w - 9, Math.floor(h * 0.64)],
+      ],
+      gold,
+      0.95,
+      0.12,
+      goldHi,
+      215
+    );
+  } else if (opts.heroAccent === 'heal') {
+    const emerald = hexRgb('#4dff99');
+    b.ellipse(w * 0.72, h * 0.52, 3.2, 4.2, emerald, 0.96, 0.05, emerald, 250);
+  } else if (opts.heroAccent === 'dive') {
+    const cyan = hexRgb('#52f2ff');
+    b.line(w * 0.5, h * 0.52, w * 0.5, h - 1, cyan, 2, 0.96, cyan, 240);
+  }
+
+  b.bakeRegionNormals(opts.normalStrength ?? 2.6, false);
+}
+
+function overlayBakedBuiltinArt(b: PixelAtlasBuilder): void {
+  const S = BUILTIN_BAKED_SPRITES;
+
+  // 1. Monumental Gothic Archway (85x96)
+  if (S['prop:gothic_arch']) {
+    stampBakedSprite(b, 'prop:gothic_arch', S['prop:gothic_arch'], { normalStrength: 2.8 });
+  }
+
+  // 2. Hero Multi-Frame AAA Poses (with integrated cyan-amber flame head!)
+  const hIdle = S['hero:idle_0'];
+  const hRun = S['hero:run_0'];
+  const hAtk = S['hero:attack_0'];
+  const hJump = S['hero:jump'];
+  if (hIdle) {
+    stampBakedSprite(b, 'hero:idle_0', hIdle, { topSwayX: 0, emScale: 1.05 });
+    stampBakedSprite(b, 'hero:idle_1', hIdle, { shiftY: 1, topSwayX: 1, topSwayCutoffFrac: 0.36, emScale: 1.15 });
+    stampBakedSprite(b, 'hero:idle_2', hIdle, { shiftY: 1, topSwayX: -1, topSwayCutoffFrac: 0.36, emScale: 1.08 });
+    stampBakedSprite(b, 'hero:idle_3', hIdle, { shiftY: 0, topSwayX: 1, topSwayCutoffFrac: 0.36, emScale: 1.12 });
+    stampBakedSprite(b, 'hero:parry', hIdle, { shiftX: 1, heroAccent: 'parry', emScale: 1.18 });
+    stampBakedSprite(b, 'hero:heal', hIdle, { heroAccent: 'heal', tintMul: [0.94, 1.08, 0.98], emScale: 1.2 });
+    stampBakedSprite(b, 'hero:hurt', hIdle, { shiftX: -2, tintMul: [1.22, 0.85, 0.85], heroAccent: 'hurt' });
+  }
+  if (hRun) {
+    const runBobs = [-1, 0, 1, 0, -1, 1];
+    const runSway = [-1, 0, 1, 1, 0, -1];
+    for (let i = 0; i < 6; i++) {
+      stampBakedSprite(b, `hero:run_${i}`, hRun, {
+        shiftY: runBobs[i],
+        topSwayX: runSway[i],
+        topSwayCutoffFrac: 0.42,
+        emScale: 1.05 + (i % 2) * 0.1,
+      });
+    }
+  }
+  if (hAtk) {
+    stampBakedSprite(b, 'hero:attack_0', hAtk, { shiftX: 1, heroAccent: 'attack0', emScale: 1.15 });
+    stampBakedSprite(b, 'hero:attack_1', hAtk, { shiftX: 2, shiftY: -1, heroAccent: 'attack1', emScale: 1.25 });
+    stampBakedSprite(b, 'hero:attack_2', hAtk, { shiftX: 2, heroAccent: 'attack2', emScale: 1.3 });
+    stampBakedSprite(b, 'hero:dive_slam', hAtk, { shiftY: 1, heroAccent: 'dive', tintMul: [0.92, 1.04, 1.14], emScale: 1.25 });
+  }
+  if (hJump) {
+    stampBakedSprite(b, 'hero:jump', hJump, { emScale: 1.12 });
+    stampBakedSprite(b, 'hero:fall', hJump, { shiftY: 1, topSwayX: -1, topSwayCutoffFrac: 0.48, emScale: 1.08 });
+    stampBakedSprite(b, 'hero:wall_slide', hJump, { shiftX: 1, emScale: 1.05 });
+  }
+
+  // 3. Dungeon Props, Doors, Chests, Teleporters, Fountain & Passage NPCs
+  if (S['prop:brazier_0']) {
+    stampBakedSprite(b, 'prop:brazier_0', S['prop:brazier_0'], { topSwayX: -1, topSwayCutoffFrac: 0.48, emScale: 1.05 });
+    stampBakedSprite(b, 'prop:brazier_1', S['prop:brazier_0'], { topSwayX: 0, topSwayCutoffFrac: 0.48, emScale: 1.22 });
+    stampBakedSprite(b, 'prop:brazier_2', S['prop:brazier_0'], { topSwayX: 1, topSwayCutoffFrac: 0.48, emScale: 1.12 });
+  }
+  if (S['prop:teleporter_active']) {
+    stampBakedSprite(b, 'prop:teleporter_active', S['prop:teleporter_active'], { emScale: 1.2 });
+    stampBakedSprite(b, 'prop:teleporter_idle', S['prop:teleporter_active'], {
+      tintMul: [0.68, 0.72, 0.84],
+      desaturate: 0.35,
+      emScale: 0.32,
+    });
+  }
+  if (S['prop:chest_closed']) {
+    stampBakedSprite(b, 'prop:chest_closed', S['prop:chest_closed'], { emScale: 1.1 });
+    stampBakedSprite(b, 'prop:chest_open', S['prop:chest_closed'], {
+      openChestGlow: hexRgb('#ffe880'),
+      emScale: 1.2,
+    });
+    stampBakedSprite(b, 'prop:chest_boss_closed', S['prop:chest_closed'], {
+      tintMul: [1.18, 0.88, 0.80],
+      emScale: 1.25,
+    });
+    stampBakedSprite(b, 'prop:chest_boss_open', S['prop:chest_closed'], {
+      tintMul: [1.18, 0.88, 0.80],
+      openChestGlow: hexRgb('#ffdc6b'),
+      emScale: 1.3,
+    });
+  }
+  if (S['prop:chest_cursed_closed']) {
+    stampBakedSprite(b, 'prop:chest_cursed_closed', S['prop:chest_cursed_closed'], {
+      warmCoreBoost: 'magic_violet',
+      emScale: 1.25,
+    });
+    stampBakedSprite(b, 'prop:chest_cursed_open', S['prop:chest_cursed_closed'], {
+      warmCoreBoost: 'magic_violet',
+      openChestGlow: hexRgb('#ff4488'),
+      emScale: 1.3,
+    });
+  }
+  if (S['prop:fountain_full']) {
+    stampBakedSprite(b, 'prop:fountain_full', S['prop:fountain_full'], { emScale: 1.18 });
+    stampBakedSprite(b, 'prop:fountain_empty', S['prop:fountain_full'], {
+      emptyBasin: true,
+      tintMul: [0.76, 0.78, 0.84],
+      emScale: 0,
+    });
+  }
+  if (S['prop:door_exit']) {
+    stampBakedSprite(b, 'prop:door_exit', S['prop:door_exit'], { emScale: 1.2 });
+    stampBakedSprite(b, 'prop:door_boss', S['prop:door_exit'], {
+      crimsonPortalSwap: true,
+      tintMul: [1.06, 0.88, 0.90],
+      emScale: 1.25,
+    });
+  }
+  if (S['prop:door_wood']) {
+    stampBakedSprite(b, 'prop:door_wood', S['prop:door_wood'], { normalStrength: 2.8 });
+    stampBakedSprite(b, 'prop:door_gold', S['prop:door_wood'], {
+      tintMul: [1.45, 1.18, 0.62],
+      warmCoreBoost: 'fire',
+      emScale: 1.0,
+    });
+  }
+  if (S['prop:npc_collector']) {
+    stampBakedSprite(b, 'prop:npc_collector', S['prop:npc_collector'], { emScale: 1.18 });
+  }
+  if (S['prop:npc_guillain']) {
+    stampBakedSprite(b, 'prop:npc_guillain', S['prop:npc_guillain'], {
+      warmCoreBoost: 'cyan_rune',
+      emScale: 1.2,
+    });
+  }
+  if (S['prop:npc_forge']) {
+    stampBakedSprite(b, 'prop:npc_forge', S['prop:npc_forge'], {
+      warmCoreBoost: 'fire',
+      emScale: 1.2,
+    });
+  }
+  if (S['turret:sinew']) {
+    stampBakedSprite(b, 'turret:sinew', S['turret:sinew'], {
+      warmCoreBoost: 'red_eye',
+      emScale: 1.25,
+    });
+    stampBakedSprite(b, 'turret:heavy', S['turret:sinew'], {
+      tintMul: [1.26, 1.04, 0.70],
+      warmCoreBoost: 'fire',
+      emScale: 1.2,
+    });
+  }
+
+  // 4. All 18 Enemy Archetypes (12 direct AAA sheets + 6 distinct palette-graded cousins!)
+  const enemyMap: ReadonlyArray<{
+    id: string;
+    srcKey: string;
+    tint?: readonly [number, number, number];
+    warm?: StampBakedOpts['warmCoreBoost'];
+  }> = [
+    { id: 'Zombie', srcKey: 'enemy:Zombie_0', warm: 'fire' },
+    { id: 'Runner', srcKey: 'enemy:Zombie_0', tint: [1.24, 0.76, 0.80], warm: 'red_eye' },
+    { id: 'Archer', srcKey: 'enemy:Archer_0', warm: 'red_eye' },
+    { id: 'Shield', srcKey: 'enemy:Shield_0', warm: 'fire' },
+    { id: 'Mage360', srcKey: 'enemy:Mage360_0', warm: 'magic_violet' },
+    { id: 'Grenader', srcKey: 'enemy:Grenader_0', warm: 'fire' },
+    { id: 'ClusterGrenader', srcKey: 'enemy:Grenader_0', tint: [0.88, 0.90, 1.14], warm: 'fire' },
+    { id: 'CastleKnight', srcKey: 'enemy:CastleKnight_0', warm: 'cyan_rune' },
+    { id: 'Ninja', srcKey: 'enemy:Ninja_0', warm: 'red_eye' },
+    { id: 'Comboter', srcKey: 'enemy:Ninja_0', tint: [1.26, 0.80, 0.84], warm: 'fire' },
+    { id: 'PirateChief', srcKey: 'enemy:PirateChief_0', warm: 'fire' },
+    { id: 'Lancer', srcKey: 'enemy:Lancer_0', warm: 'cyan_rune' },
+    { id: 'LeapingDuelyst', srcKey: 'enemy:Lancer_0', tint: [0.92, 0.84, 1.22], warm: 'magic_violet' },
+    { id: 'Worm', srcKey: 'enemy:Worm_0' },
+    { id: 'Scorpio', srcKey: 'enemy:Worm_0', tint: [1.18, 0.82, 1.22], warm: 'magic_violet' },
+    { id: 'BatKamikaze', srcKey: 'enemy:BatKamikaze_0', warm: 'fire' },
+    { id: 'BatDasher', srcKey: 'enemy:BatKamikaze_0', tint: [1.30, 0.72, 1.16], warm: 'magic_violet' },
+    { id: 'Protector', srcKey: 'enemy:Protector_0', warm: 'cyan_rune' },
+  ];
+
+  for (const em of enemyMap) {
+    const src = S[em.srcKey];
+    if (!src) continue;
+    stampBakedSprite(b, `enemy:${em.id}_0`, src, {
+      tintMul: em.tint,
+      warmCoreBoost: em.warm,
+      emScale: 1.08,
+    });
+    stampBakedSprite(b, `enemy:${em.id}_1`, src, {
+      shiftX: 1,
+      shiftY: em.id.startsWith('Bat') ? -1 : 0,
+      topSwayX: 1,
+      topSwayCutoffFrac: 0.55,
+      tintMul: em.tint,
+      warmCoreBoost: em.warm,
+      emScale: 1.24,
+    });
+    b.regions[`enemy:${em.id}`] = { ...b.regions[`enemy:${em.id}_0`], key: `enemy:${em.id}` };
+    b.regions[em.id] = { ...b.regions[`enemy:${em.id}_0`], key: em.id };
+  }
+
+  // 5. All 3 Monumental Multi-Phase Bosses
+  const bossSpecs: ReadonlyArray<{
+    id: string;
+    srcKey: string;
+    warm?: StampBakedOpts['warmCoreBoost'];
+  }> = [
+    { id: 'Behemoth', srcKey: 'boss:Behemoth_0', warm: 'fire' },
+    { id: 'TimeKeeper', srcKey: 'boss:TimeKeeper_0', warm: 'cyan_rune' },
+    { id: 'KingsHand', srcKey: 'boss:KingsHand_0', warm: 'cyan_rune' },
+  ];
+
+  for (const bs of bossSpecs) {
+    const src = S[bs.srcKey];
+    if (!src) continue;
+    stampBakedSprite(b, `boss:${bs.id}_0`, src, {
+      warmCoreBoost: bs.warm,
+      normalStrength: 2.9,
+      emScale: 1.15,
+    });
+    stampBakedSprite(b, `boss:${bs.id}_1`, src, {
+      shiftX: 2,
+      topSwayX: 1,
+      topSwayCutoffFrac: 0.52,
+      warmCoreBoost: bs.warm,
+      normalStrength: 2.9,
+      emScale: 1.32,
+    });
+    b.regions[`boss:${bs.id}`] = { ...b.regions[`boss:${bs.id}_0`], key: `boss:${bs.id}` };
+    b.regions[bs.id] = { ...b.regions[`boss:${bs.id}_0`], key: bs.id };
+  }
+}
+
+let cachedBuiltinTitleUrl: string | null | undefined;
+
+export function getBuiltinTitleBackdropDataUrl(): string | null {
+  if (cachedBuiltinTitleUrl !== undefined) return cachedBuiltinTitleUrl;
+  if (typeof document === 'undefined' || !BUILTIN_TITLE_BACKDROP) {
+    cachedBuiltinTitleUrl = null;
+    return null;
+  }
+  const dec = decodeBakedSprite(BUILTIN_TITLE_BACKDROP, true);
+  const canvas = document.createElement('canvas');
+  canvas.width = dec.w;
+  canvas.height = dec.h;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    cachedBuiltinTitleUrl = null;
+    return null;
+  }
+  const img = ctx.createImageData(dec.w, dec.h);
+  const d = img.data;
+  for (let i = 0; i < dec.w * dec.h; i++) {
+    const p = dec.indices[i];
+    const o = i * 4;
+    d[o] = dec.palR[p];
+    d[o + 1] = dec.palG[p];
+    d[o + 2] = dec.palB[p];
+    d[o + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  cachedBuiltinTitleUrl = canvas.toDataURL('image/png');
+  return cachedBuiltinTitleUrl;
+}
+
 export function buildProceduralAtlas(): ProceduralAtlasData {
   const b = new PixelAtlasBuilder();
 
@@ -3051,37 +3618,17 @@ export function buildProceduralAtlas(): ProceduralAtlasData {
   paintUniversalTiles(b);
   paintPropsAndNpcs(b);
 
-  // 3. Prisoner (Hero) Multi-Frame Animations + Homunculus Plasma Flame
-  for (let i = 0; i < 4; i++) paintHeroPose(b, `hero:idle_${i}`, 'idle', i);
-  for (let i = 0; i < 6; i++) paintHeroPose(b, `hero:run_${i}`, 'run', i);
-  paintHeroPose(b, 'hero:jump', 'jump', 0);
-  paintHeroPose(b, 'hero:fall', 'fall', 0);
-  paintHeroPose(b, 'hero:wall_slide', 'wall', 0);
+  // 3. Prisoner (Hero) Procedural Roll/Dead + Homunculus Plasma Flame (used by Custom Pack)
   for (let i = 0; i < 3; i++) paintHeroPose(b, `hero:roll_${i}`, 'roll', i);
-  paintHeroPose(b, 'hero:dive_slam', 'dive', 0);
-  for (let i = 0; i < 3; i++) paintHeroPose(b, `hero:attack_${i}`, 'attack', i);
-  paintHeroPose(b, 'hero:parry', 'parry', 0);
-  paintHeroPose(b, 'hero:heal', 'heal', 0);
-  paintHeroPose(b, 'hero:hurt', 'hurt', 0);
   paintHeroPose(b, 'hero:dead', 'dead', 0);
   paintHomunculusHeadFrames(b);
 
-  // 4. All 18 Enemy Archetypes (2 frames each)
-  for (const spec of ENEMY_VISUALS) {
-    for (let f = 0; f < 2; f++) {
-      b.alloc(`enemy:${spec.id}_${f}`, spec.w, spec.h, 0.5, 1.0);
-      paintEnemyFrame(b, spec, f);
-    }
-    b.alias(`enemy:${spec.id}`, `enemy:${spec.id}_0`);
-    b.alias(spec.id, `enemy:${spec.id}_0`);
-  }
-
-  // 5. All 3 Multi-Phase Bosses
-  paintBosses(b);
-
-  // 6. Pickups, Turrets, Projectiles, Weapons/Skills Icons, VFX & Bitmap Font
+  // 4. Pickups, Turrets (fallback/wolfTrap/bossBanner), Projectiles, VFX & Bitmap Font
   paintPickupsTurretsProjectiles(b);
   paintVfxAndPixelFont(b);
+
+  // 5. AAA Original Krunked Built-In Pixel-Art Sprites (Hero, 18 Enemies, 3 Bosses, Props, NPCs, Gothic Arch!)
+  overlayBakedBuiltinArt(b);
 
   const keys = Object.keys(b.regions);
   return {

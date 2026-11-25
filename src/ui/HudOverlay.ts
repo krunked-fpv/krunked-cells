@@ -1083,7 +1083,10 @@ export class HudOverlay {
           this.showToast('CURSE LIFTED', 2.2);
           break;
         case 'biomeTransition':
-          this.showToast(getBiomeDisplayName(ev.to, this.catalog), 2.8);
+          // Boss arenas already announce themselves via the ornate top-center Boss Banner!
+          if (ev.to !== 'Bridge' && ev.to !== 'TopClockTower' && ev.to !== 'Throne') {
+            this.showToast(getBiomeDisplayName(ev.to, this.catalog), 2.8);
+          }
           break;
         case 'bossPhaseShift': {
           const boss = getBossDisplayInfo(ev.bossId, this.catalog);

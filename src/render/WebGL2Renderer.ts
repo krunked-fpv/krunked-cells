@@ -79,6 +79,8 @@ interface BiomeAtlasCache {
   groundCaps: LibGdxRegion[];
   ceilingCaps: LibGdxRegion[];
   oneWays: LibGdxRegion[];
+  oneWayLeft: LibGdxRegion | null;
+  oneWayRight: LibGdxRegion | null;
   chains: LibGdxRegion[];
   arches: LibGdxRegion[];
   banners: LibGdxRegion[];
@@ -101,6 +103,7 @@ interface BiomeAtlasCache {
   prisonBossDoor: LibGdxRegion | null;
   collectorBack: LibGdxRegion | null;
   foundry: LibGdxRegion | null;
+  healFlaskBack: LibGdxRegion | null;
   teleportAltar: LibGdxRegion | null;
   flagMetaObject: LibGdxRegion | null;
 }
@@ -159,7 +162,11 @@ function buildBiomeAtlasCache(loaded: LoadedCustomAtlas): BiomeAtlasCache {
   const altFloorStamps: LibGdxRegion[] = [];
   const groundCaps: LibGdxRegion[] = [];
   const ceilingCaps: LibGdxRegion[] = [];
-  const oneWays: LibGdxRegion[] = [];
+  const woodOneWays: LibGdxRegion[] = [];
+  const stoneOneWays: LibGdxRegion[] = [];
+  const fallbackOneWays: LibGdxRegion[] = [];
+  let oneWayLeft: LibGdxRegion | null = null;
+  let oneWayRight: LibGdxRegion | null = null;
   const chains: LibGdxRegion[] = [];
   const arches: LibGdxRegion[] = [];
   const banners: LibGdxRegion[] = [];
@@ -185,8 +192,17 @@ function buildBiomeAtlasCache(loaded: LoadedCustomAtlas): BiomeAtlasCache {
       ceilingCaps.push(reg);
     }
 
-    if (name === 'ladderPlatform' || name === 'unstablePlatform_0' || name === 'bridgeTile') {
-      oneWays.push(reg);
+    // Authentic Dead Cells horizontal timber/stone one-way ledges (NEVER ladderPlatform chain hooks!)
+    if (/^woodenPlatform_\d+$/.test(name)) {
+      woodOneWays.push(reg);
+    } else if (/^stonePlatform_\d+$/.test(name)) {
+      stoneOneWays.push(reg);
+    } else if (name === 'woodenPlatform_left' || name === 'stonePlatformLeft') {
+      if (!oneWayLeft || name.startsWith('wooden')) oneWayLeft = reg;
+    } else if (name === 'woodenPlatform_right' || name === 'stonePlatformRight') {
+      if (!oneWayRight || name.startsWith('wooden')) oneWayRight = reg;
+    } else if (name === 'unstablePlatform_0') {
+      fallbackOneWays.push(reg);
     }
     if (name === 'chain_0' || name === 'chainTile') {
       chains.push(reg);
@@ -233,8 +249,15 @@ function buildBiomeAtlasCache(loaded: LoadedCustomAtlas): BiomeAtlasCache {
   floorJunk.sort(byName);
   wallJunk.sort(byName);
 
-  // Prefer 24px-wide platforms first (ladderPlatform / unstablePlatform_0), then bridgeTile
-  oneWays.sort((a, b) => a.w - b.w || byName(a, b));
+  woodOneWays.sort(byName);
+  stoneOneWays.sort(byName);
+  fallbackOneWays.sort((a, b) => a.w - b.w || byName(a, b));
+  const oneWays =
+    woodOneWays.length > 0
+      ? woodOneWays
+      : stoneOneWays.length > 0
+      ? stoneOneWays
+      : fallbackOneWays;
   chains.sort((a, b) => (a.name === 'chain_0' ? -1 : b.name === 'chain_0' ? 1 : byName(a, b)));
   exitDoors.sort((a, b) =>
     a.name === 'exitDoor' ? -1 : b.name === 'exitDoor' ? 1 : byName(a, b)
@@ -255,6 +278,8 @@ function buildBiomeAtlasCache(loaded: LoadedCustomAtlas): BiomeAtlasCache {
     groundCaps,
     ceilingCaps,
     oneWays,
+    oneWayLeft,
+    oneWayRight,
     chains,
     arches,
     banners,
@@ -276,6 +301,7 @@ function buildBiomeAtlasCache(loaded: LoadedCustomAtlas): BiomeAtlasCache {
     prisonBossDoor: regs.get('prisonBossDoor') ?? null,
     collectorBack: regs.get('collectorBack') ?? null,
     foundry: regs.get('foundry') ?? null,
+    healFlaskBack: regs.get('HealFlaskBack') ?? null,
     teleportAltar: regs.get('teleportAltar') ?? null,
     flagMetaObject: regs.get('flagMetaObject') ?? null,
   };
@@ -1644,9 +1670,9 @@ export class WebGL2Renderer implements RendererAPI {
             -1.0
           );
         } else {
-          const modX = tx % 6;
+          const modX = tx % 10;
           const reg =
-            modX === 0 ? regBgPillar : modX === 3 && ty % 3 === 1 ? regBgArch : regBgWall;
+            modX === 0 ? regBgPillar : modX === 5 && ty % 4 === 1 ? regBgArch : regBgWall;
           this.pushQuad(reg, sx, sy, TILE_SIZE, TILE_SIZE, 1, 1, 1, 1, 1, 0, 0, -1.0);
         }
       }
@@ -1661,8 +1687,8 @@ export class WebGL2Renderer implements RendererAPI {
         if (sx < -160 || sx > VIEWPORT_W + 160 || sy < -160 || sy > VIEWPORT_H + 160) continue;
         if (sh.kind === 'collector' && cCache.collectorBack) {
           const reg = cCache.collectorBack;
-          const dw = Math.round(reg.w * 0.36);
-          const dh = Math.round(reg.h * 0.36);
+          const dw = Math.round(reg.w * 0.30);
+          const dh = Math.round(reg.h * 0.30);
           this.pushCustomRegion(
             commonAtlas,
             reg,
@@ -1681,8 +1707,8 @@ export class WebGL2Renderer implements RendererAPI {
           );
         } else if (sh.kind === 'forge' && cCache.foundry) {
           const reg = cCache.foundry;
-          const dw = Math.round(reg.w * 0.36);
-          const dh = Math.round(reg.h * 0.36);
+          const dw = Math.round(reg.w * 0.34);
+          const dh = Math.round(reg.h * 0.34);
           this.pushCustomRegion(
             commonAtlas,
             reg,
@@ -1791,9 +1817,10 @@ export class WebGL2Renderer implements RendererAPI {
         }
       }
     } else {
-      // Built-In Mode: lush gothic room dressings (banners, hanging cages, ornate pillars, lanterns, floor crates/barrels/skulls!)
+      // Built-In Mode: monumental baked Gothic Cathedral Archways + lush dungeon dressings!
       const regBanner = resolveSpriteRegion(this.atlas.regions, `prop:banner_${animFrame2}`);
       const regCage = resolveSpriteRegion(this.atlas.regions, 'prop:cage');
+      const regGothicArch = this.atlas.regions['prop:gothic_arch'] ?? null;
       const hasPillar = Boolean(this.atlas.regions['prop:pillar_ornate']);
       const hasLantern = Boolean(this.atlas.regions[`prop:lantern_${flameFrame3}`]);
       const hasChainHook = Boolean(this.atlas.regions['prop:chain_hook']);
@@ -1801,16 +1828,62 @@ export class WebGL2Renderer implements RendererAPI {
       const hasBarrel = Boolean(this.atlas.regions['prop:barrel']);
       const hasSkullPile = Boolean(this.atlas.regions['prop:skull_pile']);
 
+      // Passage Built-In Vaulted Alcoves behind Collector, Guillain & Blacksmith
+      if (state.activeBiomeId === 'Passage' && regGothicArch) {
+        for (let i = 0; i < state.shrines.length; i++) {
+          const sh = state.shrines[i];
+          if (sh.kind !== 'collector' && sh.kind !== 'forge') continue;
+          const sx = Math.round(sh.pos.x - camX);
+          const sy = Math.round(sh.pos.y - camY);
+          if (sx < -110 || sx > VIEWPORT_W + 110 || sy < -110 || sy > VIEWPORT_H + 110) continue;
+          const archW = Math.round(regGothicArch.w * 1.05);
+          const archH = Math.round(regGothicArch.h * 1.05);
+          this.pushQuad(
+            regGothicArch,
+            Math.round(sx - archW * 0.5),
+            sy - archH,
+            archW,
+            archH,
+            0.84,
+            0.82,
+            0.94,
+            1,
+            1,
+            0,
+            0,
+            -0.88
+          );
+        }
+      }
+
       for (let i = 0; i < state.rooms.length; i++) {
         const rm = state.rooms[i];
         const rx0 = rm.tx * TILE_SIZE - camX;
         const rx1 = (rm.tx + rm.tw) * TILE_SIZE - camX;
         const ry0 = rm.ty * TILE_SIZE - camY;
         const ry1 = (rm.ty + rm.th) * TILE_SIZE - camY;
-        if (rx1 < -48 || rx0 > VIEWPORT_W + 48 || ry1 < -48 || ry0 > VIEWPORT_H + 48) continue;
+        if (rx1 < -96 || rx0 > VIEWPORT_W + 96 || ry1 < -96 || ry0 > VIEWPORT_H + 96) continue;
 
         const floorTy = rm.type === 'passage' ? rm.ty + rm.th - 2 : rm.ty + rm.th - 1;
         const floorScreenY = Math.round(floorTy * TILE_SIZE - camY);
+        const roomInnerH = Math.max(48, (floorTy - rm.ty - 1) * TILE_SIZE);
+
+        // Monumental vaulted Gothic Stone Archways framing interior corridors & arenas!
+        if (regGothicArch && rm.tw >= 10 && rm.type !== 'passage') {
+          const archCount = rm.tw >= 22 ? 3 : rm.tw >= 15 ? 2 : 1;
+          const maxScale = rm.type === 'bossArena' ? 0.84 : 1.06;
+          for (let k = 0; k < archCount; k++) {
+            const frac =
+              archCount === 1 ? 0.5 : archCount === 2 ? (k === 0 ? 0.3 : 0.7) : (k + 1) / 4;
+            const atx = rm.tx + Math.floor(rm.tw * frac);
+            const scale = Math.min(maxScale, Math.max(0.72, (roomInnerH * 0.94) / regGothicArch.h));
+            const dw = Math.round(regGothicArch.w * scale);
+            const dh = Math.round(regGothicArch.h * scale);
+            const ax = Math.round(atx * TILE_SIZE - dw * 0.5 - camX);
+            const ay = floorScreenY - dh;
+            this.pushQuad(regGothicArch, ax, ay, dw, dh, 0.84, 0.87, 0.96, 1, 1, 0, 0, -0.88);
+          }
+        }
 
         if (rm.tw >= 8) {
           const bx = Math.round((rm.tx + Math.floor(rm.tw * 0.35)) * TILE_SIZE - camX);
@@ -1928,6 +2001,16 @@ export class WebGL2Renderer implements RendererAPI {
           this.drawSpriteKey(`prop:brazier_${flameFrame3}`, sx, sy + 18, 1, 1, 1, 1, 1, 0, 0.10, 1.0);
         }
       } else if (l.kind === 'torch') {
+        // Only draw wall torches when backed by dungeon masonry and NOT overlapping a platform ledge!
+        const ltx = Math.floor(l.x / TILE_SIZE);
+        const lty = Math.floor(l.y / TILE_SIZE);
+        const inBounds = ltx >= 0 && lty >= 0 && ltx < grid.width && lty < grid.height;
+        const hasBgWall = inBounds && grid.bgTiles[lty * grid.width + ltx] !== 0;
+        const tileHere = inBounds ? grid.tiles[lty * grid.width + ltx] : TileKind.EMPTY;
+        const tileBelow =
+          inBounds && lty + 1 < grid.height ? grid.tiles[(lty + 1) * grid.width + ltx] : TileKind.EMPTY;
+        const overlapsPlatform = tileHere === TileKind.ONE_WAY || tileBelow === TileKind.ONE_WAY;
+        if (!hasBgWall || overlapsPlatform) continue;
         if (commonAtlas && cCache?.torch) {
           const reg = cCache.torch;
           this.pushCustomRegion(
@@ -2152,12 +2235,28 @@ export class WebGL2Renderer implements RendererAPI {
             }
           }
         } else if (tile === TileKind.ONE_WAY) {
-          if (hasCustomOneWay) {
-            const ow = bCache!.oneWays[0];
+          const fallbackPrisonAtlas =
+            !hasCustomOneWay && useCustomWorld ? this.ensureCustomAtlasLoaded('prison') : null;
+          const owAtlas = hasCustomOneWay
+            ? biomeAtlas!
+            : fallbackPrisonAtlas && fallbackPrisonAtlas.cache.oneWays.length > 0
+            ? fallbackPrisonAtlas
+            : null;
+          if (owAtlas) {
+            const owCache = owAtlas.cache;
+            const leftIsOneWay = tx > 0 && grid.tiles[rowOff + tx - 1] === TileKind.ONE_WAY;
+            const rightIsOneWay =
+              tx + 1 < grid.width && grid.tiles[rowOff + tx + 1] === TileKind.ONE_WAY;
+            let ow = owCache.oneWays[tileHash(tx, ty) % owCache.oneWays.length];
+            if (!leftIsOneWay && owCache.oneWayLeft) {
+              ow = owCache.oneWayLeft;
+            } else if (!rightIsOneWay && owCache.oneWayRight) {
+              ow = owCache.oneWayRight;
+            }
             if (ow.w > 48) {
               const seg = tx % 6;
               this.pushCustomRegionSliceX(
-                biomeAtlas!,
+                owAtlas,
                 ow,
                 seg / 6,
                 (seg + 1) / 6,
@@ -2169,7 +2268,7 @@ export class WebGL2Renderer implements RendererAPI {
               );
             } else {
               this.pushCustomRegion(
-                biomeAtlas!,
+                owAtlas,
                 ow,
                 sx,
                 sy,
@@ -2559,6 +2658,27 @@ export class WebGL2Renderer implements RendererAPI {
       } else if (sh.kind === 'forge') {
         const ok = this.tryDrawCustomPackSprite('blacksmith', ['npcBlacksmithIdle'], Math.floor(elapsedSec * 10), sx, sy, -1, 0, 0.72);
         if (ok) continue;
+      } else if (sh.kind === 'fountain' && commonAtlas && cCache?.healFlaskBack) {
+        const reg = cCache.healFlaskBack;
+        const dw = 84;
+        const dh = Math.round(dw * (reg.h / Math.max(1, reg.w)));
+        this.pushCustomRegion(
+          commonAtlas,
+          reg,
+          Math.round(sx - dw * 0.5),
+          Math.round(sy - dh),
+          dw,
+          dh,
+          sh.used ? 0.55 : 0.96,
+          sh.used ? 0.62 : 1.05,
+          sh.used ? 0.68 : 0.98,
+          1,
+          1,
+          0,
+          sh.used ? 0.02 : 0.18,
+          1.0
+        );
+        continue;
       }
       let key = 'prop:scroll_altar';
       if (sh.kind === 'fountain') key = sh.used ? 'prop:fountain_empty' : 'prop:fountain_full';
@@ -2584,7 +2704,19 @@ export class WebGL2Renderer implements RendererAPI {
           : tu.kind === 'bossBanner'
           ? 'turret:bossBanner'
           : 'turret:sinew';
-      this.drawSpriteKey(key, sx, sy, 1, 1, 1, 1, tu.facing, 0, tu.kind === 'bossBanner' ? 0.25 : 0.06, 1.0);
+      this.drawSpriteKey(
+        key,
+        sx,
+        sy + 6,
+        1,
+        1,
+        1,
+        1,
+        tu.facing,
+        0,
+        tu.kind === 'bossBanner' ? 0.25 : 0.08,
+        1.0
+      );
     }
 
     // 7. Pickups (Smooth interpolation + gentle vertical bobbing + color-coded scroll glow)
@@ -2708,8 +2840,23 @@ export class WebGL2Renderer implements RendererAPI {
       );
       if (!drawnCustom) {
         const key = `boss:${en.bossId}_${frame}`;
-        const phasePulse = en.bossPhase >= 2 ? 0.08 : 0;
-        this.drawSpriteKey(key, sx, sy, r, g, b, 1, en.facing, flash, emBoost + phasePulse, 1.0);
+        const phasePulse = en.bossPhase >= 2 ? 0.12 : 0.04;
+        const bossScale =
+          en.bossId === 'KingsHand' ? 1.14 : en.bossId === 'Behemoth' ? 1.12 : 1.08;
+        this.drawSpriteKey(
+          key,
+          sx,
+          sy,
+          r,
+          g,
+          b,
+          1,
+          en.facing,
+          flash,
+          emBoost + phasePulse,
+          1.0,
+          bossScale
+        );
       }
       return;
     }
@@ -2834,11 +2981,26 @@ export class WebGL2Renderer implements RendererAPI {
       headOx = this.customHeadOx;
       headOy = this.customHeadOy;
     } else {
-      this.drawSpriteKey(animKey, sx, sy, hr, hg, hb, 1, p.facing, flash, iframeBlink ? 0.15 : 0, 1.0);
+      const heroScale = p.actionState === 'roll' || p.actionState === 'dead' ? 1.0 : 0.96;
+      this.drawSpriteKey(
+        animKey,
+        sx,
+        sy,
+        hr,
+        hg,
+        hb,
+        1,
+        p.facing,
+        flash,
+        iframeBlink ? 0.15 : 0.04,
+        1.0,
+        heroScale
+      );
     }
 
-    // Layered Glowing Cyan-Amber Homunculus Plasma Head (crisp Dead Cells silhouette!)
-    if (p.actionState !== 'dead') {
+    // Layered Glowing Cyan-Amber Homunculus Plasma Head:
+    // Custom Pack `beheaded` is headless (uses headBone), while Built-In baked hero poses ALREADY include the flame head!
+    if ((drawnCustom || p.actionState === 'roll') && p.actionState !== 'dead') {
       const flameFrame = Math.floor(elapsedSec * 14) % 4;
       const bob = Math.sin(elapsedSec * 12) * 0.9;
       this.drawSpriteKey(

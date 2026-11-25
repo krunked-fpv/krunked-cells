@@ -29,6 +29,7 @@ import {
   TargetFps,
   createDefaultMetaSnapshot,
 } from '../contracts';
+import { getBuiltinTitleBackdropDataUrl } from '../assets';
 import { CameraOriginMode, InputManager, KeyAction } from '../input';
 import { DevDrawer } from './DevDrawer';
 import {
@@ -454,12 +455,11 @@ export class UIManager {
     if (!show) return;
 
     const isCustom = this.artPackMode === 'custom';
-    const titleArtUrl =
-      isCustom && this.customPackResolver?.getTitleBackdropDataUrl
-        ? this.customPackResolver.getTitleBackdropDataUrl()
-        : null;
+    const titleArtUrl = isCustom
+      ? this.customPackResolver?.getTitleBackdropDataUrl?.() ?? null
+      : getBuiltinTitleBackdropDataUrl();
 
-    const sig = `bc${this.selectedBossCells}/${this.metaSnapshot.bossCellsUnlocked}|cont${this.hasActiveRun}|art${this.artPackMode}|url${titleArtUrl ? 1 : 0}|pack${this.customPackStatus.available}:${this.customPackStatus.atlasCount}:${this.customPackStatus.audioCount}|seed${this.customSeed}:${this.seedDrawerOpen}`;
+    const sig = `bc${this.selectedBossCells}/${this.metaSnapshot.bossCellsUnlocked}|cont${this.hasActiveRun}|art${this.artPackMode}|url${titleArtUrl ? (isCustom ? 2 : 1) : 0}|pack${this.customPackStatus.available}:${this.customPackStatus.atlasCount}:${this.customPackStatus.audioCount}|seed${this.customSeed}:${this.seedDrawerOpen}`;
     if (sig === this.lastTitleSig) return;
     this.lastTitleSig = sig;
 
@@ -490,8 +490,8 @@ export class UIManager {
     const packStatusText = this.customPackStatus.available
       ? isCustom
         ? `OWNED PACK ACTIVE · ${this.customPackStatus.atlasCount} ATLASES`
-        : `PACK READY · ${this.customPackStatus.atlasCount} ATLASES`
-      : 'LOCAL PROCEDURAL ART';
+        : `KRUNKED ORIGINAL ART · PACK READY (${this.customPackStatus.atlasCount})`
+      : 'KRUNKED ORIGINAL PIXEL ART';
 
     const crestSigilSvg = `
       <svg class="kc-crest-sigil" width="38" height="38" viewBox="0 0 24 24" shape-rendering="crispEdges" aria-hidden="true">

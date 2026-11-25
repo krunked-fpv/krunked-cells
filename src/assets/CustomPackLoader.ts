@@ -16,6 +16,66 @@ import type {
 export const CUSTOM_PACK_DB_NAME = 'krunked_cells_custom_pack_v1' as const;
 const CUSTOM_PACK_STORE = 'files' as const;
 const DEV_PACK_PREFIX = '/__custom_pack__';
+const BIOME_ATLAS_SET = new Set([
+  'prison',
+  'prisonCourtyard',
+  'sewer',
+  'prisonRoof',
+  'bridge',
+  'stiltVillage',
+  'clockTower',
+  'clockRoom',
+  'castle',
+  'throne',
+  'common',
+]);
+
+/**
+ * Replaces raw Dead Cells `#ff00ff` engine mask/glow sentinel pixels found on
+ * non-skin biome sheets (e.g., High Peak Castle golden chains & brackets) with
+ * clean metallic bronze/iron shading so zero harsh magenta outlines ever bleed.
+ */
+function sanitizeBiomeMagentaPixels(
+  src: ImageBitmap | HTMLImageElement | HTMLCanvasElement
+): HTMLCanvasElement | ImageBitmap | HTMLImageElement {
+  if (typeof document === 'undefined') return src;
+  const w = src.width;
+  const h = src.height;
+  if (w <= 0 || h <= 0) return src;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return src;
+  ctx.drawImage(src, 0, 0);
+  const img = ctx.getImageData(0, 0, w, h);
+  const px = img.data;
+  let dirty = false;
+  for (let i = 0; i < px.length; i += 4) {
+    const a = px[i + 3];
+    if (a < 8) continue;
+    const r = px[i];
+    const g = px[i + 1];
+    const b = px[i + 2];
+    // Pure magenta or near-magenta sentinel pixels (high R & B, very low G)
+    if (r > 185 && b > 155 && g < 65 && r + b > g * 6 + 260) {
+      // Replace with rich dark gilded bronze/iron tone matching castle & dungeon metalwork
+      const lum = (r + b) * 0.5;
+      if (lum > 235) {
+        // Pure #ff00ff highlight/outline sentinel -> make transparent so chain silhouettes stay crisp
+        px[i + 3] = 0;
+      } else {
+        px[i] = Math.round(r * 0.42);
+        px[i + 1] = Math.round(r * 0.30);
+        px[i + 2] = Math.round(b * 0.16);
+      }
+      dirty = true;
+    }
+  }
+  if (!dirty) return src;
+  ctx.putImageData(img, 0, 0);
+  return canvas;
+}
 
 // -----------------------------------------------------------------------------
 // libGDX .atlas & *_tracks.json Data Structures
@@ -1075,7 +1135,14 @@ export class CustomPackLoader implements CustomPackAssetResolver {
       if (!diffBlob) continue;
       const rawDiffuse = await decodeImageBlob(diffBlob);
       if (!rawDiffuse) continue;
-      const diffuse = skinLut ? applySkinLutToImage(rawDiffuse, skinLut) : rawDiffuse;
+      let diffuse: ImageBitmap | HTMLImageElement | HTMLCanvasElement = skinLut
+        ? applySkinLutToImage(rawDiffuse, skinLut)
+        : rawDiffuse;
+      // Dead Cells biome atlases (e.g. castle chains/trims) occasionally embed raw #ff00ff
+      // engine glow/mask sentinel pixels; remap them cleanly to metallic shadow/gold!
+      if (!skinLut && typeof document !== 'undefined' && BIOME_ATLAS_SET.has(name)) {
+        diffuse = sanitizeBiomeMagentaPixels(diffuse);
+      }
 
       let normal: ImageBitmap | HTMLImageElement | null = null;
       if (normalPath) {

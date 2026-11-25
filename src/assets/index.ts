@@ -5,6 +5,7 @@
 export {
   buildProceduralAtlas,
   getAtlasKeys,
+  getBuiltinTitleBackdropDataUrl,
   resolveSpriteRegion,
   TILESET_THEMES,
   ENEMY_ARCHETYPE_IDS,

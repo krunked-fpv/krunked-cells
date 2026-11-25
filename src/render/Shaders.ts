@@ -174,11 +174,11 @@ void main() {
     return;
   }
 
-  // Subtle twinkling night stars in high sky
-  float starCell = hash21(floor(vec2(px.x + u_camera.x * 0.02, px.y) * 0.5));
-  float starTwinkle = 0.65 + 0.35 * sin(u_time * 3.0 + starCell * 42.0);
-  if (starCell > 0.992 && sy < 0.52) {
-    col += mix(u_accentColor, vec3(0.95, 0.97, 1.0), 0.7) * starTwinkle * (1.0 - sy * 1.6) * 0.75;
+  // Crisp subtle 1px twinkling stars in high sky (NEVER chunky 2px snow blocks!)
+  float starCell = hash21(floor(vec2(px.x + floor(u_camera.x * 0.02), px.y)));
+  float starTwinkle = 0.55 + 0.45 * sin(u_time * 2.6 + starCell * 42.0);
+  if (starCell > 0.9965 && sy < 0.46) {
+    col += mix(u_accentColor, vec3(0.92, 0.96, 1.0), 0.75) * starTwinkle * (1.0 - sy * 1.9) * 0.55;
   }
 
   // Celestial full moon with sculpted craters & lush atmospheric halo

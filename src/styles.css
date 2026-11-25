@@ -498,19 +498,18 @@ body {
 .kc-boss-bar-ticks {
   position: absolute;
   inset: 0;
-  background-image: repeating-linear-gradient(
-    90deg,
-    transparent,
-    transparent calc(33.33% - 1.5px),
-    rgba(10, 4, 8, 0.85) calc(33.33% - 1.5px),
-    rgba(10, 4, 8, 0.85) 33.33%
-  );
+  /* Phase 2 (65% HP) and Phase 3 (30% HP) notches — completely clear of center 50% HP text! */
+  background-image:
+    linear-gradient(90deg, transparent calc(30% - 1px), rgba(14, 5, 10, 0.9) 30%, rgba(251, 191, 36, 0.55) calc(30% + 1px), transparent calc(30% + 2px)),
+    linear-gradient(90deg, transparent calc(65% - 1px), rgba(14, 5, 10, 0.9) 65%, rgba(251, 191, 36, 0.55) calc(65% + 1px), transparent calc(65% + 2px));
   pointer-events: none;
+  z-index: 2;
 }
 
 .kc-boss-hp-text {
   position: absolute;
   inset: 0;
+  z-index: 3;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -521,8 +520,10 @@ body {
   letter-spacing: 0.05em;
   text-shadow:
     -1px -1px 0 #000,
+    1px -1px 0 #000,
+    -1px 1px 0 #000,
     1px 1px 0 #000,
-    0 1px 3px #000;
+    0 1px 4px #000;
 }
 
 .kc-toast-banner {

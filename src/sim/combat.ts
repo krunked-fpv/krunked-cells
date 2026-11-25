@@ -1836,11 +1836,12 @@ export function stepPlayerCombat(
     }
   }
 
-  // Skill activation
-  if (input.skill1Pressed && player.actionState !== 'roll') {
+  // Skill activation (allow casting outside roll OR during late roll cancel window!)
+  const canCastSkill = player.actionState !== 'roll' || player.rollTicks <= 5;
+  if (input.skill1Pressed && canCastSkill) {
     activateSkill(state, 1, rng, col, input);
   }
-  if (input.skill2Pressed && player.actionState !== 'roll') {
+  if (input.skill2Pressed && canCastSkill) {
     activateSkill(state, 2, rng, col, input);
   }
 

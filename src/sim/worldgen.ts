@@ -59,21 +59,20 @@ function carveRoomBackground(
         setBgTile(grid, x, y, 0);
       }
     }
-    // Keep a 1-tile ruined stone parapet along the floor & spaced gothic stone piers
+    // Keep cleanly spaced gothic bridge/tower piers (no blocky 1-tile floor boxes behind braziers!)
     for (let x = innerTx; x < innerTx + innerTw; x++) {
-      if ((x - innerTx) % 9 === 0) {
+      if ((x - innerTx) % 10 === 0 && x > innerTx + 1 && x < innerTx + innerTw - 2) {
         for (let y = innerTy; y < floorTy; y++) {
           setBgTile(grid, x, y, TileKind.BG_WALL);
         }
-      } else if ((x - innerTx) % 2 === 0 && biomeId !== 'StiltVillage') {
-        setBgTile(grid, x, floorTy - 1, TileKind.BG_WALL);
       }
     }
     return;
   }
 
-  // Indoor gothic halls: carve dramatic arched cathedral/prison windows into upper walls
-  // so moonlight, distant towers, and giant clockwork gears shine dramatically inside!
+  // Indoor underground/cathedral halls (PrisonStart, Sewer, Passage, Castle, ClockTower):
+  // Keep continuous solid stone bgTiles so real Dead Cells masonry, arches, and wall torches
+  // light seamlessly with ZERO jarring bright rectangular window cutouts behind arches!
   if (biomeId === 'TopClockTower') {
     const centers = [innerTx + 12, innerTx + 27];
     const cy = innerTy + innerTh * 0.46;
@@ -90,20 +89,6 @@ function carveRoomBackground(
       }
     }
     return;
-  }
-
-  const period = biomeId === 'Sewer' ? 9 : 7;
-  const winW = biomeId === 'Castle' || biomeId === 'ClockTower' ? 4 : 3;
-  const winTop = Math.max(innerTy + 1, floorTy - 6);
-  const winBot = floorTy - 1;
-  for (let bx = innerTx + 2; bx + winW <= innerTx + innerTw - 2; bx += period) {
-    for (let y = winTop; y < winBot; y++) {
-      for (let x = bx; x < bx + winW; x++) {
-        // Pointed gothic arch top corners remain stone
-        if (y === winTop && (x === bx || x === bx + winW - 1)) continue;
-        setBgTile(grid, x, y, 0);
-      }
-    }
   }
 }
 
@@ -488,14 +473,11 @@ function generateBossArena(
   fillTileRect(grid, col, 7, 10, 6, 1, TileKind.ONE_WAY);
   fillTileRect(grid, col, 28, 10, 6, 1, TileKind.ONE_WAY);
 
-  // Throne Room special: iconic left & right recessed spike pits with escape ledges!
+  // Throne Room special: iconic left & right recessed spike pits cleanly clear of the entrance gate!
   if (biome.id === 'Throne') {
-    // Left spike pit (tx: 3..5)
-    fillTileRect(grid, col, 3, floorTy, 3, 1, TileKind.SPIKES);
-    fillTileRect(grid, col, 3, floorTy - 2, 3, 1, TileKind.ONE_WAY);
-    // Right spike pit (tx: 38..40)
-    fillTileRect(grid, col, 38, floorTy, 3, 1, TileKind.SPIKES);
-    fillTileRect(grid, col, 38, floorTy - 2, 3, 1, TileKind.ONE_WAY);
+    // Left spike pit (tx: 2..4) & Right spike pit (tx: 39..41)
+    fillTileRect(grid, col, 2, floorTy, 3, 1, TileKind.SPIKES);
+    fillTileRect(grid, col, 39, floorTy, 3, 1, TileKind.SPIKES);
   }
 
   // Mark entire arena explored for crisp minimap & lighting
@@ -533,10 +515,11 @@ function generateBossArena(
     );
   }
 
-  // Entrance & Exit Boss Gates
+  // Entrance & Exit Boss Gates (grounded cleanly on solid stone!)
+  const entranceGateTx = biome.id === 'Throne' ? 6 : 4;
   state.doors.push({
     uid: state.nextUid++,
-    pos: { x: 4 * TILE_SIZE, y: floorSurfaceY - 24 },
+    pos: { x: entranceGateTx * TILE_SIZE, y: floorSurfaceY - 24 },
     width: 22,
     height: 48,
     kind: 'bossGate',
@@ -591,8 +574,8 @@ function generateBossArena(
   const bossY = floorSurfaceY - bossDef.height * 0.5;
   spawnBoss(state, bossId, bossX, bossY);
 
-  // Add boss aura light
-  addWorldLight(state, bossX, bossY - 12, 160, primaryLight, 1.25, 'boss', 6.0, 0.2);
+  // Add subtle boss aura light (balanced so boss steel/armor shading never blows out!)
+  addWorldLight(state, bossX, bossY - 12, 145, primaryLight, 0.82, 'boss', 6.0, 0.16);
 
   // Keep lockedLeftX/lockedRightX inside spike pit margins on Throne or walls elsewhere
   state.bossArenaState.lockedLeftX = 2 * TILE_SIZE + 8;
