@@ -136,6 +136,7 @@ export class GameApp {
   private elapsedSec = 0;
   private lastMusicBiome: BiomeId | null = null;
   private lastMusicBoss = false;
+  private lastMusicTitle = false;
   private prevRunStatus: SimState['runStatus'] = 'title';
   private cachedHash = '00000000';
   private hashDirty = true;
@@ -395,6 +396,7 @@ export class GameApp {
     this.syncUiSettings();
     this.syncBiomeMusic(true);
     void this.audio.unlock();
+    this.audio.playUiClick('ui_start');
     this.ui.showToast(`NEW RUN — SEED #${cleanSeed} (${cleanBc}BC)`, 2.2);
   }
 
@@ -417,6 +419,7 @@ export class GameApp {
       this.input.clearTransient();
       this.syncBiomeMusic(true);
       void this.audio.unlock();
+      this.audio.playUiClick('ui_start');
     } else if (this.state.runStatus === 'paused') {
       this.resumeRun();
     } else {
@@ -462,11 +465,40 @@ export class GameApp {
   private dispatchCommand(cmd: SimCommand): void {
     this.input.queueCommand(cmd);
     if (this.state.runStatus === 'playing' || this.state.runStatus === 'passage') {
+      const mBefore = this.state.metaSnapshot;
+      const unlockedBefore = mBefore.unlockedBlueprints.length;
+      const flaskBefore = mBefore.flaskTier;
+      const goldResBefore = mBefore.goldReserveTier;
+      const randStartBefore = mBefore.randomStarterUnlocked;
+      const recycleBefore = mBefore.recycleUnlocked;
+      const forgePlusBefore = mBefore.legendaryForgePlus ?? 0;
+      const forgePlusPlusBefore = mBefore.legendaryForgePlusPlus ?? 0;
+      const goldBefore = this.state.player.gold;
+
       const frame = createEmptyInputFrame();
       frame.commands = [cmd];
       this.input.consumeInputFrame(this.state.camera, this.state.player.pos);
       stepSim(this.state, frame);
       this.processPostTickSideEffects();
+
+      const mAfter = this.state.metaSnapshot;
+      const didUnlockMeta =
+        cmd.type === 'collectorInvest' &&
+        (mAfter.unlockedBlueprints.length > unlockedBefore ||
+          mAfter.flaskTier > flaskBefore ||
+          mAfter.goldReserveTier > goldResBefore ||
+          (!randStartBefore && mAfter.randomStarterUnlocked) ||
+          (!recycleBefore && mAfter.recycleUnlocked));
+      const didUpgradeForge =
+        (cmd.type === 'forgeUpgrade' && this.state.player.gold < goldBefore) ||
+        (cmd.type === 'legendaryForgeInvest' &&
+          ((mAfter.legendaryForgePlus ?? 0) > forgePlusBefore ||
+            (mAfter.legendaryForgePlusPlus ?? 0) > forgePlusPlusBefore));
+
+      if (didUnlockMeta || didUpgradeForge) {
+        this.audio.playUiClick('ui_unlock');
+      }
+
       this.persistMetaFromState();
       this.hashDirty = true;
     }
@@ -576,6 +608,7 @@ export class GameApp {
     this.input.setKeyBindings(this.saveData.keyBindings);
     this.audio.updateSettings(this.saveData.audioSettings);
     this.applyCustomPackStatus(this.customPackLoader.getStatus());
+    this.syncBiomeMusic(true);
     this.hashDirty = true;
     this.ui.showToast('SAVE DATA RESET TO DEFAULT', 2.2);
   }
@@ -600,6 +633,15 @@ export class GameApp {
         (this.saveData.meta.bestClearTicks === null || m.bestClearTicks < this.saveData.meta.bestClearTicks)
           ? m.bestClearTicks
           : this.saveData.meta.bestClearTicks,
+      bankedGold: m.bankedGold ?? this.saveData.meta.bankedGold ?? 0,
+      legendaryForgePlus: Math.max(
+        this.saveData.meta.legendaryForgePlus ?? 0,
+        m.legendaryForgePlus ?? 0
+      ),
+      legendaryForgePlusPlus: Math.max(
+        this.saveData.meta.legendaryForgePlusPlus ?? 0,
+        m.legendaryForgePlusPlus ?? 0
+      ),
     };
     this.persistSave();
   }
@@ -636,14 +678,24 @@ export class GameApp {
   }
 
   private syncBiomeMusic(force: boolean): void {
+    if (this.state.runStatus === 'title') {
+      if (force || !this.lastMusicTitle) {
+        this.lastMusicTitle = true;
+        this.lastMusicBiome = null;
+        this.lastMusicBoss = false;
+        this.audio.setTitleMusic();
+      }
+      return;
+    }
+
     const isBoss =
       this.state.bossArenaState.active &&
       !this.state.bossArenaState.defeated &&
       this.state.runStatus === 'playing';
-    const musicBiome: BiomeId =
-      this.state.runStatus === 'title' ? 'PrisonStart' : this.state.activeBiomeId;
+    const musicBiome: BiomeId = this.state.activeBiomeId;
 
-    if (force || musicBiome !== this.lastMusicBiome || isBoss !== this.lastMusicBoss) {
+    if (force || this.lastMusicTitle || musicBiome !== this.lastMusicBiome || isBoss !== this.lastMusicBoss) {
+      this.lastMusicTitle = false;
       this.lastMusicBiome = musicBiome;
       this.lastMusicBoss = isBoss;
       this.audio.setBiomeMusic(musicBiome, isBoss);

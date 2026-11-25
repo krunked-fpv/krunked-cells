@@ -1,9 +1,13 @@
-import type { SimEvent } from '../contracts';
+import type { SimEvent, UiClickKind } from '../contracts';
+
+const CELL_SCALE_SEMITONES = [0, 2, 4, 7, 9, 12, 14, 16, 19, 21, 24, 26, 28] as const;
+const CELL_COMBO_WINDOW_SEC = 1.25;
 
 /**
- * Shared pre-allocated noise buffer for procedural transient and whoosh generation.
+ * Shared pre-allocated noise buffer and hard-clip WaveShaper curve for procedural transients.
  */
 let sharedNoiseBuffer: AudioBuffer | null = null;
+let sharedHardClipCurve: Float32Array<ArrayBuffer> | null = null;
 
 function getNoiseBuffer(ctx: AudioContext): AudioBuffer {
   if (!sharedNoiseBuffer || sharedNoiseBuffer.sampleRate !== ctx.sampleRate) {
@@ -17,6 +21,19 @@ function getNoiseBuffer(ctx: AudioContext): AudioBuffer {
   return sharedNoiseBuffer;
 }
 
+function getHardClipCurve(): Float32Array<ArrayBuffer> {
+  if (!sharedHardClipCurve) {
+    const samples = 256;
+    const curve = new Float32Array(new ArrayBuffer(samples * 4));
+    for (let i = 0; i < samples; i++) {
+      const x = (i * 2) / (samples - 1) - 1;
+      curve[i] = Math.tanh(x * 7.5);
+    }
+    sharedHardClipCurve = curve;
+  }
+  return sharedHardClipCurve;
+}
+
 interface ActiveVoice {
   stop(): void;
 }
@@ -24,14 +41,19 @@ interface ActiveVoice {
 /**
  * Tactical procedural Web Audio sound effects synthesizer for Krunked Cells.
  * Implements anti-spam micro-cooldowns (25ms), polyphony limiting (max 4 voices per key),
- * +/-6% pitch jitter (0.94..1.06), and distinct tactile acoustic signatures for every SimEvent.
+ * +/-6% pitch jitter (0.94..1.06), ascending-pitch Cell Pickup Combo Scale,
+ * and distinct tactile acoustic signatures for every SimEvent.
  */
 export class SynthSfx {
   private lastTriggerTimes = new Map<string, number>();
   private activeVoices = new Map<string, Set<ActiveVoice>>();
+  private cellComboCount = 0;
+  private lastCellCollectTime = -999;
 
   public reset(): void {
     this.lastTriggerTimes.clear();
+    this.cellComboCount = 0;
+    this.lastCellCollectTime = -999;
     for (const voiceSet of this.activeVoices.values()) {
       for (const v of voiceSet) {
         try {
@@ -42,6 +64,17 @@ export class SynthSfx {
       }
     }
     this.activeVoices.clear();
+  }
+
+  private advanceCellComboRate(nowSec: number): number {
+    if (nowSec - this.lastCellCollectTime <= CELL_COMBO_WINDOW_SEC) {
+      this.cellComboCount = Math.min(CELL_SCALE_SEMITONES.length - 1, this.cellComboCount + 1);
+    } else {
+      this.cellComboCount = 0;
+    }
+    this.lastCellCollectTime = nowSec;
+    const semitones = CELL_SCALE_SEMITONES[this.cellComboCount] ?? 0;
+    return Math.pow(2, semitones / 12);
   }
 
   /**
@@ -173,16 +206,54 @@ export class SynthSfx {
   }
 
   /**
-   * Plays clean non-spatialized UI clicks.
+   * Plays clean non-spatialized UI clicks and jingles.
    */
   public playUiClick(
     ctx: AudioContext,
-    kind: 'select' | 'confirm' | 'cancel' | 'error' = 'select',
+    kind: UiClickKind = 'select',
     sfxNode: AudioNode
   ): void {
     if (ctx.state === 'suspended') return;
 
     const t = ctx.currentTime;
+    if (kind === 'ui_start') {
+      // Dramatic run-start gothic steel-chord swell
+      const notes = [293.66, 440, 587.33]; // D4, A4, D5
+      notes.forEach((freq, idx) => {
+        const o = ctx.createOscillator();
+        o.type = idx === 0 ? 'triangle' : 'sine';
+        o.frequency.setValueAtTime(freq, t + idx * 0.025);
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.setValueAtTime(0.2 - idx * 0.03, t + idx * 0.025);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + 0.36 + idx * 0.04);
+        o.connect(g);
+        g.connect(sfxNode);
+        o.start(t + idx * 0.025);
+        o.stop(t + 0.44);
+      });
+      return;
+    }
+
+    if (kind === 'ui_unlock') {
+      // Bright celebratory 4-note Collector / Forge unlock fanfare
+      const notes = [587.33, 739.99, 880, 1174.66]; // D5, F#5, A5, D6
+      notes.forEach((freq, idx) => {
+        const o = ctx.createOscillator();
+        o.type = idx % 2 === 0 ? 'triangle' : 'sine';
+        o.frequency.setValueAtTime(freq, t + idx * 0.045);
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.setValueAtTime(0.22, t + idx * 0.045);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + 0.42 + idx * 0.05);
+        o.connect(g);
+        g.connect(sfxNode);
+        o.start(t + idx * 0.045);
+        o.stop(t + 0.52);
+      });
+      return;
+    }
+
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.connect(gain);
@@ -421,102 +492,167 @@ export class SynthSfx {
       }
 
       case 'critImpact': {
-        // Bright electric harmonic chime: crystalline dual sine bell + sharp electric transient
-        const osc1 = ctx.createOscillator();
-        const osc2 = ctx.createOscillator();
-        osc1.type = 'sine';
-        osc2.type = 'triangle';
-        osc1.frequency.setValueAtTime(2093 * jitter, t); // C7
-        osc2.frequency.setValueAtTime(3136 * jitter, t); // G7
-        osc1.frequency.exponentialRampToValueAtTime(1760 * jitter, t + 0.35);
+        // Violent electric whip-crack CRIT:
+        // 1. Ultra-fast 18ms high-voltage whip-crack noise burst through hard-clipped WaveShaper
+        const crack = ctx.createBufferSource();
+        crack.buffer = getNoiseBuffer(ctx);
+        const crackHp = ctx.createBiquadFilter();
+        crackHp.type = 'highpass';
+        crackHp.frequency.setValueAtTime(2800, t);
+        const shaper = ctx.createWaveShaper();
+        shaper.curve = getHardClipCurve();
+        const crackGain = ctx.createGain();
+        crackGain.gain.setValueAtTime(0.52, t);
+        crackGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.024);
 
-        const gain = ctx.createGain();
-        gain.gain.setValueAtTime(0.45, t);
-        gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.4);
+        crack.connect(crackHp);
+        crackHp.connect(shaper);
+        shaper.connect(crackGain);
+        crackGain.connect(out);
+        crack.start(t);
+        crack.stop(t + 0.03);
 
-        // Electric bite
-        const zap = ctx.createBufferSource();
-        zap.buffer = getNoiseBuffer(ctx);
-        const zapFilter = ctx.createBiquadFilter();
-        zapFilter.type = 'highpass';
-        zapFilter.frequency.setValueAtTime(4000, t);
-        const zapGain = ctx.createGain();
-        zapGain.gain.setValueAtTime(0.3, t);
-        zapGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.05);
+        // 2. Heavy downward sub-punch (160Hz -> 48Hz in 65ms)
+        const punch = ctx.createOscillator();
+        punch.type = 'triangle';
+        punch.frequency.setValueAtTime(160 * jitter, t);
+        punch.frequency.exponentialRampToValueAtTime(48, t + 0.065);
+        const punchGain = ctx.createGain();
+        punchGain.gain.setValueAtTime(0.58, t);
+        punchGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.085);
+        punch.connect(punchGain);
+        punchGain.connect(out);
+        punch.start(t);
+        punch.stop(t + 0.095);
 
-        osc1.connect(gain);
-        osc2.connect(gain);
-        gain.connect(out);
+        // 3. Gleaming metallic fifth chime (1320Hz + 1980Hz + 2640Hz harmonic sparkle)
+        const chime1 = ctx.createOscillator();
+        const chime2 = ctx.createOscillator();
+        const chime3 = ctx.createOscillator();
+        chime1.type = 'triangle';
+        chime2.type = 'sine';
+        chime3.type = 'sine';
+        chime1.frequency.setValueAtTime(1320 * jitter, t);
+        chime2.frequency.setValueAtTime(1980 * jitter, t);
+        chime3.frequency.setValueAtTime(2640 * jitter, t + 0.008);
 
-        zap.connect(zapFilter);
-        zapFilter.connect(zapGain);
-        zapGain.connect(out);
+        const chimeGain = ctx.createGain();
+        chimeGain.gain.setValueAtTime(0.38, t);
+        chimeGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.24);
+        const sparkleGain = ctx.createGain();
+        sparkleGain.gain.setValueAtTime(0.0001, t);
+        sparkleGain.gain.setValueAtTime(0.18, t + 0.008);
+        sparkleGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
 
-        osc1.start(t);
-        osc2.start(t);
-        osc1.stop(t + 0.42);
-        osc2.stop(t + 0.42);
-        zap.start(t);
-        zap.stop(t + 0.06);
+        chime1.connect(chimeGain);
+        chime2.connect(chimeGain);
+        chimeGain.connect(out);
+        chime3.connect(sparkleGain);
+        sparkleGain.connect(out);
+
+        chime1.start(t);
+        chime2.start(t);
+        chime3.start(t + 0.008);
+        chime1.stop(t + 0.26);
+        chime2.stop(t + 0.26);
+        chime3.stop(t + 0.24);
         break;
       }
 
       case 'parrySuccess': {
-        // Resonant golden metallic clang + shimmer!
-        // 1. Dual high-Q resonant ringing filters
-        const oscClang1 = ctx.createOscillator();
-        const oscClang2 = ctx.createOscillator();
-        oscClang1.type = 'triangle';
-        oscClang2.type = 'sine';
-        oscClang1.frequency.setValueAtTime(1174 * jitter, t); // D6
-        oscClang2.frequency.setValueAtTime(2793 * jitter, t); // F7
+        // Resonant metallic parry clang + deep shield-thump + FM inharmonic steel bell!
+        // 1. Deep 90Hz shield-thump punch
+        const thump = ctx.createOscillator();
+        thump.type = 'sine';
+        thump.frequency.setValueAtTime(92 * jitter, t);
+        thump.frequency.exponentialRampToValueAtTime(42, t + 0.095);
+        const thumpGain = ctx.createGain();
+        thumpGain.gain.setValueAtTime(0.62, t);
+        thumpGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.11);
+        thump.connect(thumpGain);
+        thumpGain.connect(out);
+        thump.start(t);
+        thump.stop(t + 0.12);
 
-        const clangGain = ctx.createGain();
-        clangGain.gain.setValueAtTime(0.5, t);
-        clangGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.6);
+        // 2. FM inharmonic steel-bell clang (ratios 1 : 2.76 : 5.40, bright 420ms shimmer)
+        const baseFreq = 660 * jitter;
+        const fmMod = ctx.createOscillator();
+        const fmDepth = ctx.createGain();
+        fmMod.type = 'sine';
+        fmMod.frequency.setValueAtTime(baseFreq * 2.76, t);
+        fmDepth.gain.setValueAtTime(baseFreq * 1.6, t);
+        fmDepth.gain.exponentialRampToValueAtTime(12, t + 0.24);
 
-        // 2. Golden triad shimmer
+        const carrier = ctx.createOscillator();
+        carrier.type = 'triangle';
+        carrier.frequency.setValueAtTime(baseFreq, t);
+        fmMod.connect(fmDepth);
+        fmDepth.connect(carrier.frequency);
+
+        const bell2 = ctx.createOscillator();
+        bell2.type = 'sine';
+        bell2.frequency.setValueAtTime(baseFreq * 2.76, t);
+
+        const bell3 = ctx.createOscillator();
+        bell3.type = 'sine';
+        bell3.frequency.setValueAtTime(Math.min(baseFreq * 5.4, ctx.sampleRate * 0.42), t);
+
+        const bellGain = ctx.createGain();
+        bellGain.gain.setValueAtTime(0.46, t);
+        bellGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.46);
+
+        const bell3Gain = ctx.createGain();
+        bell3Gain.gain.setValueAtTime(0.24, t);
+        bell3Gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.34);
+
+        carrier.connect(bellGain);
+        bell2.connect(bellGain);
+        bellGain.connect(out);
+        bell3.connect(bell3Gain);
+        bell3Gain.connect(out);
+
+        fmMod.start(t);
+        carrier.start(t);
+        bell2.start(t);
+        bell3.start(t);
+        fmMod.stop(t + 0.48);
+        carrier.stop(t + 0.48);
+        bell2.stop(t + 0.48);
+        bell3.stop(t + 0.36);
+
+        // 3. Golden triad shimmer
         const chords = [1318, 1661, 1975]; // E6, G#6, B6
         chords.forEach((freq, idx) => {
           const chordOsc = ctx.createOscillator();
           chordOsc.type = 'sine';
-          chordOsc.frequency.setValueAtTime(freq * jitter, t + idx * 0.02);
+          chordOsc.frequency.setValueAtTime(freq * jitter, t + idx * 0.018);
           const chordGain = ctx.createGain();
-          chordGain.gain.setValueAtTime(0.0, t);
-          chordGain.gain.setValueAtTime(0.25, t + idx * 0.02);
-          chordGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.5 + idx * 0.05);
+          chordGain.gain.setValueAtTime(0.0001, t);
+          chordGain.gain.setValueAtTime(0.22, t + idx * 0.018);
+          chordGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.44 + idx * 0.04);
 
           chordOsc.connect(chordGain);
           chordGain.connect(out);
-          chordOsc.start(t + idx * 0.02);
-          chordOsc.stop(t + 0.6);
+          chordOsc.start(t + idx * 0.018);
+          chordOsc.stop(t + 0.54);
         });
 
-        // 3. Metallic impact burst
+        // 4. High-Q metallic spark impact burst
         const impact = ctx.createBufferSource();
         impact.buffer = getNoiseBuffer(ctx);
         const impactFilter = ctx.createBiquadFilter();
         impactFilter.type = 'bandpass';
-        impactFilter.Q.value = 12;
+        impactFilter.Q.value = 11;
         impactFilter.frequency.setValueAtTime(3200 * jitter, t);
         const impactGain = ctx.createGain();
-        impactGain.gain.setValueAtTime(0.4, t);
-        impactGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.12);
-
-        oscClang1.connect(clangGain);
-        oscClang2.connect(clangGain);
-        clangGain.connect(out);
+        impactGain.gain.setValueAtTime(0.42, t);
+        impactGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.1);
 
         impact.connect(impactFilter);
         impactFilter.connect(impactGain);
         impactGain.connect(out);
-
-        oscClang1.start(t);
-        oscClang2.start(t);
-        oscClang1.stop(t + 0.65);
-        oscClang2.stop(t + 0.65);
         impact.start(t);
-        impact.stop(t + 0.13);
+        impact.stop(t + 0.11);
         break;
       }
 
@@ -596,57 +732,146 @@ export class SynthSfx {
       }
 
       case 'doorSmash': {
-        // Wood splinter crunch: multi-tap noise bursts + splintering thud
-        const noise = ctx.createBufferSource();
-        noise.buffer = getNoiseBuffer(ctx);
-        const filter = ctx.createBiquadFilter();
-        filter.type = 'bandpass';
-        filter.Q.value = 3.0;
-        filter.frequency.setValueAtTime(1200 * jitter, t);
-        filter.frequency.exponentialRampToValueAtTime(350 * jitter, t + 0.2);
-
-        const gain = ctx.createGain();
-        gain.gain.setValueAtTime(0.48, t);
-        gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
-
-        // Body thud
+        // 3-stage staggered wood door splinter crunch:
+        // Stage 1 (t + 0ms): Heavy 120Hz wood-body punch + 1.4kHz resonant wood-crack snap
         const thud = ctx.createOscillator();
         thud.type = 'triangle';
-        thud.frequency.setValueAtTime(180 * jitter, t);
-        thud.frequency.exponentialRampToValueAtTime(50, t + 0.16);
+        thud.frequency.setValueAtTime(125 * jitter, t);
+        thud.frequency.exponentialRampToValueAtTime(42, t + 0.14);
         const thudGain = ctx.createGain();
-        thudGain.gain.setValueAtTime(0.4, t);
-        thudGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.18);
-
-        noise.connect(filter);
-        filter.connect(gain);
-        gain.connect(out);
+        thudGain.gain.setValueAtTime(0.54, t);
+        thudGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.16);
         thud.connect(thudGain);
         thudGain.connect(out);
-
-        noise.start(t);
-        noise.stop(t + 0.24);
         thud.start(t);
-        thud.stop(t + 0.2);
+        thud.stop(t + 0.17);
+
+        const crack = ctx.createBufferSource();
+        crack.buffer = getNoiseBuffer(ctx);
+        const crackF = ctx.createBiquadFilter();
+        crackF.type = 'bandpass';
+        crackF.Q.value = 3.5;
+        crackF.frequency.setValueAtTime(1400 * jitter, t);
+        crackF.frequency.exponentialRampToValueAtTime(520 * jitter, t + 0.06);
+        const crackG = ctx.createGain();
+        crackG.gain.setValueAtTime(0.52, t);
+        crackG.gain.exponentialRampToValueAtTime(0.0001, t + 0.07);
+        crack.connect(crackF);
+        crackF.connect(crackG);
+        crackG.connect(out);
+        crack.start(t);
+        crack.stop(t + 0.08);
+
+        // Stage 2 (t + 18ms & t + 42ms): Dry splinter snaps (2.2kHz & 3.1kHz micro-clicks)
+        const splinters: ReadonlyArray<{ delay: number; freq: number; q: number; vol: number; dur: number }> = [
+          { delay: 0.018, freq: 2200, q: 5.0, vol: 0.42, dur: 0.04 },
+          { delay: 0.042, freq: 3100, q: 5.5, vol: 0.36, dur: 0.036 },
+        ];
+        for (const sp of splinters) {
+          const s = ctx.createBufferSource();
+          s.buffer = getNoiseBuffer(ctx);
+          const sf = ctx.createBiquadFilter();
+          sf.type = 'bandpass';
+          sf.Q.value = sp.q;
+          sf.frequency.setValueAtTime(sp.freq * jitter, t + sp.delay);
+          const sg = ctx.createGain();
+          sg.gain.setValueAtTime(0.0001, t);
+          sg.gain.setValueAtTime(sp.vol, t + sp.delay);
+          sg.gain.exponentialRampToValueAtTime(0.0001, t + sp.delay + sp.dur);
+          s.connect(sf);
+          sf.connect(sg);
+          sg.connect(out);
+          s.start(t + sp.delay);
+          s.stop(t + sp.delay + sp.dur + 0.01);
+        }
+
+        // Stage 3 (t + 75ms & t + 112ms): Tumbling wooden plank debris rattle
+        const rattles: ReadonlyArray<{ delay: number; freq: number; vol: number }> = [
+          { delay: 0.075, freq: 920, vol: 0.22 },
+          { delay: 0.112, freq: 1380, vol: 0.15 },
+        ];
+        for (const rt of rattles) {
+          const r = ctx.createBufferSource();
+          r.buffer = getNoiseBuffer(ctx);
+          const rf = ctx.createBiquadFilter();
+          rf.type = 'bandpass';
+          rf.Q.value = 4.5;
+          rf.frequency.setValueAtTime(rt.freq * jitter, t + rt.delay);
+          const rg = ctx.createGain();
+          rg.gain.setValueAtTime(0.0001, t);
+          rg.gain.setValueAtTime(rt.vol, t + rt.delay);
+          rg.gain.exponentialRampToValueAtTime(0.0001, t + rt.delay + 0.045);
+          r.connect(rf);
+          rf.connect(rg);
+          rg.connect(out);
+          r.start(t + rt.delay);
+          r.stop(t + rt.delay + 0.055);
+        }
         break;
       }
 
       case 'enemyTelegraph': {
-        // Sharp crisp '!' alert ping: high bright sine/triangle ping ~1760Hz
+        // Razor-sharp rising 2-tone Dead Cells '!' alert zing:
+        // Tone 1 (0..35ms): fast upward metallic sweep 980Hz -> 2350Hz (triangle + quiet square harmonic)
+        const sweepTri = ctx.createOscillator();
+        const sweepSq = ctx.createOscillator();
+        sweepTri.type = 'triangle';
+        sweepSq.type = 'square';
+        sweepTri.frequency.setValueAtTime(980 * jitter, t);
+        sweepTri.frequency.exponentialRampToValueAtTime(2350 * jitter, t + 0.035);
+        sweepSq.frequency.setValueAtTime(980 * jitter, t);
+        sweepSq.frequency.exponentialRampToValueAtTime(2350 * jitter, t + 0.035);
+
+        const sqTrim = ctx.createGain();
+        sqTrim.gain.setValueAtTime(0.28, t);
+
+        const bp = ctx.createBiquadFilter();
+        bp.type = 'bandpass';
+        bp.Q.value = 2.2;
+        bp.frequency.setValueAtTime(2400, t);
+
+        const sweepGain = ctx.createGain();
+        sweepGain.gain.setValueAtTime(0.36, t);
+        sweepGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.042);
+
+        sweepTri.connect(bp);
+        sweepSq.connect(sqTrim);
+        sqTrim.connect(bp);
+        bp.connect(sweepGain);
+        sweepGain.connect(out);
+
+        sweepTri.start(t);
+        sweepSq.start(t);
+        sweepTri.stop(t + 0.045);
+        sweepSq.stop(t + 0.045);
+
+        // Tone 2 (35..90ms): crystalline 55ms bright ping at 2640Hz
         const ping = ctx.createOscillator();
-        ping.type = 'triangle';
-        ping.frequency.setValueAtTime(1760 * jitter, t);
-        ping.frequency.exponentialRampToValueAtTime(1580 * jitter, t + 0.08);
+        ping.type = 'sine';
+        ping.frequency.setValueAtTime(2640 * jitter, t + 0.035);
+        const pingGain = ctx.createGain();
+        pingGain.gain.setValueAtTime(0.0001, t);
+        pingGain.gain.setValueAtTime(0.36, t + 0.035);
+        pingGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.092);
+        ping.connect(pingGain);
+        pingGain.connect(out);
+        ping.start(t + 0.035);
+        ping.stop(t + 0.1);
 
-        const gain = ctx.createGain();
-        gain.gain.setValueAtTime(0.35, t);
-        gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.085);
-
-        ping.connect(gain);
-        gain.connect(out);
-
-        ping.start(t);
-        ping.stop(t + 0.09);
+        if (event.unparriable) {
+          // Urgent crimson danger undertone for unparriable attacks
+          const warn = ctx.createOscillator();
+          warn.type = 'sawtooth';
+          warn.frequency.setValueAtTime(1980 * jitter, t + 0.035);
+          const warnGain = ctx.createGain();
+          warnGain.gain.setValueAtTime(0.0001, t);
+          warnGain.gain.setValueAtTime(0.18, t + 0.035);
+          warnGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.1);
+          warn.connect(warnGain);
+          warnGain.connect(out);
+          warn.start(t + 0.035);
+          warn.stop(t + 0.11);
+        }
         break;
       }
 
@@ -680,6 +905,28 @@ export class SynthSfx {
         osc.stop(t + 0.32);
         noise.start(t);
         noise.stop(t + 0.28);
+
+        if (event.isBoss) {
+          // Triumphant heroic boss-victory brass/bell chord fanfare
+          const victoryChord = [293.66, 440, 587.33, 739.99, 880]; // D major
+          victoryChord.forEach((freq, idx) => {
+            const vOsc = ctx.createOscillator();
+            vOsc.type = idx < 2 ? 'sawtooth' : 'triangle';
+            vOsc.frequency.setValueAtTime(freq, t + 0.06 + idx * 0.055);
+            const vFlt = ctx.createBiquadFilter();
+            vFlt.type = 'lowpass';
+            vFlt.frequency.setValueAtTime(2400, t + 0.06);
+            const vGain = ctx.createGain();
+            vGain.gain.setValueAtTime(0.0001, t);
+            vGain.gain.setValueAtTime(0.24, t + 0.06 + idx * 0.055);
+            vGain.gain.exponentialRampToValueAtTime(0.0001, t + 1.35 + idx * 0.06);
+            vOsc.connect(vFlt);
+            vFlt.connect(vGain);
+            vGain.connect(out);
+            vOsc.start(t + 0.06 + idx * 0.055);
+            vOsc.stop(t + 1.6);
+          });
+        }
         break;
       }
 
@@ -735,21 +982,23 @@ export class SynthSfx {
       }
 
       case 'cellCollect': {
-        // Crystalline chime: ascending high pure harmonics / sparkle chime
-        const freqs = [1760, 2200, 2640];
-        freqs.forEach((freq, idx) => {
+        // Ascending-pitch pentatonic/major Cell Pickup Combo Scale chime!
+        const rate = this.advanceCellComboRate(t);
+        const nyquistSafe = ctx.sampleRate * 0.42;
+        const freqs = [880, 1320, 1760];
+        freqs.forEach((base, idx) => {
           const osc = ctx.createOscillator();
-          osc.type = 'sine';
-          osc.frequency.setValueAtTime(freq * jitter, t + idx * 0.035);
+          osc.type = idx === 1 ? 'triangle' : 'sine';
+          osc.frequency.setValueAtTime(Math.min(base * rate, nyquistSafe), t + idx * 0.028);
           const gain = ctx.createGain();
-          gain.gain.setValueAtTime(0.0, t);
-          gain.gain.setValueAtTime(0.22, t + idx * 0.035);
-          gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.28 + idx * 0.04);
+          gain.gain.setValueAtTime(0.0001, t);
+          gain.gain.setValueAtTime(0.24 - idx * 0.03, t + idx * 0.028);
+          gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.26 + idx * 0.035);
 
           osc.connect(gain);
           gain.connect(out);
-          osc.start(t + idx * 0.035);
-          osc.stop(t + 0.35);
+          osc.start(t + idx * 0.028);
+          osc.stop(t + 0.34);
         });
         break;
       }
@@ -1486,6 +1735,247 @@ export class SynthSfx {
           pin.start(t);
           pin.stop(t + 0.06);
         }
+        break;
+      }
+
+      case 'fallStun': {
+        // Hard-landing knee thud + brief dizzy disorientation warble
+        const thud = ctx.createOscillator();
+        thud.type = 'triangle';
+        thud.frequency.setValueAtTime(115 * jitter, t);
+        thud.frequency.exponentialRampToValueAtTime(36, t + 0.16);
+        const thudG = ctx.createGain();
+        thudG.gain.setValueAtTime(0.5, t);
+        thudG.gain.exponentialRampToValueAtTime(0.0001, t + 0.18);
+        thud.connect(thudG);
+        thudG.connect(out);
+        thud.start(t);
+        thud.stop(t + 0.2);
+
+        const dizzy = ctx.createOscillator();
+        dizzy.type = 'sine';
+        dizzy.frequency.setValueAtTime(520 * jitter, t + 0.03);
+        dizzy.frequency.linearRampToValueAtTime(610 * jitter, t + 0.11);
+        dizzy.frequency.linearRampToValueAtTime(470 * jitter, t + 0.22);
+        dizzy.frequency.linearRampToValueAtTime(560 * jitter, t + 0.3);
+        const dizzyG = ctx.createGain();
+        dizzyG.gain.setValueAtTime(0.0001, t);
+        dizzyG.gain.setValueAtTime(0.18, t + 0.03);
+        dizzyG.gain.exponentialRampToValueAtTime(0.0001, t + 0.32);
+        dizzy.connect(dizzyG);
+        dizzyG.connect(out);
+        dizzy.start(t + 0.03);
+        dizzy.stop(t + 0.34);
+        break;
+      }
+
+      case 'freezeShatter': {
+        // Explosive crystalline ice-glass shatter
+        const burst = ctx.createBufferSource();
+        burst.buffer = getNoiseBuffer(ctx);
+        const hp = ctx.createBiquadFilter();
+        hp.type = 'highpass';
+        hp.frequency.setValueAtTime(3400, t);
+        const bg = ctx.createGain();
+        bg.gain.setValueAtTime(0.42, t);
+        bg.gain.exponentialRampToValueAtTime(0.0001, t + 0.11);
+        burst.connect(hp);
+        hp.connect(bg);
+        bg.connect(out);
+        burst.start(t);
+        burst.stop(t + 0.12);
+
+        const shards = [2800, 3520, 4435, 5274];
+        const maxFreq = ctx.sampleRate * 0.42;
+        shards.forEach((freq, idx) => {
+          const osc = ctx.createOscillator();
+          osc.type = idx % 2 === 0 ? 'sine' : 'triangle';
+          const f = Math.min(freq * jitter, maxFreq);
+          osc.frequency.setValueAtTime(f, t + idx * 0.015);
+          osc.frequency.exponentialRampToValueAtTime(f * 0.68, t + 0.2 + idx * 0.02);
+          const g = ctx.createGain();
+          g.gain.setValueAtTime(0.0001, t);
+          g.gain.setValueAtTime(0.24, t + idx * 0.015);
+          g.gain.exponentialRampToValueAtTime(0.0001, t + 0.24 + idx * 0.025);
+          osc.connect(g);
+          g.connect(out);
+          osc.start(t + idx * 0.015);
+          osc.stop(t + 0.28 + idx * 0.025);
+        });
+        break;
+      }
+
+      case 'bleedBurst': {
+        // Visceral 5-stack hemorrhage burst: punch + arterial splatter + crimson slice
+        const sub = ctx.createOscillator();
+        sub.type = 'sawtooth';
+        sub.frequency.setValueAtTime(165 * jitter, t);
+        sub.frequency.exponentialRampToValueAtTime(42, t + 0.18);
+        const subG = ctx.createGain();
+        subG.gain.setValueAtTime(0.48, t);
+        subG.gain.exponentialRampToValueAtTime(0.0001, t + 0.2);
+        sub.connect(subG);
+        subG.connect(out);
+        sub.start(t);
+        sub.stop(t + 0.22);
+
+        const spray = ctx.createBufferSource();
+        spray.buffer = getNoiseBuffer(ctx);
+        const sf = ctx.createBiquadFilter();
+        sf.type = 'bandpass';
+        sf.Q.value = 1.8;
+        sf.frequency.setValueAtTime(2200 * jitter, t);
+        sf.frequency.exponentialRampToValueAtTime(480, t + 0.16);
+        const sg = ctx.createGain();
+        sg.gain.setValueAtTime(0.46, t);
+        sg.gain.exponentialRampToValueAtTime(0.0001, t + 0.18);
+        spray.connect(sf);
+        sf.connect(sg);
+        sg.connect(out);
+        spray.start(t);
+        spray.stop(t + 0.2);
+        break;
+      }
+
+      case 'lightningArc': {
+        // Crackling high-voltage chain-lightning discharge
+        const zap = ctx.createBufferSource();
+        zap.buffer = getNoiseBuffer(ctx);
+        const zf = ctx.createBiquadFilter();
+        zf.type = 'highpass';
+        zf.frequency.setValueAtTime(2600, t);
+        const shaper = ctx.createWaveShaper();
+        shaper.curve = getHardClipCurve();
+        const zg = ctx.createGain();
+        zg.gain.setValueAtTime(0.36, t);
+        zg.gain.exponentialRampToValueAtTime(0.0001, t + 0.11);
+        zap.connect(zf);
+        zf.connect(shaper);
+        shaper.connect(zg);
+        zg.connect(out);
+        zap.start(t);
+        zap.stop(t + 0.12);
+
+        const arc = ctx.createOscillator();
+        arc.type = 'sawtooth';
+        arc.frequency.setValueAtTime(2400 * jitter, t);
+        arc.frequency.setValueAtTime(920 * jitter, t + 0.02);
+        arc.frequency.setValueAtTime(2950 * jitter, t + 0.042);
+        arc.frequency.exponentialRampToValueAtTime(420 * jitter, t + 0.1);
+        const ag = ctx.createGain();
+        ag.gain.setValueAtTime(0.24, t);
+        ag.gain.exponentialRampToValueAtTime(0.0001, t + 0.11);
+        arc.connect(ag);
+        ag.connect(out);
+        arc.start(t);
+        arc.stop(t + 0.12);
+        break;
+      }
+
+      case 'bossEngage': {
+        // Ominous cathedral gong + deep sub-brass horn sting
+        const gongPartials = [82.4, 123.5, 226.8, 341.2];
+        gongPartials.forEach((freq, idx) => {
+          const gOsc = ctx.createOscillator();
+          gOsc.type = idx === 0 ? 'sawtooth' : 'sine';
+          gOsc.frequency.setValueAtTime(freq, t);
+          const gFlt = ctx.createBiquadFilter();
+          gFlt.type = 'lowpass';
+          gFlt.frequency.setValueAtTime(900, t);
+          gFlt.frequency.exponentialRampToValueAtTime(220, t + 1.2);
+          const gGain = ctx.createGain();
+          gGain.gain.setValueAtTime(0.34 / (idx + 1), t);
+          gGain.gain.exponentialRampToValueAtTime(0.0001, t + 1.4);
+          gOsc.connect(gFlt);
+          gFlt.connect(gGain);
+          gGain.connect(out);
+          gOsc.start(t);
+          gOsc.stop(t + 1.45);
+        });
+        break;
+      }
+
+      case 'shopReroll': {
+        // Staggered coin clinks + magical restock arpeggio
+        const clinks = [2349, 2794, 3136];
+        clinks.forEach((freq, idx) => {
+          const c = ctx.createOscillator();
+          c.type = 'sine';
+          c.frequency.setValueAtTime(freq * jitter, t + idx * 0.03);
+          const cg = ctx.createGain();
+          cg.gain.setValueAtTime(0.0001, t);
+          cg.gain.setValueAtTime(0.2, t + idx * 0.03);
+          cg.gain.exponentialRampToValueAtTime(0.0001, t + 0.1 + idx * 0.03);
+          c.connect(cg);
+          cg.connect(out);
+          c.start(t + idx * 0.03);
+          c.stop(t + 0.14 + idx * 0.03);
+        });
+        const chime = ctx.createOscillator();
+        chime.type = 'triangle';
+        chime.frequency.setValueAtTime(660 * jitter, t + 0.07);
+        chime.frequency.exponentialRampToValueAtTime(1320 * jitter, t + 0.19);
+        const chG = ctx.createGain();
+        chG.gain.setValueAtTime(0.0001, t);
+        chG.gain.setValueAtTime(0.22, t + 0.07);
+        chG.gain.exponentialRampToValueAtTime(0.0001, t + 0.24);
+        chime.connect(chG);
+        chG.connect(out);
+        chime.start(t + 0.07);
+        chime.stop(t + 0.26);
+        break;
+      }
+
+      case 'perfectKillStreak': {
+        // Radiant ascending golden 4-note kill-streak milestone fanfare
+        const notes = [880, 1108.73, 1318.51, 1760]; // A5, C#6, E6, A6
+        notes.forEach((freq, idx) => {
+          const o = ctx.createOscillator();
+          o.type = idx % 2 === 0 ? 'triangle' : 'sine';
+          o.frequency.setValueAtTime(freq, t + idx * 0.045);
+          const g = ctx.createGain();
+          g.gain.setValueAtTime(0.0001, t);
+          g.gain.setValueAtTime(0.26, t + idx * 0.045);
+          g.gain.exponentialRampToValueAtTime(0.0001, t + 0.55 + idx * 0.05);
+          o.connect(g);
+          g.connect(out);
+          o.start(t + idx * 0.045);
+          o.stop(t + 0.68);
+        });
+        break;
+      }
+
+      case 'perfectDodge': {
+        // Crisp temporal-slice whoosh + crystalline shimmer ping
+        const slice = ctx.createBufferSource();
+        slice.buffer = getNoiseBuffer(ctx);
+        const sf = ctx.createBiquadFilter();
+        sf.type = 'bandpass';
+        sf.Q.value = 3.2;
+        sf.frequency.setValueAtTime(420, t);
+        sf.frequency.exponentialRampToValueAtTime(2600 * jitter, t + 0.05);
+        sf.frequency.exponentialRampToValueAtTime(680, t + 0.16);
+        const sg = ctx.createGain();
+        sg.gain.setValueAtTime(0.32, t);
+        sg.gain.exponentialRampToValueAtTime(0.0001, t + 0.18);
+        slice.connect(sf);
+        sf.connect(sg);
+        sg.connect(out);
+        slice.start(t);
+        slice.stop(t + 0.2);
+
+        const ping = ctx.createOscillator();
+        ping.type = 'sine';
+        ping.frequency.setValueAtTime(1975 * jitter, t + 0.02);
+        ping.frequency.exponentialRampToValueAtTime(2637 * jitter, t + 0.14);
+        const pg = ctx.createGain();
+        pg.gain.setValueAtTime(0.0001, t);
+        pg.gain.setValueAtTime(0.24, t + 0.02);
+        pg.gain.exponentialRampToValueAtTime(0.0001, t + 0.24);
+        ping.connect(pg);
+        pg.connect(out);
+        ping.start(t + 0.02);
+        ping.stop(t + 0.26);
         break;
       }
 
