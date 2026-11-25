@@ -1,10 +1,13 @@
 // =============================================================================
 // KRUNKED CELLS — The Passage Safe Room Modal
 // Tabs: The Collector, Guillain (Mutations), Minor Forge, Fountain & Exits.
+// Renders real pixel-art icons (zero Unicode emojis!).
 // =============================================================================
 
 import {
+  ArtPackMode,
   BiomeId,
+  CustomPackAssetResolver,
   GearInstance,
   GearQuality,
   MetaBlueprintDef,
@@ -23,6 +26,8 @@ import {
   getBiomeDisplayName,
   getGearDisplayInfo,
   getMutationDisplayInfo,
+  renderItemIconHtml,
+  renderUiGlyphSvg,
 } from './HudOverlay';
 
 export type PassageTab = 'collector' | 'guillain' | 'forge' | 'exits';
@@ -43,6 +48,8 @@ const NEXT_QUALITY: Record<GearQuality, GearQuality | null> = {
 export class PassageModal {
   private callbacks: PassageModalCallbacks;
   private catalog?: CatalogLookup;
+  private artPackMode: ArtPackMode = 'builtin';
+  private customPackResolver: CustomPackAssetResolver | null = null;
 
   private backdropEl: HTMLDivElement;
   private quickBarEl: HTMLDivElement;
@@ -57,22 +64,8 @@ export class PassageModal {
 
     // Non-blocking quick access strip while standing inside The Passage safe room
     this.quickBarEl = document.createElement('div');
-    this.quickBarEl.className = 'kc-iron-panel kc-hidden';
-    this.quickBarEl.style.cssText =
-      'position:absolute;bottom:14px;right:14px;padding:8px 10px;display:flex;gap:6px;flex-wrap:wrap;pointer-events:auto;z-index:25;';
-    this.quickBarEl.innerHTML = `
-      <button class="kc-btn kc-btn-sm kc-btn-cyan" data-open-tab="collector">✦ Collector</button>
-      <button class="kc-btn kc-btn-sm" data-open-tab="guillain">◈ Guillain</button>
-      <button class="kc-btn kc-btn-sm" data-open-tab="forge">⚒ Minor Forge</button>
-      <button class="kc-btn kc-btn-sm kc-btn-emerald" data-open-tab="exits">⚑ Fountain & Exits</button>
-    `;
-    this.quickBarEl.querySelectorAll<HTMLButtonElement>('[data-open-tab]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const tab = btn.dataset.openTab as PassageTab;
-        this.callbacks.onPlayUiClick?.('select');
-        this.openTab(tab);
-      });
-    });
+    this.quickBarEl.className = 'kc-passage-quickbar kc-iron-panel kc-hidden';
+    this.renderQuickBar();
     uiRoot.appendChild(this.quickBarEl);
 
     // Full Tabbed Passage Modal
@@ -89,6 +82,17 @@ export class PassageModal {
   public setCatalog(catalog?: CatalogLookup): void {
     this.catalog = catalog;
     this.lastRenderSig = '';
+  }
+
+  public setArtPackContext(mode: ArtPackMode, resolver?: CustomPackAssetResolver | null): void {
+    this.artPackMode = mode;
+    this.customPackResolver = resolver ?? null;
+    this.forceRefreshIcons();
+  }
+
+  public forceRefreshIcons(): void {
+    this.lastRenderSig = '';
+    this.renderQuickBar();
   }
 
   public isOpen(): boolean {
@@ -125,7 +129,6 @@ export class PassageModal {
       return;
     }
 
-    // Sync NPC interaction triggered by walking up to shrines in-world
     const npc = state.passageState.activeNpc;
     if (npc !== this.lastActiveNpc) {
       this.lastActiveNpc = npc;
@@ -154,6 +157,31 @@ export class PassageModal {
     this.quickBarEl.remove();
   }
 
+  private renderQuickBar(): void {
+    const cellIcon = renderItemIconHtml('Cell', this.artPackMode, this.customPackResolver, {
+      size: 14,
+      fallbackKind: 'cell',
+      alt: 'Collector',
+    });
+    const mutIcon = renderUiGlyphSvg('mutation', 14, '#a855f7');
+    const forgeIcon = renderUiGlyphSvg('forge', 14, '#fbbf24');
+    const exitIcon = renderUiGlyphSvg('door', 14, '#22c55e');
+
+    this.quickBarEl.innerHTML = `
+      <button class="kc-btn kc-btn-sm kc-btn-cyan kc-btn-icon" data-open-tab="collector">${cellIcon}<span>Collector</span></button>
+      <button class="kc-btn kc-btn-sm kc-btn-icon" data-open-tab="guillain">${mutIcon}<span>Guillain</span></button>
+      <button class="kc-btn kc-btn-sm kc-btn-icon" data-open-tab="forge">${forgeIcon}<span>Minor Forge</span></button>
+      <button class="kc-btn kc-btn-sm kc-btn-emerald kc-btn-icon" data-open-tab="exits">${exitIcon}<span>Fountain & Exits</span></button>
+    `;
+    this.quickBarEl.querySelectorAll<HTMLButtonElement>('[data-open-tab]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const tab = btn.dataset.openTab as PassageTab;
+        this.callbacks.onPlayUiClick?.('select');
+        this.openTab(tab);
+      });
+    });
+  }
+
   private computeSignature(state: SimState): string {
     const p = state.player;
     const ps = state.passageState;
@@ -164,15 +192,29 @@ export class PassageModal {
     const gearKey = [p.loadout.weapon1, p.loadout.weapon2, p.loadout.skill1, p.loadout.skill2]
       .map((g) => (g ? `${g.uid}:${g.quality}:${g.affixes.join('.')}` : 'none'))
       .join('|');
-    return `${this.activeTab}|c${p.cells}|g${p.gold}|hp${Math.ceil(p.hp)}/${Math.ceil(p.maxHp)}|fl${p.flaskCharges}/${p.maxFlaskCharges}|f${ps.fountainUsed}|td${ps.timedDoorOpen}${ps.timedDoorClaimed}|kd${ps.killStreakDoorOpen}${ps.killStreakDoorClaimed}|rf${ps.reforgeCount}|m${p.mutations.join(',')}|ub${ms.unlockedBlueprints.length}|ft${ms.flaskTier}|gr${ms.goldReserveTier}|rs${ms.randomStarterUnlocked}|rc${ms.recycleUnlocked}|${progKey}|${gearKey}|nb${ps.nextBiomes.join(',')}`;
+    return `${this.activeTab}|art:${this.artPackMode}|c${p.cells}|g${p.gold}|hp${Math.ceil(p.hp)}/${Math.ceil(p.maxHp)}|fl${p.flaskCharges}/${p.maxFlaskCharges}|f${ps.fountainUsed}|td${ps.timedDoorOpen}${ps.timedDoorClaimed}|kd${ps.killStreakDoorOpen}${ps.killStreakDoorClaimed}|rf${ps.reforgeCount}|m${p.mutations.join(',')}|ub${ms.unlockedBlueprints.length}|ft${ms.flaskTier}|gr${ms.goldReserveTier}|rs${ms.randomStarterUnlocked}|rc${ms.recycleUnlocked}|${progKey}|${gearKey}|nb${ps.nextBiomes.join(',')}`;
   }
 
   private render(state: SimState): void {
     const p = state.player;
     const ps = state.passageState;
 
-    const tabBtn = (id: PassageTab, label: string) =>
-      `<button class="kc-tab ${this.activeTab === id ? 'is-active' : ''}" data-tab="${id}">${label}</button>`;
+    const cellIcon = renderItemIconHtml('Cell', this.artPackMode, this.customPackResolver, {
+      size: 16,
+      fallbackKind: 'cell',
+      alt: 'Cells',
+    });
+    const goldIcon = renderItemIconHtml('Gold', this.artPackMode, this.customPackResolver, {
+      size: 16,
+      fallbackKind: 'gold',
+      alt: 'Gold',
+    });
+    const mutIcon = renderUiGlyphSvg('mutation', 15, '#a855f7');
+    const forgeIcon = renderUiGlyphSvg('forge', 15, '#fbbf24');
+    const exitIcon = renderUiGlyphSvg('door', 15, '#22c55e');
+
+    const tabBtn = (id: PassageTab, iconHtml: string, label: string) =>
+      `<button class="kc-tab ${this.activeTab === id ? 'is-active' : ''}" data-tab="${id}">${iconHtml}<span>${label}</span></button>`;
 
     let bodyHtml = '';
     if (this.activeTab === 'collector') {
@@ -194,17 +236,17 @@ export class PassageModal {
               Cleared: ${escapeHtml(getBiomeDisplayName(ps.fromBiome, this.catalog))}
             </div>
           </div>
-          <div style="display:flex;align-items:center;gap:12px;font-family:var(--font-mono);font-size:13px;font-weight:700">
-            <span class="kc-res-cells">✦ ${Math.floor(p.cells)} Cells</span>
-            <span class="kc-res-gold">◈ ${Math.floor(p.gold)} Gold</span>
+          <div class="kc-passage-wallet">
+            <span class="kc-res-item kc-res-cells">${cellIcon}<span>${Math.floor(p.cells)} Cells</span></span>
+            <span class="kc-res-item kc-res-gold">${goldIcon}<span>${Math.floor(p.gold)} Gold</span></span>
             <button class="kc-btn kc-btn-sm" data-act="close">Close [Esc]</button>
           </div>
         </div>
         <div class="kc-tabs">
-          ${tabBtn('collector', '✦ The Collector')}
-          ${tabBtn('guillain', '◈ Guillain (Mutations)')}
-          ${tabBtn('forge', '⚒ Minor Forge')}
-          ${tabBtn('exits', '⚑ Fountain & Next Biome')}
+          ${tabBtn('collector', cellIcon, 'The Collector')}
+          ${tabBtn('guillain', mutIcon, 'Guillain (Mutations)')}
+          ${tabBtn('forge', forgeIcon, 'Minor Forge')}
+          ${tabBtn('exits', exitIcon, 'Fountain & Next Biome')}
         </div>
         <div class="kc-passage-body">
           ${bodyHtml}
@@ -215,12 +257,21 @@ export class PassageModal {
     this.bindEvents(state);
   }
 
+  private resolveBlueprintIconId(bp: MetaBlueprintDef): string {
+    if (bp.targetId) return bp.targetId;
+    if (bp.id === 'HealthFlask' || bp.id === 'flask') return 'HealthFlask';
+    if (bp.id === 'GoldReserves' || bp.id === 'goldReserve' || bp.id === 'Recycling' || bp.id === 'recycle') {
+      return 'Gold';
+    }
+    if (bp.id === 'RandomStarter' || bp.id === 'randomStarter') return 'StartSword';
+    return bp.id;
+  }
+
   private renderCollectorTab(state: SimState): string {
     const blueprints: readonly MetaBlueprintDef[] =
       this.catalog?.metaBlueprints && this.catalog.metaBlueprints.length > 0
         ? this.catalog.metaBlueprints
         : FALLBACK_META_BLUEPRINTS;
-    const ms = state.metaSnapshot;
     const cells = Math.floor(state.player.cells);
 
     const cards = blueprints
@@ -228,16 +279,26 @@ export class PassageModal {
         const status = this.getBlueprintStatus(bp, state);
         const pct = status.maxed ? 100 : Math.min(100, Math.round((status.invested / Math.max(1, status.cost)) * 100));
         const rem = Math.max(0, status.cost - status.invested);
+        const iconId = this.resolveBlueprintIconId(bp);
+        const iconHtml = renderItemIconHtml(iconId, this.artPackMode, this.customPackResolver, {
+          size: 30,
+          alt: bp.name,
+        });
 
         return `
-          <div class="kc-npc-card">
-            <div class="kc-npc-card-head">
-              <span class="kc-npc-card-name">${escapeHtml(bp.name)}</span>
-              <span style="font-family:var(--font-mono);font-size:10px;color:${status.maxed ? 'var(--survival)' : 'var(--cell-cyan)'}">
-                ${status.maxed ? 'UNLOCKED' : status.tierLabel}
-              </span>
+          <div class="kc-npc-card ${status.maxed ? 'is-maxed' : ''}">
+            <div class="kc-npc-card-top">
+              <div class="kc-npc-icon-frame">${iconHtml}</div>
+              <div class="kc-npc-card-titles">
+                <div class="kc-npc-card-head">
+                  <span class="kc-npc-card-name">${escapeHtml(bp.name)}</span>
+                  <span class="kc-npc-tier" style="color:${status.maxed ? 'var(--survival)' : 'var(--cell-cyan)'}">
+                    ${status.maxed ? 'UNLOCKED' : status.tierLabel}
+                  </span>
+                </div>
+                <div class="kc-npc-card-desc">${escapeHtml(bp.description)}</div>
+              </div>
             </div>
-            <div class="kc-npc-card-desc">${escapeHtml(bp.description)}</div>
             <div class="kc-progress-track">
               <div class="kc-progress-fill" style="width:${pct}%"></div>
             </div>
@@ -358,16 +419,26 @@ export class PassageModal {
       .map((idx) => {
         const id = equipped[idx];
         if (!id) {
-          return `<div class="kc-npc-card" style="opacity:0.65"><div class="kc-npc-card-name">Slot ${idx + 1} — Empty</div><div class="kc-npc-card-desc">Choose a mutation below.</div></div>`;
+          return `<div class="kc-npc-card" style="opacity:0.6"><div class="kc-npc-card-name">Slot ${idx + 1} — Empty</div><div class="kc-npc-card-desc">Choose a mutation below.</div></div>`;
         }
         const info = getMutationDisplayInfo(id, this.catalog);
+        const iconHtml = renderItemIconHtml(id, this.artPackMode, this.customPackResolver, {
+          size: 30,
+          fallbackKind: 'mutation',
+          alt: info.name,
+        });
         return `
           <div class="kc-npc-card kc-color-${info.color}">
-            <div class="kc-npc-card-head">
-              <span class="kc-npc-card-name">${escapeHtml(info.name)}</span>
-              <span style="font-family:var(--font-mono);font-size:10px;text-transform:uppercase">SLOT ${idx + 1}</span>
+            <div class="kc-npc-card-top">
+              <div class="kc-npc-icon-frame kc-color-${info.color}">${iconHtml}</div>
+              <div class="kc-npc-card-titles">
+                <div class="kc-npc-card-head">
+                  <span class="kc-npc-card-name">${escapeHtml(info.name)}</span>
+                  <span class="kc-npc-tier">SLOT ${idx + 1}</span>
+                </div>
+                <div class="kc-npc-card-desc">${escapeHtml(info.description)}</div>
+              </div>
             </div>
-            <div class="kc-npc-card-desc">${escapeHtml(info.description)}</div>
           </div>
         `;
       })
@@ -378,13 +449,23 @@ export class PassageModal {
       .map((m) => {
         const isEquipped = equipped.includes(m.id);
         const full = equipped.length >= 3 && !isEquipped;
+        const iconHtml = renderItemIconHtml(m.id, this.artPackMode, this.customPackResolver, {
+          size: 30,
+          fallbackKind: 'mutation',
+          alt: m.name,
+        });
         return `
           <div class="kc-npc-card kc-color-${m.color}">
-            <div class="kc-npc-card-head">
-              <span class="kc-npc-card-name">${escapeHtml(m.name)}</span>
-              <span style="font-family:var(--font-mono);font-size:10px;text-transform:uppercase">${escapeHtml(m.color)}</span>
+            <div class="kc-npc-card-top">
+              <div class="kc-npc-icon-frame kc-color-${m.color}">${iconHtml}</div>
+              <div class="kc-npc-card-titles">
+                <div class="kc-npc-card-head">
+                  <span class="kc-npc-card-name">${escapeHtml(m.name)}</span>
+                  <span class="kc-npc-tier" style="text-transform:uppercase">${escapeHtml(m.color)}</span>
+                </div>
+                <div class="kc-npc-card-desc">${escapeHtml(m.description)}</div>
+              </div>
             </div>
-            <div class="kc-npc-card-desc">${escapeHtml(m.description)}</div>
             <button class="kc-btn kc-btn-sm ${isEquipped ? '' : 'kc-btn-primary'}" data-pick-mut="${escapeHtml(m.id)}" ${isEquipped || full ? 'disabled' : ''}>
               ${isEquipped ? 'Equipped' : full ? 'Slots Full (Respec)' : 'Equip Mutation'}
             </button>
@@ -431,6 +512,10 @@ export class PassageModal {
         const nextQ = NEXT_QUALITY[gear.quality];
         const pwr = estimateGearPower(gear, state, this.catalog);
         const colorClass = gear.quality === 'L' ? 'kc-color-colorless' : `kc-color-${gear.color}`;
+        const iconHtml = renderItemIconHtml(gear.defId, this.artPackMode, this.customPackResolver, {
+          size: 34,
+          alt: info.name,
+        });
         const affixesHtml =
           gear.affixes.length > 0
             ? `<ul class="kc-affix-list">${gear.affixes
@@ -440,11 +525,16 @@ export class PassageModal {
 
         return `
           <div class="kc-npc-card ${colorClass}">
-            <div class="kc-npc-card-head">
-              <span class="kc-npc-card-name">${info.glyph} ${escapeHtml(info.name)} <span style="font-family:var(--font-mono);color:var(--gold-amber)">${escapeHtml(badge)}</span></span>
-              <span style="font-family:var(--font-mono);font-size:10px">${label} · PWR ${pwr}</span>
+            <div class="kc-npc-card-top">
+              <div class="kc-npc-icon-frame ${colorClass}">${iconHtml}</div>
+              <div class="kc-npc-card-titles">
+                <div class="kc-npc-card-head">
+                  <span class="kc-npc-card-name">${escapeHtml(info.name)} <span style="font-family:var(--font-mono);color:var(--gold-amber)">${escapeHtml(badge)}</span></span>
+                  <span class="kc-npc-tier">${label} · DPS ${pwr}</span>
+                </div>
+                ${affixesHtml}
+              </div>
             </div>
-            ${affixesHtml}
             <div class="kc-dev-row" style="margin-top:auto">
               <button class="kc-btn kc-btn-sm kc-btn-primary" data-forge-up="${key}" ${nextQ ? '' : 'disabled'}>
                 ${nextQ ? `Upgrade → ${escapeHtml(nextQ)}` : 'Max Quality'}
@@ -471,15 +561,23 @@ export class PassageModal {
     const p = state.player;
     const nextBiomes: BiomeId[] = ps.nextBiomes.length > 0 ? ps.nextBiomes : ['PrisonCourtyard'];
 
+    const timerIcon = renderUiGlyphSvg('timer', 16, '#fbbf24');
+    const crownIcon = renderUiGlyphSvg('crown', 16, '#fbbf24');
+    const flaskIcon = renderItemIconHtml('HealthFlask', this.artPackMode, this.customPackResolver, {
+      size: 30,
+      fallbackKind: 'flask',
+      alt: 'Health Fountain',
+    });
+
     const timedText = ps.timedDoorClaimed
       ? 'CLAIMED'
       : ps.timedDoorOpen
-        ? 'UNLOCKED!'
+        ? 'UNLOCKED'
         : `LOCKED (< ${formatTimer(ps.timedTargetTicks)})`;
     const killText = ps.killStreakDoorClaimed
       ? 'CLAIMED'
       : ps.killStreakDoorOpen
-        ? 'UNLOCKED!'
+        ? 'UNLOCKED'
         : `LOCKED (${state.maxKillStreak}/${ps.killStreakTarget} Streak)`;
 
     const exitButtons = nextBiomes
@@ -491,14 +589,20 @@ export class PassageModal {
           : def
             ? `Stage ${def.stageIndex} · ${def.scrollCount} Scrolls`
             : 'Proceed to the next biome';
+        const doorIcon = renderUiGlyphSvg('door', 28, def?.isBossArena ? '#e83b4a' : '#22c55e');
         return `
-          <div class="kc-npc-card" style="border-color:var(--survival)">
-            <div class="kc-npc-card-head">
-              <span class="kc-npc-card-name">${escapeHtml(name)}</span>
-              <span style="font-family:var(--font-mono);font-size:10px;color:var(--survival)">EXIT DOOR</span>
+          <div class="kc-npc-card" style="border-color:${def?.isBossArena ? 'var(--brutality)' : 'var(--survival)'}">
+            <div class="kc-npc-card-top">
+              <div class="kc-npc-icon-frame">${doorIcon}</div>
+              <div class="kc-npc-card-titles">
+                <div class="kc-npc-card-head">
+                  <span class="kc-npc-card-name">${escapeHtml(name)}</span>
+                  <span class="kc-npc-tier" style="color:${def?.isBossArena ? 'var(--brutality)' : 'var(--survival)'}">${def?.isBossArena ? 'BOSS GATE' : 'EXIT DOOR'}</span>
+                </div>
+                <div class="kc-npc-card-desc">${escapeHtml(desc)}</div>
+              </div>
             </div>
-            <div class="kc-npc-card-desc">${escapeHtml(desc)}</div>
-            <button class="kc-btn kc-btn-sm kc-btn-emerald" data-enter-biome="${escapeHtml(biomeId)}">
+            <button class="kc-btn kc-btn-sm ${def?.isBossArena ? 'kc-btn-primary' : 'kc-btn-emerald'}" data-enter-biome="${escapeHtml(biomeId)}">
               Enter ${escapeHtml(name)} →
             </button>
           </div>
@@ -509,30 +613,41 @@ export class PassageModal {
     return `
       <div class="kc-door-status-row">
         <div class="kc-door-badge ${ps.timedDoorOpen ? 'is-open' : ''}">
-          <div>
-            <div style="font-weight:700">⧖ Timed Door</div>
-            <div style="font-size:11px;color:var(--text-muted)">Run Time: ${formatTimer(p.runTimerTicks)}</div>
+          <div style="display:flex;align-items:center;gap:9px">
+            ${timerIcon}
+            <div>
+              <div style="font-weight:700">Timed Door</div>
+              <div style="font-size:11px;color:var(--text-muted)">Run Time: ${formatTimer(p.runTimerTicks)}</div>
+            </div>
           </div>
           <span style="font-family:var(--font-mono);font-size:11px;color:${ps.timedDoorOpen ? 'var(--survival)' : 'var(--text-muted)'}">${timedText}</span>
         </div>
         <div class="kc-door-badge ${ps.killStreakDoorOpen ? 'is-open' : ''}">
-          <div>
-            <div style="font-weight:700">★ No-Hit Kill Door</div>
-            <div style="font-size:11px;color:var(--text-muted)">Best Streak: ${state.maxKillStreak}</div>
+          <div style="display:flex;align-items:center;gap:9px">
+            ${crownIcon}
+            <div>
+              <div style="font-weight:700">No-Hit Kill Door</div>
+              <div style="font-size:11px;color:var(--text-muted)">Best Streak: ${state.maxKillStreak}</div>
+            </div>
           </div>
           <span style="font-family:var(--font-mono);font-size:11px;color:${ps.killStreakDoorOpen ? 'var(--survival)' : 'var(--text-muted)'}">${killText}</span>
         </div>
       </div>
 
       <div class="kc-npc-card" style="border-color:var(--cell-cyan)">
-        <div class="kc-npc-card-head">
-          <span class="kc-npc-card-name">💧 Health Fountain</span>
-          <span style="font-family:var(--font-mono);font-size:11px;color:${ps.fountainUsed ? 'var(--text-muted)' : 'var(--survival)'}">
-            ${ps.fountainUsed ? 'DEPLETED' : 'READY'}
-          </span>
-        </div>
-        <div class="kc-npc-card-desc">
-          Restores HP (${Math.ceil(p.hp)}/${Math.ceil(p.maxHp)}) and refills Health Flask charges (${p.flaskCharges}/${p.maxFlaskCharges}) per Boss Cell difficulty rules.
+        <div class="kc-npc-card-top">
+          <div class="kc-npc-icon-frame" style="border-color:var(--cell-cyan)">${flaskIcon}</div>
+          <div class="kc-npc-card-titles">
+            <div class="kc-npc-card-head">
+              <span class="kc-npc-card-name">Health Fountain</span>
+              <span class="kc-npc-tier" style="color:${ps.fountainUsed ? 'var(--text-muted)' : 'var(--survival)'}">
+                ${ps.fountainUsed ? 'DEPLETED' : 'READY'}
+              </span>
+            </div>
+            <div class="kc-npc-card-desc">
+              Restores HP (${Math.ceil(p.hp)}/${Math.ceil(p.maxHp)}) and refills Health Flask charges (${p.flaskCharges}/${p.maxFlaskCharges}) per Boss Cell difficulty rules.
+            </div>
+          </div>
         </div>
         <div>
           <button class="kc-btn kc-btn-sm kc-btn-cyan" data-act="fountain" ${ps.fountainUsed ? 'disabled' : ''}>

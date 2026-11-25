@@ -1,7 +1,8 @@
 // =============================================================================
 // KRUNKED CELLS — Master UI Manager
-// Orchestrates Title Screen, Pause Menu, Options Modal, Scroll Picker,
-// Run Summary, HUD, Minimap, Passage Modal, and F9 Dev Drawer.
+// Orchestrates Full-Bleed Dead Cells Title Screen, Pause Menu, Options Modal,
+// 3-Pillar Pixel-Icon Scroll Picker, Run Summary, HUD, Minimap, Passage Modal,
+// and F9 Dev Drawer. Zero Unicode emojis anywhere!
 // =============================================================================
 
 import {
@@ -9,6 +10,7 @@ import {
   AudioSettings,
   BiomeId,
   BossId,
+  CustomPackAssetResolver,
   CustomPackStatus,
   DEFAULT_AUDIO_SETTINGS,
   DEFAULT_KEY_BINDINGS,
@@ -38,6 +40,8 @@ import {
   formatTimer,
   getBiomeDisplayName,
   getScrollDamagePct,
+  renderItemIconHtml,
+  renderUiGlyphSvg,
 } from './HudOverlay';
 import { Minimap } from './Minimap';
 import { PassageModal } from './PassageModal';
@@ -49,6 +53,7 @@ export interface UICallbacks {
   onReturnToTitle(): void;
   onRestartRun(): void;
   onDispatchCommand(cmd: SimCommand): void;
+  onTriggerHeal?(): void;
   onUpdateRenderSettings(patch: Partial<RenderSettings>): void;
   onUpdateAudioSettings(patch: Partial<AudioSettings>): void;
   onUpdateKeyBindings(bindings: KeyBindings): void;
@@ -61,6 +66,7 @@ export interface UICallbacks {
   onDevSpawnBoss?(bossId: BossId): void;
   onDevGrantScrolls?(brutality: number, tactics: number, survival: number): void;
   onDevGiveItem?(itemId: string): void;
+  onDevGiveTestSkills?(): void;
   onDevSetGodMode?(enabled: boolean): void;
   onDevSetBossCells?(bc: number): void;
   onDevTriggerCurse?(kills?: number): void;
@@ -81,8 +87,8 @@ const KEYBIND_LABELS: ReadonlyArray<{ action: KeyAction; label: string }> = [
   { action: 'moveDown', label: 'Crouch / Drop' },
   { action: 'jump', label: 'Jump / Dive-Slam' },
   { action: 'roll', label: 'Dodge Roll' },
-  { action: 'weapon1', label: 'Weapon Slot 1' },
-  { action: 'weapon2', label: 'Weapon Slot 2 / Shield' },
+  { action: 'weapon1', label: 'Weapon Slot 1 (LMB)' },
+  { action: 'weapon2', label: 'Weapon Slot 2 / Shield (RMB)' },
   { action: 'skill1', label: 'Skill Slot 1' },
   { action: 'skill2', label: 'Skill Slot 2' },
   { action: 'heal', label: 'Health Flask' },
@@ -123,10 +129,13 @@ export class UIManager {
     audioCount: 0,
     loadedAtlases: [],
   };
+  private artPackMode: ArtPackMode = 'builtin';
+  private customPackResolver: CustomPackAssetResolver | null = null;
   private metaSnapshot: MetaSnapshot = createDefaultMetaSnapshot();
   private hasActiveRun = false;
   private selectedBossCells = 0;
   private customSeed = 133742;
+  private seedDrawerOpen = false;
   private backendName: 'webgl2' | 'canvas2d-fallback' = 'webgl2';
 
   // Modal state flags & dirty signatures
@@ -166,6 +175,7 @@ export class UIManager {
           onDispatchCommand: (cmd) => this.callbacks.onDispatchCommand(cmd),
           onPlayUiClick: (kind) => this.callbacks.onPlayUiClick?.(kind),
           onToggleMinimap: () => this.toggleMinimapExpanded(),
+          onTriggerHeal: () => this.callbacks.onTriggerHeal?.(),
         },
         this.catalog
       );
@@ -189,7 +199,7 @@ export class UIManager {
         this.catalog
       );
 
-      this.titleLayer = this.createLayer(this.uiRoot, 'kc-modal-backdrop kc-title-backdrop kc-hidden');
+      this.titleLayer = this.createLayer(this.uiRoot, 'kc-title-backdrop kc-hidden');
       this.scrollLayer = this.createLayer(this.uiRoot, 'kc-modal-backdrop kc-hidden');
       this.pauseLayer = this.createLayer(this.uiRoot, 'kc-modal-backdrop kc-hidden');
       this.summaryLayer = this.createLayer(this.uiRoot, 'kc-modal-backdrop kc-hidden');
@@ -202,6 +212,7 @@ export class UIManager {
           onSpawnBoss: this.callbacks.onDevSpawnBoss,
           onGrantScrolls: this.callbacks.onDevGrantScrolls,
           onGiveItem: this.callbacks.onDevGiveItem,
+          onGiveTestSkills: this.callbacks.onDevGiveTestSkills,
           onSetGodMode: this.callbacks.onDevSetGodMode,
           onSetBossCells: this.callbacks.onDevSetBossCells,
           onTriggerCurse: this.callbacks.onDevTriggerCurse,
@@ -231,6 +242,29 @@ export class UIManager {
     this.hud?.setCameraOriginMode(mode);
   }
 
+  public setArtPackContext(mode: ArtPackMode, resolver?: CustomPackAssetResolver | null): void {
+    this.artPackMode = mode;
+    if (resolver !== undefined) {
+      this.customPackResolver = resolver;
+    }
+    this.hud?.setArtPackContext(this.artPackMode, this.customPackResolver);
+    this.passageModal?.setArtPackContext(this.artPackMode, this.customPackResolver);
+    this.forceRefreshIcons();
+  }
+
+  public forceRefreshIcons(): void {
+    this.hud?.forceRefreshIcons();
+    this.passageModal?.forceRefreshIcons();
+    this.lastTitleSig = '';
+    this.lastScrollSig = '';
+    this.lastSummarySig = '';
+    this.lastOptionsSig = '';
+    this.lastPauseSig = '';
+    if (this.lastSimState) {
+      this.updateTitleScreen(this.lastSimState);
+    }
+  }
+
   public syncSettings(
     renderSettings: RenderSettings,
     audioSettings: AudioSettings,
@@ -243,6 +277,15 @@ export class UIManager {
     this.audioSettings = { ...audioSettings };
     this.keyBindings = { ...keyBindings };
     if (customPackStatus) this.customPackStatus = { ...customPackStatus };
+    const effectiveMode: ArtPackMode =
+      this.customPackStatus.available && this.renderSettings.artPackMode === 'custom'
+        ? 'custom'
+        : 'builtin';
+    if (effectiveMode !== this.artPackMode) {
+      this.artPackMode = effectiveMode;
+      this.hud?.setArtPackContext(this.artPackMode, this.customPackResolver);
+      this.passageModal?.setArtPackContext(this.artPackMode, this.customPackResolver);
+    }
     if (saveData?.meta) this.metaSnapshot = saveData.meta;
     if (saveData?.hasActiveRun !== undefined) this.hasActiveRun = saveData.hasActiveRun;
     if (saveData?.selectedBossCells !== undefined) {
@@ -317,10 +360,6 @@ export class UIManager {
     return s.runStatus !== 'playing' && s.runStatus !== 'passage';
   }
 
-  /**
-   * Handles Escape/Pause hierarchy cleanly:
-   * Options -> Minimap -> Passage Modal -> returns false so GameApp toggles Pause.
-   */
   public handleEscapeKey(state: SimState): boolean {
     if (this.capturingKeyAction !== null) {
       this.cancelRebindCapture();
@@ -405,7 +444,7 @@ export class UIManager {
   }
 
   // ===========================================================================
-  // 1. Title Screen
+  // 1. Dead Cells-Grade Full-Bleed Title Screen (Frameless Gothic Overlay)
   // ===========================================================================
 
   private updateTitleScreen(state: SimState): void {
@@ -414,68 +453,158 @@ export class UIManager {
     this.titleLayer.classList.toggle('kc-hidden', !show);
     if (!show) return;
 
-    const sig = `bc${this.selectedBossCells}/${this.metaSnapshot.bossCellsUnlocked}|cont${this.hasActiveRun}|art${this.renderSettings.artPackMode}|pack${this.customPackStatus.available}:${this.customPackStatus.atlasCount}:${this.customPackStatus.audioCount}|runs${this.metaSnapshot.totalRuns}`;
+    const isCustom = this.artPackMode === 'custom';
+    const titleArtUrl =
+      isCustom && this.customPackResolver?.getTitleBackdropDataUrl
+        ? this.customPackResolver.getTitleBackdropDataUrl()
+        : null;
+
+    const sig = `bc${this.selectedBossCells}/${this.metaSnapshot.bossCellsUnlocked}|cont${this.hasActiveRun}|art${this.artPackMode}|url${titleArtUrl ? 1 : 0}|pack${this.customPackStatus.available}:${this.customPackStatus.atlasCount}:${this.customPackStatus.audioCount}|seed${this.customSeed}:${this.seedDrawerOpen}`;
     if (sig === this.lastTitleSig) return;
     this.lastTitleSig = sig;
 
     const unlockedBc = this.metaSnapshot.bossCellsUnlocked;
-    const bcButtonsHtml = Array.from({ length: MAX_BOSS_CELLS + 1 }, (_, bc) => {
+    const bcOrbsHtml = Array.from({ length: MAX_BOSS_CELLS + 1 }, (_, bc) => {
       const locked = bc > unlockedBc;
       const selected = bc === this.selectedBossCells;
-      return `<button class="kc-bc-btn ${selected ? 'is-selected' : ''}" data-title-bc="${bc}" ${locked ? 'disabled' : ''} title="${locked ? 'Defeat Final Boss to unlock' : `${bc} Boss Stem Cells`}">${bc}BC</button>`;
+      const lit = bc > 0 && bc <= this.selectedBossCells;
+      return `
+        <button
+          type="button"
+          class="kc-bc-orb ${selected ? 'is-selected' : ''} ${lit ? 'is-lit' : ''} ${locked ? 'is-locked' : ''}"
+          data-title-bc="${bc}"
+          ${locked ? 'disabled' : ''}
+          title="${locked ? 'Defeat the Sovereign Hand to unlock' : `${bc} Boss Stem Cells`}"
+          aria-label="${bc} Boss Stem Cells"
+        >
+          <span>${bc}</span>
+        </button>
+      `;
     }).join('');
 
-    const isCustom = this.renderSettings.artPackMode === 'custom';
-    const packLabel = this.customPackStatus.available
-      ? `Pack Ready (${this.customPackStatus.atlasCount} atlases, ${this.customPackStatus.audioCount} audio)`
-      : 'No Custom Pack Loaded';
+    const packDotClass = this.customPackStatus.available
+      ? isCustom
+        ? 'is-custom-active'
+        : 'is-ready'
+      : 'is-builtin';
+    const packStatusText = this.customPackStatus.available
+      ? isCustom
+        ? `OWNED PACK ACTIVE · ${this.customPackStatus.atlasCount} ATLASES`
+        : `PACK READY · ${this.customPackStatus.atlasCount} ATLASES`
+      : 'LOCAL PROCEDURAL ART';
+
+    const crestSigilSvg = `
+      <svg class="kc-crest-sigil" width="38" height="38" viewBox="0 0 24 24" shape-rendering="crispEdges" aria-hidden="true">
+        <rect x="11" y="1" width="2" height="4" fill="#fde047"/>
+        <rect x="9" y="4" width="6" height="4" fill="#ff7a38"/>
+        <rect x="7" y="7" width="10" height="5" fill="#e83b4a"/>
+        <rect x="10" y="7" width="4" height="4" fill="#fde047"/>
+        <rect x="4" y="12" width="3" height="6" fill="#e83b4a"/>
+        <rect x="17" y="12" width="3" height="6" fill="#e83b4a"/>
+        <rect x="7" y="12" width="10" height="6" fill="#991b27"/>
+        <rect x="9" y="14" width="2" height="2" fill="#fffbeb"/>
+        <rect x="13" y="14" width="2" height="2" fill="#fffbeb"/>
+        <rect x="6" y="18" width="12" height="2" fill="#fbbf24"/>
+        <rect x="10" y="20" width="4" height="2" fill="#e83b4a"/>
+      </svg>
+    `;
+
+    const menuPointerSvg = `
+      <svg class="kc-menu-pointer" width="14" height="14" viewBox="0 0 12 12" shape-rendering="crispEdges" aria-hidden="true">
+        <path d="M2 1h2v2h2v2h3v2H6v2H4v2H2V9h2V7h2V5H4V3H2z" fill="#fbbf24"/>
+        <rect x="4" y="5" width="3" height="2" fill="#fffbeb"/>
+      </svg>
+    `;
+
+    const diceIcon = renderUiGlyphSvg('dice', 14, '#fbbf24');
 
     this.titleLayer.innerHTML = `
-      <div class="kc-title-card kc-iron-panel">
-        <h1 class="kc-game-logo">Krunked Cells</h1>
-        <div class="kc-game-tagline">Normal-Mapped Gothic Action Roguelite</div>
+      ${
+        titleArtUrl
+          ? `<div class="kc-title-custom-art" style="background-image:url('${titleArtUrl}')"></div>`
+          : ''
+      }
+      <div class="kc-title-vignette"></div>
 
-        <div class="kc-title-config">
-          <div class="kc-config-row">
-            <span>Boss Stem Cells</span>
-            <div class="kc-bc-selector">${bcButtonsHtml}</div>
+      <div class="kc-title-shell">
+        <header class="kc-title-crest">
+          <div class="kc-crest-eyebrow">
+            ${crestSigilSvg}
+            <span class="kc-crest-kicker">DEAD CELLS TRIBUTE · WEBGL2 NORMAL-MAPPED ROGUELITE</span>
           </div>
-          <div class="kc-config-row">
-            <span>Custom Run Seed</span>
-            <div style="display:flex;gap:6px;align-items:center">
-              <input class="kc-input" data-el="seed-input" type="number" value="${this.customSeed}" style="width:128px" />
-              <button class="kc-btn kc-btn-sm" data-act="rand-seed" title="Randomize Seed">🎲</button>
+          <h1 class="kc-game-logo">KRUNKED CELLS</h1>
+          <div class="kc-crest-divider" aria-hidden="true">
+            <span class="kc-crest-diamond"></span>
+            <span class="kc-crest-ember-line"></span>
+          </div>
+        </header>
+
+        <nav class="kc-title-menu" aria-label="Main Menu">
+          <button type="button" class="kc-menu-item is-primary" data-act="new-run">
+            ${menuPointerSvg}
+            <span class="kc-menu-label">PLAY</span>
+            <span class="kc-menu-hint">NEW RUN</span>
+          </button>
+          ${
+            this.hasActiveRun
+              ? `<button type="button" class="kc-menu-item" data-act="continue">
+                  ${menuPointerSvg}
+                  <span class="kc-menu-label">CONTINUE</span>
+                  <span class="kc-menu-hint">RESUME</span>
+                </button>`
+              : ''
+          }
+          <div class="kc-menu-row kc-bc-menu-row">
+            <span class="kc-menu-label">BOSS CELLS</span>
+            <div class="kc-bc-orbs" role="group" aria-label="Boss Stem Cells Selector">
+              ${bcOrbsHtml}
             </div>
+            <span class="kc-bc-readout">${this.selectedBossCells}BC</span>
           </div>
-        </div>
+          <button type="button" class="kc-menu-item" data-act="options">
+            ${menuPointerSvg}
+            <span class="kc-menu-label">OPTIONS</span>
+            <span class="kc-menu-hint">VIDEO · AUDIO · KEYS</span>
+          </button>
+        </nav>
+      </div>
 
-        <div class="kc-title-actions">
-          <button class="kc-btn kc-btn-primary kc-btn-span2" data-act="new-run">⚔ New Run</button>
-          <button class="kc-btn" data-act="continue" ${this.hasActiveRun ? '' : 'disabled'}>Continue Run</button>
-          <button class="kc-btn" data-act="options">⚙ Options</button>
-        </div>
-
-        <div class="kc-pack-bar">
-          <div class="kc-pack-status">
-            <div><strong>${isCustom ? 'CUSTOM PACK ACTIVE' : 'BUILT-IN ART ACTIVE'}</strong></div>
-            <div>${escapeHtml(packLabel)}</div>
-          </div>
-          <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
-            <button class="kc-btn kc-btn-sm kc-btn-cyan" data-act="load-pack">Load Custom Pack</button>
-            <button class="kc-btn kc-btn-sm" data-act="toggle-art">
-              ${isCustom ? 'Use Built-In Art' : 'Use Custom Pack'}
+      <div class="kc-title-bottom-left">
+        <div class="kc-art-switcher" role="group" aria-label="Art Mode Live Switcher">
+          <div class="kc-art-seg">
+            <button type="button" class="kc-art-seg-btn ${!isCustom ? 'is-active' : ''}" data-art-toggle="builtin">
+              BUILT-IN KRUNKED ART
+            </button>
+            <button type="button" class="kc-art-seg-btn ${isCustom ? 'is-active' : ''}" data-art-toggle="custom">
+              OWNED DEAD CELLS PACK
             </button>
           </div>
+          <button type="button" class="kc-art-folder-btn" data-act="load-pack">
+            LOAD PACK FOLDER
+          </button>
+          <span class="kc-pack-live-status">
+            <span class="kc-status-dot ${packDotClass}"></span>
+            <span>${escapeHtml(packStatusText)}</span>
+          </span>
         </div>
+      </div>
 
-        <div style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted);display:flex;gap:12px;flex-wrap:wrap;justify-content:center">
-          <span>WASD Move</span>
-          <span>Space Jump</span>
-          <span>Shift Roll</span>
-          <span>LMB/J & RMB/K Weapons</span>
-          <span>Q/E Skills</span>
-          <span>Tab Map</span>
-          <span>F9 Dev</span>
+      <div class="kc-title-bottom-right">
+        <div class="kc-title-keys-whisper">WASD · SPACE · SHIFT · LMB/RMB · Q/E · R · TAB · F9</div>
+        <div class="kc-seed-chip-wrap ${this.seedDrawerOpen ? 'is-open' : ''}">
+          ${
+            this.seedDrawerOpen
+              ? `<div class="kc-seed-popover">
+                  <span class="kc-seed-popover-lbl">RUN SEED</span>
+                  <input class="kc-input kc-seed-input" data-el="seed-input" type="number" value="${this.customSeed}" />
+                  <button type="button" class="kc-btn kc-btn-sm kc-btn-icon" data-act="rand-seed" title="Randomize Seed">${diceIcon}<span>REROLL</span></button>
+                </div>`
+              : ''
+          }
+          <button type="button" class="kc-seed-chip" data-act="toggle-seed" title="Click to configure Run Seed">
+            <span class="kc-seed-chip-tag">SEED</span>
+            <span class="kc-seed-chip-val">#${this.customSeed}</span>
+          </button>
         </div>
       </div>
     `;
@@ -483,13 +612,25 @@ export class UIManager {
     const seedInput = this.titleLayer.querySelector('[data-el="seed-input"]') as HTMLInputElement | null;
     seedInput?.addEventListener('change', () => {
       const v = Number(seedInput.value);
-      if (Number.isFinite(v)) this.customSeed = Math.floor(Math.abs(v)) || 1;
+      if (Number.isFinite(v)) {
+        this.customSeed = Math.floor(Math.abs(v)) || 1;
+        this.lastTitleSig = '';
+        this.updateTitleScreen(state);
+      }
+    });
+
+    this.titleLayer.querySelector('[data-act="toggle-seed"]')?.addEventListener('click', () => {
+      this.callbacks.onPlayUiClick?.('select');
+      this.seedDrawerOpen = !this.seedDrawerOpen;
+      this.lastTitleSig = '';
+      this.updateTitleScreen(state);
     });
 
     this.titleLayer.querySelector('[data-act="rand-seed"]')?.addEventListener('click', () => {
       this.callbacks.onPlayUiClick?.('select');
       this.customSeed = Math.floor(Math.random() * 899999 + 100000);
-      if (seedInput) seedInput.value = String(this.customSeed);
+      this.lastTitleSig = '';
+      this.updateTitleScreen(state);
     });
 
     this.titleLayer.querySelectorAll<HTMLButtonElement>('[data-title-bc]').forEach((btn) => {
@@ -523,15 +664,17 @@ export class UIManager {
       void this.callbacks.onLoadCustomPackFolder();
     });
 
-    this.titleLayer.querySelector('[data-act="toggle-art"]')?.addEventListener('click', () => {
-      this.callbacks.onPlayUiClick?.('select');
-      const target: ArtPackMode = this.renderSettings.artPackMode === 'custom' ? 'builtin' : 'custom';
-      this.callbacks.onToggleArtPackMode(target);
+    this.titleLayer.querySelectorAll<HTMLButtonElement>('[data-art-toggle]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const target = btn.dataset.artToggle as ArtPackMode;
+        this.callbacks.onPlayUiClick?.('select');
+        this.callbacks.onToggleArtPackMode(target);
+      });
     });
   }
 
   // ===========================================================================
-  // 2. Scroll Picker Modal (with exact HP% & 1.15^(n-1) DPS% preview)
+  // 2. Scroll Picker Modal (3 Dramatic Vertical Pillars with Pixel Icons)
   // ===========================================================================
 
   private updateScrollModal(state: SimState): void {
@@ -544,14 +687,14 @@ export class UIManager {
       return;
     }
 
-    const sig = `${pending.pickupUid}:${pending.choices.join(',')}:${state.player.scrolls.brutality}:${state.player.scrolls.tactics}:${state.player.scrolls.survival}`;
+    const sig = `${pending.pickupUid}:${pending.choices.join(',')}:${state.player.scrolls.brutality}:${state.player.scrolls.tactics}:${state.player.scrolls.survival}:${this.artPackMode}`;
     if (sig === this.lastScrollSig) return;
     this.lastScrollSig = sig;
 
-    const labels: Record<ScrollStat, { title: string; role: string }> = {
-      brutality: { title: 'Brutality', role: 'Melee, Bleed & Grenades' },
-      tactics: { title: 'Tactics', role: 'Ranged, Turrets & Lightning' },
-      survival: { title: 'Survival', role: 'Shields, Heavy & Max HP' },
+    const labels: Record<ScrollStat, { title: string; role: string; iconId: string }> = {
+      brutality: { title: 'Brutality', role: 'Melee, Bleed & Grenades', iconId: 'ScrollBrutality' },
+      tactics: { title: 'Tactics', role: 'Ranged, Turrets & Lightning', iconId: 'ScrollTactics' },
+      survival: { title: 'Survival', role: 'Shields, Heavy & Max HP', iconId: 'ScrollSurvival' },
     };
 
     const cardsHtml = pending.choices
@@ -561,28 +704,41 @@ export class UIManager {
         const hpGain = computeScrollHpGainPct(stat, curr);
         const currDps = getScrollDamagePct(curr);
         const nextDps = getScrollDamagePct(next);
+        const meta = labels[stat];
+        const iconHtml = renderItemIconHtml(meta.iconId, this.artPackMode, this.customPackResolver, {
+          size: 44,
+          fallbackKind: 'scroll',
+          alt: meta.title,
+        });
 
         return `
-          <button class="kc-scroll-card kc-color-${stat}" data-scroll-stat="${stat}">
-            <span class="kc-keycap">[${idx + 1}]</span>
-            <div class="kc-scroll-card-gem"></div>
-            <div class="kc-scroll-card-name">${labels[stat].title}</div>
-            <div class="kc-scroll-card-stat">${curr} → ${next}</div>
-            <div class="kc-scroll-card-delta">
-              <div style="color:#4ade80;font-weight:700">+${hpGain}% Max HP</div>
-              <div>DMG: ${currDps}% → <strong>${nextDps}%</strong> (+15%)</div>
+          <button type="button" class="kc-scroll-pillar kc-color-${stat}" data-scroll-stat="${stat}">
+            <div class="kc-scroll-pillar-cap">
+              <span class="kc-keycap">[${idx + 1}]</span>
             </div>
-            <div style="font-size:11px;color:var(--text-muted)">${labels[stat].role}</div>
+            <div class="kc-scroll-pillar-emblem">
+              <span class="kc-scroll-pillar-halo"></span>
+              <span class="kc-scroll-pillar-icon">${iconHtml}</span>
+            </div>
+            <div class="kc-scroll-card-name">${meta.title}</div>
+            <div class="kc-scroll-card-stat">${curr} → <strong>${next}</strong></div>
+            <div class="kc-scroll-card-delta">
+              <div class="kc-scroll-hp-gain">+${hpGain}% MAX HP</div>
+              <div class="kc-scroll-dmg-gain">DMG ${currDps}% → <strong>${nextDps}%</strong> (+15%)</div>
+            </div>
+            <div class="kc-scroll-pillar-role">${meta.role}</div>
           </button>
         `;
       })
       .join('');
 
     this.scrollLayer.innerHTML = `
-      <div class="kc-scroll-modal kc-iron-panel">
-        <h2 class="kc-modal-title">${escapeHtml(pending.title || 'Scroll of Power')}</h2>
-        <p class="kc-modal-subtitle">Choose an attribute to amplify — Press [1], [2], or [3]</p>
-        <div class="kc-scroll-cards">${cardsHtml}</div>
+      <div class="kc-scroll-modal">
+        <div class="kc-scroll-modal-head">
+          <h2 class="kc-modal-title">${escapeHtml(pending.title || 'Scroll of Power')}</h2>
+          <p class="kc-modal-subtitle">Choose an attribute pillar — Press [1], [2], or [3]</p>
+        </div>
+        <div class="kc-scroll-pillars">${cardsHtml}</div>
       </div>
     `;
 
@@ -644,7 +800,7 @@ export class UIManager {
   }
 
   // ===========================================================================
-  // 4. Options Modal (30/60/120 FPS, Snap 60Hz, Lighting, Bloom, Shake, Audio, Keybinds)
+  // 4. Options Modal (Graphics, Art Pack, Seed, Audio, Keybinds)
   // ===========================================================================
 
   private updateOptionsModal(): void {
@@ -657,7 +813,7 @@ export class UIManager {
 
     const r = this.renderSettings;
     const a = this.audioSettings;
-    const sig = `${r.targetFps}:${r.snapToSimRate}:${r.lightingQuality}:${r.bloomEnabled}:${r.screenShakeScale.toFixed(2)}:${r.artPackMode}|${a.masterVolume.toFixed(2)}:${a.musicVolume.toFixed(2)}:${a.sfxVolume.toFixed(2)}:${a.muted}|${JSON.stringify(this.keyBindings)}|cap:${this.capturingKeyAction ?? ''}`;
+    const sig = `${r.targetFps}:${r.snapToSimRate}:${r.lightingQuality}:${r.bloomEnabled}:${r.screenShakeScale.toFixed(2)}:${this.artPackMode}|${a.masterVolume.toFixed(2)}:${a.musicVolume.toFixed(2)}:${a.sfxVolume.toFixed(2)}:${a.muted}|${JSON.stringify(this.keyBindings)}|cap:${this.capturingKeyAction ?? ''}|seed:${this.customSeed}`;
     if (sig === this.lastOptionsSig) return;
     this.lastOptionsSig = sig;
 
@@ -687,6 +843,8 @@ export class UIManager {
       `;
     }).join('');
 
+    const diceIcon = renderUiGlyphSvg('dice', 13, '#fbbf24');
+
     this.optionsLayer.innerHTML = `
       <div class="kc-options-modal kc-iron-panel">
         <div style="display:flex;justify-content:space-between;align-items:center">
@@ -695,7 +853,17 @@ export class UIManager {
         </div>
         <div class="kc-options-body">
           <section class="kc-opt-section">
-            <h3>Graphics & Frame Pacing</h3>
+            <h3>Graphics & Art Pack</h3>
+            <div class="kc-opt-row">
+              <span>Art Pack Mode</span>
+              <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end">
+                <div class="kc-seg-group">
+                  <button class="kc-seg-btn ${this.artPackMode === 'builtin' ? 'is-active' : ''}" data-art="builtin">Built-In Art</button>
+                  <button class="kc-seg-btn ${this.artPackMode === 'custom' ? 'is-active' : ''}" data-art="custom">Owned Custom Pack</button>
+                </div>
+                <button class="kc-btn kc-btn-sm kc-btn-cyan" data-act="opt-load-pack">Load Folder</button>
+              </div>
+            </div>
             <div class="kc-opt-row">
               <span>Target Frame Rate</span>
               <div class="kc-seg-group">${fpsBtns}</div>
@@ -717,10 +885,10 @@ export class UIManager {
               <input class="kc-range" data-range="shake" type="range" min="0" max="150" step="5" value="${Math.round(r.screenShakeScale * 100)}" />
             </div>
             <div class="kc-opt-row">
-              <span>Art Pack Mode</span>
-              <div class="kc-seg-group">
-                <button class="kc-seg-btn ${r.artPackMode === 'builtin' ? 'is-active' : ''}" data-art="builtin">Built-In Art</button>
-                <button class="kc-seg-btn ${r.artPackMode === 'custom' ? 'is-active' : ''}" data-art="custom">Custom Pack</button>
+              <span>Next Run Seed</span>
+              <div style="display:flex;gap:6px;align-items:center">
+                <input class="kc-input" data-el="opt-seed" type="number" value="${this.customSeed}" style="width:124px" />
+                <button class="kc-btn kc-btn-sm kc-btn-icon" data-act="opt-rand-seed">${diceIcon}<span>Random</span></button>
               </div>
             </div>
           </section>
@@ -765,6 +933,27 @@ export class UIManager {
     this.optionsLayer.querySelector('[data-act="close"]')?.addEventListener('click', () => {
       this.callbacks.onPlayUiClick?.('cancel');
       this.toggleOptions(false);
+    });
+
+    this.optionsLayer.querySelector('[data-act="opt-load-pack"]')?.addEventListener('click', () => {
+      this.callbacks.onPlayUiClick?.('select');
+      void this.callbacks.onLoadCustomPackFolder();
+    });
+
+    const optSeed = this.optionsLayer.querySelector('[data-el="opt-seed"]') as HTMLInputElement | null;
+    optSeed?.addEventListener('change', () => {
+      const v = Number(optSeed.value);
+      if (Number.isFinite(v)) {
+        this.customSeed = Math.floor(Math.abs(v)) || 1;
+        this.lastTitleSig = '';
+      }
+    });
+
+    this.optionsLayer.querySelector('[data-act="opt-rand-seed"]')?.addEventListener('click', () => {
+      this.callbacks.onPlayUiClick?.('select');
+      this.customSeed = Math.floor(Math.random() * 899999 + 100000);
+      if (optSeed) optSeed.value = String(this.customSeed);
+      this.lastTitleSig = '';
     });
 
     this.optionsLayer.querySelectorAll<HTMLButtonElement>('[data-fps]').forEach((btn) => {
@@ -892,7 +1081,6 @@ export class UIManager {
       return;
     }
 
-    // Standalone window capture fallback if InputManager was not linked
     this.standaloneCaptureListener = (e: KeyboardEvent) => {
       e.preventDefault();
       e.stopImmediatePropagation();
@@ -923,7 +1111,7 @@ export class UIManager {
   }
 
   // ===========================================================================
-  // 5. Death / Victory Run Summary Screen
+  // 5. Death / Victory Run Summary Screen (Pixel Icons, Zero Emojis)
   // ===========================================================================
 
   private updateSummaryModal(state: SimState): void {
@@ -949,21 +1137,34 @@ export class UIManager {
       unlockedNewBossCell: false,
     };
 
-    const sig = `${summary.victory}:${summary.biomeReached}:${summary.kills}:${summary.runTimerTicks}:${summary.unlockedNewBossCell}:${summary.causeOfDeath}`;
+    const sig = `${summary.victory}:${summary.biomeReached}:${summary.kills}:${summary.runTimerTicks}:${summary.unlockedNewBossCell}:${summary.causeOfDeath}:${this.artPackMode}`;
     if (sig === this.lastSummarySig) return;
     this.lastSummarySig = sig;
 
-    const titleText = summary.victory ? 'Victory — The Sovereign Falls!' : 'You Died';
+    const titleText = summary.victory ? 'Victory — The Sovereign Falls' : 'You Died';
     const titleClass = summary.victory ? 'is-victory' : 'is-dead';
+    const goldIcon = renderItemIconHtml('Gold', this.artPackMode, this.customPackResolver, {
+      size: 14,
+      fallbackKind: 'gold',
+      alt: 'Gold',
+    });
+    const cellIcon = renderItemIconHtml('Cell', this.artPackMode, this.customPackResolver, {
+      size: 14,
+      fallbackKind: 'cell',
+      alt: 'Cells',
+    });
+    const bcIcon = renderItemIconHtml('BossCell', this.artPackMode, this.customPackResolver, {
+      size: 18,
+      fallbackKind: 'bossCell',
+      alt: 'Boss Stem Cell',
+    });
 
     this.summaryLayer.innerHTML = `
       <div class="kc-summary-card kc-iron-panel">
         <h2 class="kc-modal-title kc-summary-title ${titleClass}">${titleText}</h2>
         ${
           summary.unlockedNewBossCell
-            ? `<div style="padding:8px 12px;border:1px solid var(--gold-amber);background:rgba(251,191,36,0.16);border-radius:3px;color:var(--gold-amber);font-family:var(--font-display);font-weight:700;letter-spacing:0.08em">
-                ★ NEW BOSS STEM CELL ABSORBED! ★
-              </div>`
+            ? `<div class="kc-summary-bc-banner">${bcIcon}<span>NEW BOSS STEM CELL ABSORBED</span>${bcIcon}</div>`
             : ''
         }
         ${
@@ -979,12 +1180,12 @@ export class UIManager {
           <div class="kc-summary-stat"><span>Run Time</span><strong>${formatTimer(summary.runTimerTicks)}</strong></div>
           <div class="kc-summary-stat"><span>Enemies Slain</span><strong>${summary.kills}</strong></div>
           <div class="kc-summary-stat"><span>Max Kill Streak</span><strong>${summary.maxKillStreak}</strong></div>
-          <div class="kc-summary-stat"><span>Scrolls (B / T / S)</span><strong>${summary.scrolls.brutality} / ${summary.scrolls.tactics} / ${summary.scrolls.survival}</strong></div>
-          <div class="kc-summary-stat"><span>Gold Collected</span><strong style="color:var(--gold-amber)">◈ ${summary.goldCollected}</strong></div>
-          <div class="kc-summary-stat"><span>Cells Collected</span><strong style="color:var(--cell-cyan)">✦ ${summary.cellsCollected}</strong></div>
+          <div class="kc-summary-stat"><span>Scrolls (B / T / S)</span><strong><span style="color:var(--brutality)">${summary.scrolls.brutality}</span> / <span style="color:var(--tactics)">${summary.scrolls.tactics}</span> / <span style="color:var(--survival)">${summary.scrolls.survival}</span></strong></div>
+          <div class="kc-summary-stat"><span>Gold Collected</span><strong class="kc-inline-val" style="color:var(--gold-amber)">${goldIcon}<span>${summary.goldCollected}</span></strong></div>
+          <div class="kc-summary-stat"><span>Cells Collected</span><strong class="kc-inline-val" style="color:var(--cell-cyan)">${cellIcon}<span>${summary.cellsCollected}</span></strong></div>
         </div>
         <div style="display:flex;gap:10px;justify-content:center;margin-top:4px">
-          <button class="kc-btn kc-btn-primary" data-act="new-run">⚔ New Run</button>
+          <button class="kc-btn kc-btn-primary" data-act="new-run">New Run</button>
           <button class="kc-btn" data-act="title">Title Screen</button>
         </div>
       </div>

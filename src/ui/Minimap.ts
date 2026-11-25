@@ -1,10 +1,10 @@
 // =============================================================================
-// KRUNKED CELLS — Compact Corner Minimap + Expandable Tab Map & Rune Teleport
+// KRUNKED CELLS — Frameless Translucent Dead Cells Minimap & Tab Map Teleport
 // Clicking any discovered Teleportation Rune dispatches { type: 'teleportTo' }.
 // =============================================================================
 
 import { SimCommand, SimState, TILE_SIZE, TileKind } from '../contracts';
-import { CatalogLookup, escapeHtml, getBiomeDisplayName } from './HudOverlay';
+import { CatalogLookup, escapeHtml, getBiomeDisplayName, renderUiGlyphSvg } from './HudOverlay';
 
 export interface MinimapCallbacks {
   onDispatchCommand(cmd: SimCommand): void;
@@ -26,7 +26,7 @@ export class Minimap {
   private miniShell: HTMLDivElement;
   private miniCanvas: HTMLCanvasElement;
   private miniCtx: CanvasRenderingContext2D | null;
-  private miniFooterLabel: HTMLSpanElement;
+  private miniRoomCountEl: HTMLSpanElement;
 
   private modalBackdrop: HTMLDivElement;
   private modalTitleEl: HTMLHeadingElement;
@@ -50,27 +50,28 @@ export class Minimap {
     this.callbacks = callbacks;
     this.catalog = catalog;
 
-    // 1. Compact corner minimap
+    // 1. Frameless translucent Dead Cells corner minimap
     this.miniShell = document.createElement('div');
-    this.miniShell.className = 'kc-minimap-shell kc-iron-panel';
-    this.miniShell.title = 'Click or press [Tab] to expand Map & Teleport';
+    this.miniShell.className = 'kc-minimap-shell';
+    this.miniShell.title = 'Click or press [Tab] to expand Map & Fast Travel';
 
     this.miniCanvas = document.createElement('canvas');
     this.miniCanvas.className = 'kc-minimap-canvas';
-    this.miniCanvas.width = 176;
-    this.miniCanvas.height = 98;
+    this.miniCanvas.width = 186;
+    this.miniCanvas.height = 102;
     this.miniCtx = this.miniCanvas.getContext('2d');
 
-    const footer = document.createElement('div');
-    footer.className = 'kc-minimap-footer';
-    this.miniFooterLabel = document.createElement('span');
-    this.miniFooterLabel.textContent = '[TAB] MAP';
-    const tpHint = document.createElement('span');
-    tpHint.style.color = '#38e8ff';
-    tpHint.textContent = '◈ TELEPORT';
-    footer.append(this.miniFooterLabel, tpHint);
+    const overlayBar = document.createElement('div');
+    overlayBar.className = 'kc-minimap-overlay';
+    this.miniRoomCountEl = document.createElement('span');
+    this.miniRoomCountEl.className = 'kc-minimap-rooms';
+    this.miniRoomCountEl.textContent = '1/1';
+    const tabHint = document.createElement('span');
+    tabHint.className = 'kc-minimap-tab-hint';
+    tabHint.textContent = 'TAB';
+    overlayBar.append(this.miniRoomCountEl, tabHint);
 
-    this.miniShell.append(this.miniCanvas, footer);
+    this.miniShell.append(this.miniCanvas, overlayBar);
     this.miniShell.addEventListener('click', () => {
       this.callbacks.onPlayUiClick?.('select');
       this.toggleExpanded(true);
@@ -93,9 +94,9 @@ export class Minimap {
         <div class="kc-dev-row" data-el="rune-pills"></div>
         <div class="kc-minimap-legend">
           <span><i class="kc-legend-dot" style="background:#ffffff"></i>You</span>
-          <span><i class="kc-legend-dot" style="background:#38e8ff;box-shadow:0 0 6px #38e8ff"></i>Teleport Rune (Click)</span>
+          <span><i class="kc-legend-dot" style="background:#38e8ff;box-shadow:0 0 6px #38e8ff"></i>Teleport Rune</span>
           <span><i class="kc-legend-dot" style="background:#22c55e"></i>Biome Exit</span>
-          <span><i class="kc-legend-dot" style="background:#fbbf24"></i>Chest / Shop</span>
+          <span><i class="kc-legend-dot" style="background:#fbbf24"></i>Treasure / Shop</span>
           <span><i class="kc-legend-dot" style="background:#a855f7"></i>Power Scroll</span>
           <span><i class="kc-legend-dot" style="background:#e83b4a"></i>Cursed / Boss</span>
         </div>
@@ -149,7 +150,7 @@ export class Minimap {
 
     const exploredRooms = state.rooms.filter((r) => r.discovered).length;
     const totalRooms = Math.max(1, state.rooms.length);
-    this.miniFooterLabel.textContent = `MAP ${exploredRooms}/${totalRooms}`;
+    this.miniRoomCountEl.textContent = `${exploredRooms}/${totalRooms}`;
 
     this.renderCanvas(this.miniCtx, this.miniCanvas, state, false);
 
@@ -180,10 +181,11 @@ export class Minimap {
         '<span style="font-size:11px;color:var(--text-muted);font-family:var(--font-mono)">Explore rooms to discover Teleportation Runes.</span>';
       return;
     }
+    const runeIcon = renderUiGlyphSvg('rune', 13, '#38e8ff');
     this.runeListEl.innerHTML = discovered
       .map(
         (tp) =>
-          `<button class="kc-btn kc-btn-sm kc-btn-cyan" data-tp-uid="${tp.uid}">◈ ${escapeHtml(tp.label || `Rune #${tp.uid}`)}</button>`
+          `<button class="kc-btn kc-btn-sm kc-btn-cyan kc-btn-icon" data-tp-uid="${tp.uid}">${runeIcon}<span>${escapeHtml(tp.label || `Rune #${tp.uid}`)}</span></button>`
       )
       .join('');
     this.runeListEl.querySelectorAll<HTMLButtonElement>('[data-tp-uid]').forEach((btn) => {
@@ -223,13 +225,19 @@ export class Minimap {
     const w = canvas.width;
     const h = canvas.height;
     ctx.clearRect(0, 0, w, h);
-    ctx.fillStyle = '#08060f';
-    ctx.fillRect(0, 0, w, h);
+
+    if (isExpanded) {
+      ctx.fillStyle = 'rgba(7, 6, 13, 0.96)';
+      ctx.fillRect(0, 0, w, h);
+    } else {
+      // Translucent Dead Cells ink wash
+      ctx.fillStyle = 'rgba(6, 7, 14, 0.42)';
+      ctx.fillRect(0, 0, w, h);
+    }
 
     const grid = state.tileGrid;
     if (grid.width <= 0 || grid.height <= 0) return;
 
-    // Determine visible bounding box in tile coordinates
     let minTx = grid.width;
     let minTy = grid.height;
     let maxTx = 0;
@@ -265,8 +273,7 @@ export class Minimap {
     let originY: number;
 
     if (!isExpanded) {
-      // Compact corner map follows player smoothly at crisp tile scale
-      scale = 2.6;
+      scale = 2.7;
       originX = w * 0.5 - ptx * scale;
       originY = h * 0.5 - pty * scale;
     } else {
@@ -281,7 +288,7 @@ export class Minimap {
     const toX = (wx: number) => originX + (wx / TILE_SIZE) * scale;
     const toY = (wy: number) => originY + (wy / TILE_SIZE) * scale;
 
-    // 1. Draw discovered rooms fill
+    // 1. Discovered rooms with crisp glowing cyan-slate Dead Cells corridor tint
     for (const r of state.rooms) {
       if (!r.discovered && hasExplored) continue;
       const rx = originX + r.tx * scale;
@@ -289,25 +296,25 @@ export class Minimap {
       const rw = r.tw * scale;
       const rh = r.th * scale;
 
-      let fill = 'rgba(42, 34, 62, 0.52)';
-      let stroke = 'rgba(116, 98, 152, 0.55)';
+      let fill = 'rgba(26, 56, 84, 0.38)';
+      let stroke = 'rgba(84, 198, 240, 0.52)';
       if (r.type === 'bossArena') {
-        fill = 'rgba(128, 22, 38, 0.45)';
+        fill = 'rgba(136, 22, 38, 0.45)';
         stroke = '#e83b4a';
       } else if (r.type === 'treasure') {
-        fill = 'rgba(120, 92, 24, 0.42)';
+        fill = 'rgba(130, 96, 22, 0.42)';
         stroke = '#fbbf24';
       } else if (r.type === 'weaponShop' || r.type === 'skillShop' || r.type === 'foodShop') {
-        fill = 'rgba(104, 74, 24, 0.4)';
+        fill = 'rgba(116, 78, 22, 0.4)';
         stroke = '#f59e0b';
       } else if (r.type === 'cursedChest') {
-        fill = 'rgba(130, 18, 32, 0.45)';
-        stroke = '#dc2626';
+        fill = 'rgba(140, 18, 32, 0.48)';
+        stroke = '#ef4444';
       } else if (r.type === 'exit') {
-        fill = 'rgba(20, 96, 52, 0.45)';
+        fill = 'rgba(18, 102, 56, 0.45)';
         stroke = '#22c55e';
       } else if (r.type === 'teleporter') {
-        fill = 'rgba(14, 74, 96, 0.42)';
+        fill = 'rgba(14, 88, 118, 0.44)';
         stroke = '#38e8ff';
       }
 
@@ -318,7 +325,7 @@ export class Minimap {
       ctx.strokeRect(rx + 0.5, ry + 0.5, rw - 1, rh - 1);
     }
 
-    // 2. Draw explored tile outlines (solid walls, platforms, acid/water)
+    // 2. Crisp explored architectural tile outlines (glowing cyan-steel walls & platforms)
     const startTx = Math.max(0, Math.floor(-originX / scale));
     const endTx = Math.min(grid.width - 1, Math.ceil((w - originX) / scale));
     const startTy = Math.max(0, Math.floor(-originY / scale));
@@ -336,16 +343,15 @@ export class Minimap {
         if (kind === TileKind.EMPTY || kind === TileKind.BG_WALL) continue;
 
         if (kind === TileKind.SOLID || kind === TileKind.SECRET_WALL) {
-          // Only draw boundary solid tiles for crisp architectural outline
           const openNeighbor =
             (tx > 0 && grid.tiles[idx - 1] !== TileKind.SOLID) ||
             (tx < grid.width - 1 && grid.tiles[idx + 1] !== TileKind.SOLID) ||
             (ty > 0 && grid.tiles[idx - grid.width] !== TileKind.SOLID) ||
             (ty < grid.height - 1 && grid.tiles[idx + grid.width] !== TileKind.SOLID);
           if (!openNeighbor) continue;
-          ctx.fillStyle = '#8b7ea8';
+          ctx.fillStyle = 'rgba(128, 214, 245, 0.78)';
         } else if (kind === TileKind.ONE_WAY) {
-          ctx.fillStyle = '#5c5278';
+          ctx.fillStyle = 'rgba(104, 152, 196, 0.62)';
         } else if (kind === TileKind.ACID) {
           ctx.fillStyle = '#4ade80';
         } else if (kind === TileKind.WATER) {
@@ -361,19 +367,19 @@ export class Minimap {
       }
     }
 
-    // 3. Markers: Chests
+    // 3. Chests (golden / crimson)
     for (const c of state.chests) {
       if (c.opened) continue;
       const room = state.rooms.find((r) => r.id === c.roomId);
       if (hasExplored && room && !room.discovered) continue;
       const mx = toX(c.pos.x);
       const my = toY(c.pos.y);
-      ctx.fillStyle = c.kind === 'cursed' ? '#e83b4a' : '#fbbf24';
-      const sz = isExpanded ? 7 : 4;
+      ctx.fillStyle = c.kind === 'cursed' ? '#ef4444' : '#fbbf24';
+      const sz = isExpanded ? 7 : 4.5;
       ctx.fillRect(mx - sz * 0.5, my - sz * 0.5, sz, sz);
     }
 
-    // 4. Markers: Scrolls & Shops (pickups)
+    // 4. Scrolls & Shops
     for (const pk of state.pickups) {
       if (pk.collected) continue;
       if (pk.kind !== 'scroll' && pk.kind !== 'dualScroll' && !(pk.priceGold && pk.priceGold > 0)) continue;
@@ -382,13 +388,13 @@ export class Minimap {
       if (hasAnyExploredTile && !grid.explored[ty * grid.width + tx]) continue;
       const mx = toX(pk.pos.x);
       const my = toY(pk.pos.y);
-      ctx.fillStyle = pk.kind === 'scroll' || pk.kind === 'dualScroll' ? '#a855f7' : '#f59e0b';
+      ctx.fillStyle = pk.kind === 'scroll' || pk.kind === 'dualScroll' ? '#c084fc' : '#f59e0b';
       ctx.beginPath();
-      ctx.arc(mx, my, isExpanded ? 3.5 : 2.2, 0, Math.PI * 2);
+      ctx.arc(mx, my, isExpanded ? 3.8 : 2.3, 0, Math.PI * 2);
       ctx.fill();
     }
 
-    // 5. Markers: Biome Exits
+    // 5. Biome Exits
     for (const d of state.doors) {
       if (d.kind !== 'biomeExit') continue;
       const mx = toX(d.pos.x + d.width * 0.5);
@@ -398,7 +404,7 @@ export class Minimap {
       ctx.fillRect(mx - sz * 0.5, my - sz * 0.65, sz, sz * 1.3);
     }
 
-    // 6. Markers: Discovered Teleportation Runes (Glowing Pulsing Cyan Diamonds!)
+    // 6. Discovered Teleportation Runes (Pulsing Cyan Diamonds)
     if (isExpanded) this.expandedRunes = [];
     const pulse = 0.72 + Math.sin(this.animTime * 5.2) * 0.28;
     const discoveredRunes = this.getDiscoverableTeleporters(state);
@@ -413,15 +419,13 @@ export class Minimap {
         this.expandedRunes.push({ uid: tp.uid, x: mx, y: my, r: 15, label: tp.label || `Rune #${tp.uid}` });
       }
 
-      // Outer glow ring
       ctx.save();
-      ctx.strokeStyle = `rgba(56, 232, 255, ${(isHovered ? 1 : 0.65 * pulse).toFixed(2)})`;
+      ctx.strokeStyle = `rgba(56, 232, 255, ${(isHovered ? 1 : 0.7 * pulse).toFixed(2)})`;
       ctx.lineWidth = isHovered ? 2.5 : 1.5;
       ctx.beginPath();
       ctx.arc(mx, my, r + 3 * pulse, 0, Math.PI * 2);
       ctx.stroke();
 
-      // Glowing cyan diamond
       ctx.fillStyle = isHovered ? '#ffffff' : '#38e8ff';
       ctx.beginPath();
       ctx.moveTo(mx, my - r);
@@ -440,20 +444,22 @@ export class Minimap {
       ctx.restore();
     }
 
-    // 7. Player Directional Arrow
+    // 7. Player Directional Chevron
     const px = toX(state.player.pos.x + state.player.width * 0.5);
     const py = toY(state.player.pos.y + state.player.height * 0.5);
     const dir = state.player.facing;
-    const pr = isExpanded ? 7 : 4.5;
+    const pr = isExpanded ? 7.5 : 4.8;
 
     ctx.save();
+    ctx.shadowColor = 'rgba(255, 255, 255, 0.85)';
+    ctx.shadowBlur = isExpanded ? 8 : 5;
     ctx.fillStyle = '#ffffff';
     ctx.strokeStyle = '#07060b';
-    ctx.lineWidth = 1.5;
+    ctx.lineWidth = 1.4;
     ctx.beginPath();
     ctx.moveTo(px + dir * pr * 1.25, py);
     ctx.lineTo(px - dir * pr * 0.85, py - pr * 0.85);
-    ctx.lineTo(px - dir * pr * 0.4, py);
+    ctx.lineTo(px - dir * pr * 0.35, py);
     ctx.lineTo(px - dir * pr * 0.85, py + pr * 0.85);
     ctx.closePath();
     ctx.fill();

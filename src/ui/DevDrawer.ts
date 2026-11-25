@@ -1,6 +1,7 @@
 // =============================================================================
 // KRUNKED CELLS — F9 Playtest & Telemetry Dev Drawer
-// Live PerfStats, FNV-1a state hash, Biome Warp, Boss Spawner & Sandbox Tools.
+// Live PerfStats, FNV-1a state hash, Biome Warp, Boss Spawner, Test Weapons &
+// Skills quick-actions, and instant Built-In / Custom Pack Art Mode switcher.
 // =============================================================================
 
 import {
@@ -25,6 +26,7 @@ export interface DevDrawerCallbacks {
   onSpawnBoss?(bossId: BossId): void;
   onGrantScrolls?(brutality: number, tactics: number, survival: number): void;
   onGiveItem?(itemId: string): void;
+  onGiveTestSkills?(): void;
   onSetGodMode?(enabled: boolean): void;
   onSetBossCells?(bc: number): void;
   onTriggerCurse?(kills?: number): void;
@@ -43,19 +45,22 @@ export class DevDrawer {
   private lastMetricsUpdateMs = 0;
   private resetConfirmPending = false;
   private resetConfirmTimer: ReturnType<typeof setTimeout> | null = null;
+  private fallbackSkillPairIdx = 0;
 
   // Dynamic value references (never thrashing selects/inputs!)
   private metricsEl!: HTMLDivElement;
   private biomeSelect!: HTMLSelectElement;
-  private itemSelect!: HTMLSelectElement;
+  private weaponSelect!: HTMLSelectElement;
+  private skillSelect!: HTMLSelectElement;
   private godBtn!: HTMLButtonElement;
-  private artBtn!: HTMLButtonElement;
+  private artBuiltinBtn!: HTMLButtonElement;
+  private artCustomBtn!: HTMLButtonElement;
   private resetBtn!: HTMLButtonElement;
   private bcBtns: HTMLButtonElement[] = [];
 
   private lastGodMode = false;
   private lastBossCells = -1;
-  private lastArtMode: ArtPackMode = 'builtin';
+  private lastArtMode: ArtPackMode | null = null;
 
   constructor(uiRoot: HTMLElement, callbacks: DevDrawerCallbacks, catalog?: CatalogLookup) {
     this.callbacks = callbacks;
@@ -70,7 +75,7 @@ export class DevDrawer {
 
   public setCatalog(catalog?: CatalogLookup): void {
     this.catalog = catalog;
-    this.populateItemSelect();
+    this.populateGearSelects();
     this.populateBiomeSelect();
   }
 
@@ -106,7 +111,7 @@ export class DevDrawer {
     const lights = p ? p.activeLights : state.lights.length;
     const enemies = p ? p.enemyCount : state.enemies.length;
     const particles = p ? p.particleCount : state.particlesSim.length;
-    const artMode: ArtPackMode = p ? p.artPackMode : this.lastArtMode;
+    const artMode: ArtPackMode = p ? p.artPackMode : this.lastArtMode ?? 'builtin';
     const packLoaded = p ? p.customPackLoaded : false;
     const hash = p ? p.stateHash : dbg?.getHash() ?? '--------';
 
@@ -137,7 +142,8 @@ export class DevDrawer {
 
     if (artMode !== this.lastArtMode) {
       this.lastArtMode = artMode;
-      this.artBtn.textContent = `Art: ${artMode === 'custom' ? 'Custom Pack' : 'Built-In'}`;
+      this.artBuiltinBtn.classList.toggle('is-active', artMode === 'builtin');
+      this.artCustomBtn.classList.toggle('is-active', artMode === 'custom');
     }
   }
 
@@ -157,6 +163,14 @@ export class DevDrawer {
       <div class="kc-dev-metrics" data-el="metrics"></div>
 
       <div class="kc-dev-group">
+        <span class="kc-dev-label">Art Mode Switcher</span>
+        <div class="kc-seg-group" style="width:100%">
+          <button class="kc-seg-btn is-active" data-art-mode="builtin" style="flex:1">Built-In Art</button>
+          <button class="kc-seg-btn" data-art-mode="custom" style="flex:1">Custom Pack</button>
+        </div>
+      </div>
+
+      <div class="kc-dev-group">
         <span class="kc-dev-label">Biome Warp</span>
         <div class="kc-dev-row">
           <select class="kc-dev-select" data-el="biome-select"></select>
@@ -167,40 +181,44 @@ export class DevDrawer {
       <div class="kc-dev-group">
         <span class="kc-dev-label">Spawn Boss</span>
         <div class="kc-dev-row">
-          <button class="kc-btn kc-btn-sm kc-btn-primary" data-boss="Behemoth">Behemoth</button>
+          <button class="kc-btn kc-btn-sm kc-btn-primary" data-boss="Behemoth">Concierge</button>
           <button class="kc-btn kc-btn-sm kc-btn-primary" data-boss="TimeKeeper">TimeKeeper</button>
           <button class="kc-btn kc-btn-sm kc-btn-primary" data-boss="KingsHand">KingsHand</button>
         </div>
       </div>
 
       <div class="kc-dev-group">
-        <span class="kc-dev-label">Scrolls & Gear</span>
+        <span class="kc-dev-label">Test All Weapons & Skills</span>
         <div class="kc-dev-row">
-          <button class="kc-btn kc-btn-sm" data-act="scrolls-all">+3 All Scrolls</button>
+          <select class="kc-dev-select" data-el="weapon-select" aria-label="Test All Weapons"></select>
+          <button class="kc-btn kc-btn-sm" data-act="give-weapon">Equip</button>
+        </div>
+        <div class="kc-dev-row">
+          <select class="kc-dev-select" data-el="skill-select" aria-label="Test All Skills"></select>
+          <button class="kc-btn kc-btn-sm" data-act="give-skill">Equip</button>
+        </div>
+        <div class="kc-dev-row">
+          <button class="kc-btn kc-btn-sm kc-btn-cyan" data-act="give-all-skills" style="width:100%">Give All Test Skills (Cycle + Drop)</button>
+        </div>
+      </div>
+
+      <div class="kc-dev-group">
+        <span class="kc-dev-label">Scrolls & Boss Cells</span>
+        <div class="kc-dev-row">
+          <button class="kc-btn kc-btn-sm" data-act="scrolls-all">+3 All</button>
           <button class="kc-btn kc-btn-sm kc-color-brutality" data-scroll-one="b">+1 B</button>
           <button class="kc-btn kc-btn-sm kc-color-tactics" data-scroll-one="t">+1 T</button>
           <button class="kc-btn kc-btn-sm kc-color-survival" data-scroll-one="s">+1 S</button>
         </div>
-        <div class="kc-dev-row">
-          <select class="kc-dev-select" data-el="item-select"></select>
-          <button class="kc-btn kc-btn-sm" data-act="give-item">Spawn Item</button>
-        </div>
-      </div>
-
-      <div class="kc-dev-group">
-        <span class="kc-dev-label">Boss Cells (0–5BC)</span>
         <div class="kc-bc-selector" data-el="bc-row"></div>
       </div>
 
       <div class="kc-dev-group">
-        <span class="kc-dev-label">Cheats, Determinism & Art</span>
+        <span class="kc-dev-label">Sandbox & Determinism</span>
         <div class="kc-dev-row">
           <button class="kc-btn kc-btn-sm" data-act="god">God Mode: OFF</button>
           <button class="kc-btn kc-btn-sm kc-btn-primary" data-act="curse">10-Kill Curse</button>
-        </div>
-        <div class="kc-dev-row">
-          <button class="kc-btn kc-btn-sm kc-btn-cyan" data-act="art">Art: Built-In</button>
-          <button class="kc-btn kc-btn-sm" data-act="step60">Step +60 Ticks</button>
+          <button class="kc-btn kc-btn-sm" data-act="step60">+60 Ticks</button>
         </div>
         <div class="kc-dev-row">
           <button class="kc-btn kc-btn-sm" data-act="reset-save" style="border-color:#b91c1c;color:#fca5a5;width:100%">Reset Save</button>
@@ -210,9 +228,11 @@ export class DevDrawer {
 
     this.metricsEl = this.drawerEl.querySelector('[data-el="metrics"]') as HTMLDivElement;
     this.biomeSelect = this.drawerEl.querySelector('[data-el="biome-select"]') as HTMLSelectElement;
-    this.itemSelect = this.drawerEl.querySelector('[data-el="item-select"]') as HTMLSelectElement;
+    this.weaponSelect = this.drawerEl.querySelector('[data-el="weapon-select"]') as HTMLSelectElement;
+    this.skillSelect = this.drawerEl.querySelector('[data-el="skill-select"]') as HTMLSelectElement;
     this.godBtn = this.drawerEl.querySelector('[data-act="god"]') as HTMLButtonElement;
-    this.artBtn = this.drawerEl.querySelector('[data-act="art"]') as HTMLButtonElement;
+    this.artBuiltinBtn = this.drawerEl.querySelector('[data-art-mode="builtin"]') as HTMLButtonElement;
+    this.artCustomBtn = this.drawerEl.querySelector('[data-art-mode="custom"]') as HTMLButtonElement;
     this.resetBtn = this.drawerEl.querySelector('[data-act="reset-save"]') as HTMLButtonElement;
 
     const bcRow = this.drawerEl.querySelector('[data-el="bc-row"]') as HTMLDivElement;
@@ -233,7 +253,7 @@ export class DevDrawer {
     }
 
     this.populateBiomeSelect();
-    this.populateItemSelect();
+    this.populateGearSelects();
     this.bindHandlers();
   }
 
@@ -245,26 +265,38 @@ export class DevDrawer {
     if (prev) this.biomeSelect.value = prev;
   }
 
-  private populateItemSelect(): void {
-    const prev = this.itemSelect.value;
+  private populateGearSelects(): void {
+    const prevW = this.weaponSelect.value;
+    const prevS = this.skillSelect.value;
+
     const weapons =
       this.catalog?.weapons && this.catalog.weapons.length > 0
-        ? this.catalog.weapons.map((w) => ({ id: w.id, name: w.name, group: 'Weapon' }))
-        : FALLBACK_WEAPONS.map((w) => ({ id: w.id, name: w.name, group: 'Weapon' }));
+        ? this.catalog.weapons.map((w) => ({ id: w.id, name: w.name, kind: w.kind }))
+        : FALLBACK_WEAPONS.map((w) => ({ id: w.id, name: w.name, kind: w.kind }));
     const skills =
       this.catalog?.skills && this.catalog.skills.length > 0
-        ? this.catalog.skills.map((s) => ({ id: s.id, name: s.name, group: 'Skill' }))
-        : FALLBACK_SKILLS.map((s) => ({ id: s.id, name: s.name, group: 'Skill' }));
+        ? this.catalog.skills.map((s) => ({ id: s.id, name: s.name, kind: s.kind }))
+        : FALLBACK_SKILLS.map((s) => ({ id: s.id, name: s.name, kind: s.kind }));
 
-    this.itemSelect.innerHTML = `
-      <optgroup label="Weapons">
-        ${weapons.map((w) => `<option value="${escapeHtml(w.id)}">${escapeHtml(w.name)}</option>`).join('')}
-      </optgroup>
-      <optgroup label="Skills">
-        ${skills.map((s) => `<option value="${escapeHtml(s.id)}">${escapeHtml(s.name)}</option>`).join('')}
-      </optgroup>
-    `;
-    if (prev) this.itemSelect.value = prev;
+    this.weaponSelect.innerHTML = weapons
+      .map((w) => `<option value="${escapeHtml(w.id)}">${escapeHtml(w.name)} (${escapeHtml(w.kind)})</option>`)
+      .join('');
+    this.skillSelect.innerHTML = skills
+      .map((s) => `<option value="${escapeHtml(s.id)}">${escapeHtml(s.name)} (${escapeHtml(s.kind)})</option>`)
+      .join('');
+
+    if (prevW) this.weaponSelect.value = prevW;
+    if (prevS) this.skillSelect.value = prevS;
+  }
+
+  private giveSingleItem(itemId: string): void {
+    if (!itemId) return;
+    this.callbacks.onPlayUiClick?.('confirm');
+    if (this.callbacks.onGiveItem) {
+      this.callbacks.onGiveItem(itemId);
+    } else {
+      window.__KRUNKED_DEBUG__?.giveItem(itemId);
+    }
   }
 
   private bindHandlers(): void {
@@ -272,6 +304,17 @@ export class DevDrawer {
       this.callbacks.onPlayUiClick?.('cancel');
       this.toggle(false);
     });
+
+    const handleArtClick = (mode: ArtPackMode): void => {
+      this.callbacks.onPlayUiClick?.('select');
+      if (this.callbacks.onToggleArtPackMode) {
+        this.callbacks.onToggleArtPackMode(mode);
+      } else {
+        window.__KRUNKED_DEBUG__?.toggleArtPack(mode);
+      }
+    };
+    this.artBuiltinBtn.addEventListener('click', () => handleArtClick('builtin'));
+    this.artCustomBtn.addEventListener('click', () => handleArtClick('custom'));
 
     this.drawerEl.querySelector('[data-act="warp"]')?.addEventListener('click', () => {
       const biomeId = this.biomeSelect.value as BiomeId;
@@ -293,6 +336,34 @@ export class DevDrawer {
           window.__KRUNKED_DEBUG__?.spawnBoss(bossId);
         }
       });
+    });
+
+    this.drawerEl.querySelector('[data-act="give-weapon"]')?.addEventListener('click', () => {
+      this.giveSingleItem(this.weaponSelect.value);
+    });
+
+    this.drawerEl.querySelector('[data-act="give-skill"]')?.addEventListener('click', () => {
+      this.giveSingleItem(this.skillSelect.value);
+    });
+
+    this.drawerEl.querySelector('[data-act="give-all-skills"]')?.addEventListener('click', () => {
+      this.callbacks.onPlayUiClick?.('confirm');
+      if (this.callbacks.onGiveTestSkills) {
+        this.callbacks.onGiveTestSkills();
+        return;
+      }
+      const pairs: Array<[string, string]> = [
+        ['FireGrenade', 'HeavyTurret'],
+        ['Phaser', 'WaveOfDenial'],
+        ['IceGrenade', 'WolfTrap'],
+        ['ClusterGrenade', 'CorruptedPower'],
+        ['KnifeDance', 'Tonic'],
+        ['InfantryGrenade', 'SinewSlicer'],
+      ];
+      const [s1, s2] = pairs[this.fallbackSkillPairIdx % pairs.length]!;
+      this.fallbackSkillPairIdx++;
+      this.giveSingleItem(s1);
+      this.giveSingleItem(s2);
     });
 
     this.drawerEl.querySelector('[data-act="scrolls-all"]')?.addEventListener('click', () => {
@@ -319,17 +390,6 @@ export class DevDrawer {
       });
     });
 
-    this.drawerEl.querySelector('[data-act="give-item"]')?.addEventListener('click', () => {
-      const itemId = this.itemSelect.value;
-      if (!itemId) return;
-      this.callbacks.onPlayUiClick?.('confirm');
-      if (this.callbacks.onGiveItem) {
-        this.callbacks.onGiveItem(itemId);
-      } else {
-        window.__KRUNKED_DEBUG__?.giveItem(itemId);
-      }
-    });
-
     this.godBtn.addEventListener('click', () => {
       const next = !this.lastGodMode;
       this.callbacks.onPlayUiClick?.('select');
@@ -346,16 +406,6 @@ export class DevDrawer {
         this.callbacks.onTriggerCurse(10);
       } else {
         window.__KRUNKED_DEBUG__?.triggerCurse(10);
-      }
-    });
-
-    this.artBtn.addEventListener('click', () => {
-      this.callbacks.onPlayUiClick?.('select');
-      const nextMode: ArtPackMode = this.lastArtMode === 'builtin' ? 'custom' : 'builtin';
-      if (this.callbacks.onToggleArtPackMode) {
-        this.callbacks.onToggleArtPackMode(nextMode);
-      } else {
-        window.__KRUNKED_DEBUG__?.toggleArtPack(nextMode);
       }
     });
 
