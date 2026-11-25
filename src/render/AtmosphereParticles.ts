@@ -42,12 +42,13 @@ export type EmitDynamicLightFn = (
 ) => void;
 
 const MAX_WEATHER = 160;
-const MAX_BURST = 240;
-const MAX_SLASHES = 16;
-const MAX_RINGS = 16;
+const MAX_BURST = 384;
+const MAX_SLASHES = 24;
+const MAX_RINGS = 32;
+const MAX_BEAMS = 12;
 const MAX_FLAME = 40;
 const MAX_POPUPS = 24;
-const MAX_TRANSIENT_LIGHTS = 16;
+const MAX_TRANSIENT_LIGHTS = 24;
 const SCARF_NODES = 6;
 
 const BURST_KIND_SPARK = 0;
@@ -55,6 +56,16 @@ const BURST_KIND_SPLINTER = 1;
 const BURST_KIND_BLOOD = 2;
 const BURST_KIND_DUST = 3;
 const BURST_KIND_SPLASH = 4;
+
+// Ring visual kinds:
+// 0 = parry_ring, 1 = aura_ring, 2 = shield_dome, 3 = shockwave_ring,
+// 4 = fireball_burst (core flash), 5 = ice_burst (core flash)
+const RING_KIND_PARRY = 0;
+const RING_KIND_AURA = 1;
+const RING_KIND_SHIELD = 2;
+const RING_KIND_SHOCKWAVE = 3;
+const RING_KIND_FIRE_BURST = 4;
+const RING_KIND_ICE_BURST = 5;
 
 // Pre-allocated RGB scratch buffer for zero-alloc hex parsing
 const rgbScratch = new Float32Array(3);
@@ -130,8 +141,22 @@ export class AtmosphereParticles {
   private readonly rr = new Float32Array(MAX_RINGS);
   private readonly rg = new Float32Array(MAX_RINGS);
   private readonly rb = new Float32Array(MAX_RINGS);
-  private readonly rKind = new Uint8Array(MAX_RINGS); // 0=parry, 1=aura, 2=shield
+  private readonly rKind = new Uint8Array(MAX_RINGS); // 0=parry, 1=aura, 2=shield, 3=shockwave, 4=fireBurst, 5=iceBurst
   private ringCursor = 0;
+
+  // Vertical lightning bolts / directional guard flares (world space)
+  private readonly mx = new Float32Array(MAX_BEAMS);
+  private readonly my = new Float32Array(MAX_BEAMS);
+  private readonly mw = new Float32Array(MAX_BEAMS);
+  private readonly mh = new Float32Array(MAX_BEAMS);
+  private readonly mLife = new Float32Array(MAX_BEAMS);
+  private readonly mMaxLife = new Float32Array(MAX_BEAMS);
+  private readonly mr = new Float32Array(MAX_BEAMS);
+  private readonly mg = new Float32Array(MAX_BEAMS);
+  private readonly mb = new Float32Array(MAX_BEAMS);
+  private readonly mAngle = new Float32Array(MAX_BEAMS);
+  private readonly mKind = new Uint8Array(MAX_BEAMS); // 0=vertical lightning bolt, 1=curved shield flare
+  private beamCursor = 0;
 
   // Homunculus plasma flame trail (world space)
   private readonly fx = new Float32Array(MAX_FLAME);
@@ -280,6 +305,33 @@ export class AtmosphereParticles {
     this.rKind[i] = kind;
   }
 
+  private spawnBeam(
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    life: number,
+    r: number,
+    g: number,
+    b: number,
+    angle: number,
+    kind: number
+  ): void {
+    const i = this.beamCursor;
+    this.beamCursor = (i + 1) % MAX_BEAMS;
+    this.mx[i] = x;
+    this.my[i] = y;
+    this.mw[i] = w;
+    this.mh[i] = h;
+    this.mLife[i] = life;
+    this.mMaxLife[i] = life;
+    this.mr[i] = r;
+    this.mg[i] = g;
+    this.mb[i] = b;
+    this.mAngle[i] = angle;
+    this.mKind[i] = kind;
+  }
+
   private spawnLight(
     x: number,
     y: number,
@@ -425,6 +477,335 @@ export class AtmosphereParticles {
           }
           this.spawnPopup(ev.x, ev.y - 22, 'PARRY!', 1.0, 0.92, 0.38, 1.15);
           this.spawnLight(ev.x, ev.y, 150, 0.32, 1.0, 0.9, 0.4, 2.5);
+          break;
+        }
+        case 'parryStart': {
+          // Crisp golden curved shield flare + warm golden transient point light!
+          const fx = ev.x + ev.facing * 12;
+          const fy = ev.y - 12;
+          this.spawnBeam(fx, fy, 16, 36, 0.16, 1.0, 0.9, 0.36, ev.facing > 0 ? 0 : Math.PI, 1);
+          this.spawnRing(fx, fy, 0.18, 6, 26, 1.0, 0.9, 0.38, RING_KIND_PARRY);
+          for (let k = 0; k < 7; k++) {
+            const ang = (k / 6 - 0.5) * 1.4 + (ev.facing < 0 ? Math.PI : 0);
+            const spd = 48 + this.nextRand() * 64;
+            this.spawnBurst(
+              fx,
+              fy + (k - 3) * 3.5,
+              Math.cos(ang) * spd,
+              Math.sin(ang) * spd - 10,
+              0.18 + this.nextRand() * 0.12,
+              3.2 + this.nextRand() * 1.8,
+              90,
+              1.0,
+              0.92,
+              0.42,
+              BURST_KIND_SPARK
+            );
+          }
+          this.spawnLight(fx, fy, 68, 0.22, 1.0, 0.86, 0.36, 1.1);
+          break;
+        }
+        case 'shieldBlock': {
+          // Bright silver-cyan impact ring + 14 metallic sparks + flash light!
+          const bx = ev.x;
+          const by = ev.y - 12;
+          this.spawnRing(bx, by, 0.26, 8, 44, 0.76, 0.95, 1.0, RING_KIND_SHIELD);
+          this.spawnRing(bx, by, 0.20, 6, 30, 1.0, 0.98, 0.92, RING_KIND_PARRY);
+          for (let k = 0; k < 14; k++) {
+            const ang = (k / 14) * Math.PI * 2 + (this.nextRand() - 0.5) * 0.25;
+            const spd = 72 + this.nextRand() * 115;
+            this.spawnBurst(
+              bx,
+              by,
+              Math.cos(ang) * spd,
+              Math.sin(ang) * spd - 18,
+              0.24 + this.nextRand() * 0.18,
+              3.5 + this.nextRand() * 2.5,
+              200,
+              0.78 + this.nextRand() * 0.22,
+              0.94,
+              1.0,
+              BURST_KIND_SPARK
+            );
+          }
+          this.spawnLight(bx, by, 84, 0.26, 0.78, 0.95, 1.0, 1.3);
+          break;
+        }
+        case 'explosion': {
+          // HUGE multi-layered fiery / icy / cluster blast!
+          const isFire = ev.element === 'fire';
+          const isIce = ev.element === 'ice';
+          const lr = isFire ? 1.0 : isIce ? 0.40 : 1.0;
+          const lg = isFire ? 0.42 : isIce ? 0.925 : 0.824;
+          const lb = isFire ? 0.17 : isIce ? 1.0 : 0.341;
+          const rad = Math.max(36, ev.radius);
+
+          // Core white-gold / arctic flash
+          this.spawnRing(
+            ev.x,
+            ev.y,
+            0.20,
+            8,
+            Math.max(30, rad * 0.75),
+            isIce ? 0.88 : 1.0,
+            isIce ? 0.98 : 0.96,
+            isIce ? 1.0 : 0.78,
+            isIce ? RING_KIND_ICE_BURST : RING_KIND_FIRE_BURST
+          );
+          // Primary expanding shockwave ring
+          this.spawnRing(
+            ev.x,
+            ev.y,
+            0.36,
+            12,
+            Math.max(58, rad * 1.38),
+            lr,
+            lg,
+            lb,
+            RING_KIND_SHOCKWAVE
+          );
+          // Secondary inner energy halo
+          this.spawnRing(
+            ev.x,
+            ev.y,
+            0.28,
+            10,
+            Math.max(44, rad * 1.05),
+            isFire ? 1.0 : isIce ? 0.72 : 1.0,
+            isFire ? 0.76 : isIce ? 0.98 : 0.92,
+            isFire ? 0.24 : isIce ? 1.0 : 0.56,
+            RING_KIND_AURA
+          );
+
+          // 24 glowing embers / ice shards / explosive sparks!
+          for (let k = 0; k < 24; k++) {
+            const ang = (k / 24) * Math.PI * 2 + (this.nextRand() - 0.5) * 0.26;
+            const spd = 60 + this.nextRand() * Math.max(135, rad * 2.3);
+            const warmMix = this.nextRand();
+            const pr = isFire
+              ? 1.0
+              : isIce
+              ? 0.42 + warmMix * 0.56
+              : 1.0;
+            const pg = isFire
+              ? 0.28 + warmMix * 0.62
+              : isIce
+              ? 0.88 + warmMix * 0.12
+              : 0.62 + warmMix * 0.34;
+            const pb = isFire
+              ? 0.10 + warmMix * 0.22
+              : isIce
+              ? 1.0
+              : 0.22 + warmMix * 0.36;
+            const kind =
+              isIce && (k & 1) === 0
+                ? BURST_KIND_SPLINTER
+                : (k % 3 === 0 ? BURST_KIND_SPLINTER : BURST_KIND_SPARK);
+            this.spawnBurst(
+              ev.x + (this.nextRand() - 0.5) * 10,
+              ev.y + (this.nextRand() - 0.5) * 10,
+              Math.cos(ang) * spd,
+              Math.sin(ang) * spd - 30,
+              0.30 + this.nextRand() * 0.28,
+              3.8 + this.nextRand() * 3.8,
+              isIce ? 165 : 220,
+              pr,
+              pg,
+              pb,
+              kind
+            );
+          }
+
+          // Intense dynamic point light (#ff6b2b fire, #66ecff ice, #ffd257 physical/cluster)
+          this.spawnLight(
+            ev.x,
+            ev.y,
+            Math.max(120, ev.radius * 2.4),
+            0.38,
+            lr,
+            lg,
+            lb,
+            2.0
+          );
+          break;
+        }
+        case 'skillCast': {
+          const sx = ev.x;
+          const sy = ev.y - 12;
+          switch (ev.skillId) {
+            case 'Phaser': {
+              // Cyan vertical lightning bolt + electric afterimage burst!
+              this.spawnBeam(sx, sy - 42, 16, 130, 0.24, 0.35, 0.96, 1.0, 0, 0);
+              this.spawnRing(sx, sy, 0.28, 8, 56, 0.32, 0.95, 1.0, RING_KIND_SHOCKWAVE);
+              for (let k = 0; k < 14; k++) {
+                const ang = this.nextRand() * Math.PI * 2;
+                const spd = 55 + this.nextRand() * 130;
+                this.spawnBurst(
+                  sx + (this.nextRand() - 0.5) * 12,
+                  sy - this.nextRand() * 30,
+                  Math.cos(ang) * spd,
+                  Math.sin(ang) * spd - 20,
+                  0.24 + this.nextRand() * 0.20,
+                  3.6 + this.nextRand() * 2.4,
+                  80,
+                  0.38,
+                  0.96,
+                  1.0,
+                  BURST_KIND_SPARK
+                );
+              }
+              this.spawnLight(sx, sy - 10, 132, 0.30, 0.32, 0.95, 1.0, 2.0);
+              break;
+            }
+            case 'WaveOfDenial': {
+              // Twin expanding cyan wind shockwaves + horizontal gale streaks!
+              this.spawnRing(sx, sy, 0.26, 12, 108, 0.42, 0.96, 1.0, RING_KIND_SHOCKWAVE);
+              this.spawnRing(sx, sy, 0.36, 6, 86, 0.78, 0.98, 1.0, RING_KIND_SHIELD);
+              for (let k = 0; k < 16; k++) {
+                const dir = (k & 1) === 0 ? 1 : -1;
+                const spd = 110 + this.nextRand() * 145;
+                this.spawnBurst(
+                  sx + dir * (4 + this.nextRand() * 12),
+                  sy + (this.nextRand() - 0.5) * 26,
+                  dir * spd,
+                  (this.nextRand() - 0.5) * 42,
+                  0.22 + this.nextRand() * 0.16,
+                  4.0 + this.nextRand() * 2.5,
+                  0,
+                  0.52,
+                  0.96,
+                  1.0,
+                  BURST_KIND_SPARK
+                );
+              }
+              this.spawnLight(sx, sy, 145, 0.30, 0.42, 0.96, 1.0, 1.9);
+              break;
+            }
+            case 'CorruptedPower': {
+              // Dramatic purple lightning crown + crimson-violet aura shockwave!
+              this.spawnBeam(sx, sy - 36, 14, 96, 0.26, 0.78, 0.28, 1.0, 0, 0);
+              this.spawnRing(sx, sy, 0.34, 10, 68, 0.86, 0.22, 1.0, RING_KIND_AURA);
+              this.spawnRing(sx, sy, 0.24, 6, 44, 1.0, 0.24, 0.42, RING_KIND_SHOCKWAVE);
+              for (let k = 0; k < 16; k++) {
+                const spread = (k / 15 - 0.5) * 2.2;
+                const spd = 65 + this.nextRand() * 110;
+                this.spawnBurst(
+                  sx + (k - 7.5) * 2.2,
+                  sy - 8,
+                  Math.sin(spread) * spd,
+                  -Math.cos(spread) * spd - 35,
+                  0.30 + this.nextRand() * 0.22,
+                  3.8 + this.nextRand() * 2.6,
+                  110,
+                  (k & 1) === 0 ? 0.85 : 1.0,
+                  0.24,
+                  (k & 1) === 0 ? 1.0 : 0.42,
+                  BURST_KIND_SPARK
+                );
+              }
+              this.spawnLight(sx, sy - 8, 138, 0.36, 0.84, 0.24, 1.0, 2.1);
+              break;
+            }
+            case 'KnifeDance': {
+              // Crimson ring flare + 14 outward spinning crimson razor sparks!
+              this.spawnRing(sx, sy, 0.28, 10, 80, 1.0, 0.22, 0.34, RING_KIND_SHOCKWAVE);
+              this.spawnRing(sx, sy, 0.20, 8, 52, 1.0, 0.65, 0.72, RING_KIND_PARRY);
+              for (let k = 0; k < 14; k++) {
+                const ang = (k / 14) * Math.PI * 2;
+                const spd = 105 + this.nextRand() * 95;
+                this.spawnBurst(
+                  sx,
+                  sy,
+                  Math.cos(ang) * spd,
+                  Math.sin(ang) * spd,
+                  0.24 + this.nextRand() * 0.14,
+                  4.2,
+                  40,
+                  1.0,
+                  0.24,
+                  0.36,
+                  BURST_KIND_SPARK
+                );
+              }
+              this.spawnLight(sx, sy, 120, 0.26, 1.0, 0.24, 0.36, 1.8);
+              break;
+            }
+            case 'Tonic': {
+              // Emerald healing spiral + protective emerald-cyan ring!
+              this.spawnRing(sx, sy, 0.38, 10, 62, 0.24, 1.0, 0.68, RING_KIND_SHIELD);
+              for (let k = 0; k < 18; k++) {
+                const ang = (k / 18) * Math.PI * 4;
+                const rad = 6 + (k / 18) * 18;
+                this.spawnBurst(
+                  sx + Math.cos(ang) * rad,
+                  sy + 10 - k * 1.4,
+                  Math.cos(ang + 1.2) * 32,
+                  -48 - this.nextRand() * 48,
+                  0.42 + this.nextRand() * 0.22,
+                  3.8 + this.nextRand() * 2.0,
+                  -25,
+                  0.24,
+                  1.0,
+                  0.66 + (k % 2) * 0.24,
+                  BURST_KIND_SPARK
+                );
+              }
+              this.spawnLight(sx, sy, 130, 0.40, 0.24, 1.0, 0.68, 1.9);
+              break;
+            }
+            case 'SinewSlicer':
+            case 'HeavyTurret':
+            case 'WolfTrap': {
+              // Mechanical brass spark puff + deployment ring!
+              this.spawnRing(sx, sy + 6, 0.22, 6, 36, 1.0, 0.78, 0.32, RING_KIND_PARRY);
+              for (let k = 0; k < 12; k++) {
+                const ang = this.nextRand() * Math.PI * 2;
+                const spd = 42 + this.nextRand() * 88;
+                this.spawnBurst(
+                  sx,
+                  sy + 6,
+                  Math.cos(ang) * spd,
+                  Math.sin(ang) * spd - 28,
+                  0.24 + this.nextRand() * 0.16,
+                  3.4 + this.nextRand() * 2.2,
+                  220,
+                  1.0,
+                  0.78,
+                  0.32,
+                  BURST_KIND_SPARK
+                );
+              }
+              this.spawnLight(sx, sy + 4, 92, 0.24, 1.0, 0.76, 0.32, 1.4);
+              break;
+            }
+            default: {
+              // Grenade throws (InfantryGrenade / FireGrenade / IceGrenade / ClusterGrenade)
+              const isIceG = ev.skillId === 'IceGrenade';
+              const isFireG = ev.skillId === 'FireGrenade';
+              const gr = isIceG ? 0.42 : 1.0;
+              const gg = isIceG ? 0.94 : isFireG ? 0.48 : 0.84;
+              const gb = isIceG ? 1.0 : isFireG ? 0.18 : 0.36;
+              for (let k = 0; k < 8; k++) {
+                const ang = this.nextRand() * Math.PI * 2;
+                const spd = 38 + this.nextRand() * 68;
+                this.spawnBurst(
+                  sx,
+                  sy,
+                  Math.cos(ang) * spd,
+                  Math.sin(ang) * spd - 22,
+                  0.18 + this.nextRand() * 0.14,
+                  3.2,
+                  120,
+                  gr,
+                  gg,
+                  gb,
+                  BURST_KIND_SPARK
+                );
+              }
+              this.spawnLight(sx, sy, 76, 0.18, gr, gg, gb, 1.25);
+              break;
+            }
+          }
           break;
         }
         case 'diveSlamImpact': {
@@ -696,6 +1077,9 @@ export class AtmosphereParticles {
     for (let i = 0; i < MAX_RINGS; i++) {
       if (this.rLife[i] > 0) this.rLife[i] -= dt;
     }
+    for (let i = 0; i < MAX_BEAMS; i++) {
+      if (this.mLife[i] > 0) this.mLife[i] -= dt;
+    }
     for (let i = 0; i < MAX_POPUPS; i++) {
       if (this.pLife[i] <= 0) continue;
       this.pLife[i] -= dt;
@@ -813,18 +1197,26 @@ export class AtmosphereParticles {
       );
     }
 
-    // 4. Radial Shockwave / Parry / Boss-Phase Rings
+    // 4. Radial Shockwave / Parry / Explosion / Boss-Phase Rings
     for (let i = 0; i < MAX_RINGS; i++) {
       const life = this.rLife[i];
       if (life <= 0) continue;
       const frac = 1.0 - life / Math.max(0.01, this.rMaxLife[i]);
       const rad = this.rStartRad[i] + (this.rEndRad[i] - this.rStartRad[i]) * frac;
+      const rk = this.rKind[i];
       const key =
-        this.rKind[i] === 0
+        rk === RING_KIND_PARRY
           ? 'vfx:parry_ring'
-          : this.rKind[i] === 1
+          : rk === RING_KIND_AURA
           ? 'vfx:aura_ring'
-          : 'vfx:shield_dome';
+          : rk === RING_KIND_SHIELD
+          ? 'vfx:shield_dome'
+          : rk === RING_KIND_SHOCKWAVE
+          ? 'vfx:shockwave_ring'
+          : rk === RING_KIND_FIRE_BURST
+          ? 'vfx:fireball_burst'
+          : 'vfx:ice_burst';
+      const flashMix = rk === RING_KIND_FIRE_BURST || rk === RING_KIND_ICE_BURST ? (1.0 - frac) * 0.65 : 0;
       emitQuad(
         key,
         this.rx[i] - camX,
@@ -836,9 +1228,68 @@ export class AtmosphereParticles {
         this.rb[i],
         (1.0 - frac) * 0.95,
         1,
-        0,
-        1.35
+        flashMix,
+        1.45
       );
+    }
+
+    // 4.5. Vertical Lightning Bolts & Curved Golden Parry Flares
+    for (let i = 0; i < MAX_BEAMS; i++) {
+      const life = this.mLife[i];
+      if (life <= 0) continue;
+      const t = life / Math.max(0.01, this.mMaxLife[i]);
+      const bx = this.mx[i] - camX;
+      const by = this.my[i] - camY;
+      if (this.mKind[i] === 0) {
+        // Vertical lightning bolt (outer glow + blazing white core)
+        emitQuad(
+          'vfx:ember',
+          bx,
+          by,
+          this.mw[i] * (0.65 + t * 0.65),
+          this.mh[i],
+          this.mr[i],
+          this.mg[i],
+          this.mb[i],
+          t * 0.82,
+          1,
+          0.25,
+          1.45,
+          this.mAngle[i]
+        );
+        emitQuad(
+          'vfx:white_px',
+          bx,
+          by,
+          Math.max(2, this.mw[i] * 0.24 * t),
+          this.mh[i],
+          1.0,
+          0.98,
+          1.0,
+          t * 0.95,
+          1,
+          0.6,
+          1.5,
+          this.mAngle[i]
+        );
+      } else {
+        // Curved golden shield parry flare
+        const flip = this.mAngle[i] > 1.5 ? -1 : 1;
+        emitQuad(
+          'vfx:shield_dome',
+          bx,
+          by,
+          this.mw[i] * (0.85 + (1.0 - t) * 0.45),
+          this.mh[i],
+          this.mr[i],
+          this.mg[i],
+          this.mb[i],
+          t * 0.92,
+          flip,
+          0.45,
+          1.45
+        );
+      }
     }
 
     // 5. Burst Sparks, Splinters, Blood, Dust, Splashes

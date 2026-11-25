@@ -229,7 +229,7 @@ export const BIOME_VISUAL_THEMES: Record<BiomeId, BiomeVisualTheme> = {
   Castle: makeTheme({
     biomeId: 'Castle',
     tilesetTheme: 'castle',
-    scrollerKey: 'courtyard',
+    scrollerKey: 'castle',
     themeId: 7,
     weather: 'embers',
     ambientHex: '#fbd4a8',
@@ -302,11 +302,14 @@ export class ParallaxBackdropPass {
   private readonly uCelShadow: WebGLUniformLocation | null;
   private readonly uAccentColor: WebGLUniformLocation | null;
   private readonly uThemeId: WebGLUniformLocation | null;
-  private readonly uHasScrollerTex: WebGLUniformLocation | null;
-  private readonly uScrollerTex: WebGLUniformLocation | null;
+  private readonly uHasFarTex: WebGLUniformLocation | null;
+  private readonly uScrollerFarTex: WebGLUniformLocation | null;
+  private readonly uHasMidTex: WebGLUniformLocation | null;
+  private readonly uScrollerMidTex: WebGLUniformLocation | null;
 
   private readonly dummyTex: WebGLTexture;
-  private readonly scrollerTextures = new Map<string, WebGLTexture>();
+  private readonly farTextures = new Map<string, WebGLTexture>();
+  private readonly midTextures = new Map<string, WebGLTexture>();
 
   constructor(gl: WebGL2RenderingContext, program: WebGLProgram) {
     this.program = program;
@@ -320,8 +323,10 @@ export class ParallaxBackdropPass {
     this.uCelShadow = gl.getUniformLocation(program, 'u_celShadow');
     this.uAccentColor = gl.getUniformLocation(program, 'u_accentColor');
     this.uThemeId = gl.getUniformLocation(program, 'u_themeId');
-    this.uHasScrollerTex = gl.getUniformLocation(program, 'u_hasScrollerTex');
-    this.uScrollerTex = gl.getUniformLocation(program, 'u_scrollerTex');
+    this.uHasFarTex = gl.getUniformLocation(program, 'u_hasFarTex');
+    this.uScrollerFarTex = gl.getUniformLocation(program, 'u_scrollerFarTex');
+    this.uHasMidTex = gl.getUniformLocation(program, 'u_hasMidTex');
+    this.uScrollerMidTex = gl.getUniformLocation(program, 'u_scrollerMidTex');
 
     const tex = gl.createTexture();
     if (!tex) throw new Error('Failed to create dummy scroller texture');
@@ -347,7 +352,17 @@ export class ParallaxBackdropPass {
     themeKey: string,
     image: ImageBitmap | HTMLImageElement
   ): void {
-    const existing = this.scrollerTextures.get(themeKey);
+    this.uploadScrollerLayer(gl, themeKey, 'far', image);
+  }
+
+  uploadScrollerLayer(
+    gl: WebGL2RenderingContext,
+    themeKey: string,
+    layer: 'far' | 'mid',
+    image: ImageBitmap | HTMLImageElement
+  ): void {
+    const store = layer === 'far' ? this.farTextures : this.midTextures;
+    const existing = store.get(themeKey);
     if (existing) gl.deleteTexture(existing);
     const tex = gl.createTexture();
     if (!tex) return;
@@ -356,8 +371,13 @@ export class ParallaxBackdropPass {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    this.scrollerTextures.set(themeKey, tex);
+    const isSquareTile = image.height <= 160 && Math.abs(image.width - image.height) < 4;
+    gl.texParameteri(
+      gl.TEXTURE_2D,
+      gl.TEXTURE_WRAP_T,
+      isSquareTile ? gl.REPEAT : gl.CLAMP_TO_EDGE
+    );
+    store.set(themeKey, tex);
   }
 
   render(
@@ -396,20 +416,42 @@ export class ParallaxBackdropPass {
     gl.uniform3f(this.uAccentColor, theme.accentRgb[0], theme.accentRgb[1], theme.accentRgb[2]);
     gl.uniform1i(this.uThemeId, theme.themeId);
 
-    const scTex = useCustomScroller ? this.scrollerTextures.get(theme.scrollerKey) : undefined;
+    let farTex: WebGLTexture | undefined;
+    let midTex: WebGLTexture | undefined;
+    if (useCustomScroller) {
+      farTex = this.farTextures.get(theme.scrollerKey);
+      midTex = this.midTextures.get(theme.scrollerKey);
+      if (!farTex && theme.scrollerKey === 'castle') {
+        farTex = this.farTextures.get('courtyard');
+        midTex = midTex ?? this.midTextures.get('courtyard');
+      }
+      if (!farTex && theme.scrollerKey !== 'prison') {
+        farTex = this.farTextures.get('prison');
+      }
+    }
+
     gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, scTex ?? this.dummyTex);
-    gl.uniform1i(this.uScrollerTex, 0);
-    gl.uniform1f(this.uHasScrollerTex, scTex ? 1.0 : 0.0);
+    gl.bindTexture(gl.TEXTURE_2D, farTex ?? this.dummyTex);
+    gl.uniform1i(this.uScrollerFarTex, 0);
+    gl.uniform1f(this.uHasFarTex, farTex ? 1.0 : 0.0);
+
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, midTex ?? this.dummyTex);
+    gl.uniform1i(this.uScrollerMidTex, 1);
+    gl.uniform1f(this.uHasMidTex, midTex ? 1.0 : 0.0);
 
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
   dispose(gl: WebGL2RenderingContext): void {
     gl.deleteTexture(this.dummyTex);
-    for (const tex of this.scrollerTextures.values()) {
+    for (const tex of this.farTextures.values()) {
       gl.deleteTexture(tex);
     }
-    this.scrollerTextures.clear();
+    for (const tex of this.midTextures.values()) {
+      gl.deleteTexture(tex);
+    }
+    this.farTextures.clear();
+    this.midTextures.clear();
   }
 }
