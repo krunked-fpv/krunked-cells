@@ -14,6 +14,7 @@ import {
   TileKind,
   VIEWPORT_H,
   VIEWPORT_W,
+  type BiomeId,
   type CustomPackAssetResolver,
   type CustomPackStatus,
   type EnemyState,
@@ -31,6 +32,7 @@ import {
 } from '../assets/ProceduralAtlas';
 import {
   CustomPackLoader,
+  type LibGdxRegion,
   type LoadedCustomAtlas,
 } from '../assets/CustomPackLoader';
 import {
@@ -71,9 +73,288 @@ interface CustomGpuAtlasPage {
   height: number;
 }
 
+interface BiomeAtlasCache {
+  backWalls: LibGdxRegion[];
+  floorStamps: LibGdxRegion[];
+  groundCaps: LibGdxRegion[];
+  ceilingCaps: LibGdxRegion[];
+  oneWays: LibGdxRegion[];
+  chains: LibGdxRegion[];
+  arches: LibGdxRegion[];
+  banners: LibGdxRegion[];
+  exitDoors: LibGdxRegion[];
+  floorJunk: LibGdxRegion[];
+  wallJunk: LibGdxRegion[];
+  // Common-atlas prop direct lookups (cached once on load — zero per-frame Map lookups!)
+  ladder: LibGdxRegion | null;
+  brasero: LibGdxRegion | null;
+  torch: LibGdxRegion | null;
+  chestBasicClosed: LibGdxRegion | null;
+  chestBasicOpen: LibGdxRegion | null;
+  chestTwClosed: LibGdxRegion | null;
+  chestTwOpen: LibGdxRegion | null;
+  woodDoorMeta: LibGdxRegion | null;
+  normalDoorSide: LibGdxRegion | null;
+  goldDoor: LibGdxRegion | null;
+  timeDoor: LibGdxRegion | null;
+  collectorDoor: LibGdxRegion | null;
+  prisonBossDoor: LibGdxRegion | null;
+  collectorBack: LibGdxRegion | null;
+  foundry: LibGdxRegion | null;
+  teleportAltar: LibGdxRegion | null;
+  flagMetaObject: LibGdxRegion | null;
+}
+
 interface CustomGpuAtlas {
   loaded: LoadedCustomAtlas;
   pages: CustomGpuAtlasPage[];
+  cache: BiomeAtlasCache;
+}
+
+const BIOME_CUSTOM_ATLAS_MAP: Record<BiomeId, string> = {
+  PrisonStart: 'prison',
+  PrisonCourtyard: 'prisonCourtyard',
+  Sewer: 'sewer',
+  PrisonRoof: 'prisonRoof',
+  Bridge: 'bridge',
+  StiltVillage: 'stiltVillage',
+  ClockTower: 'clockTower',
+  TopClockTower: 'clockRoom',
+  Castle: 'castle',
+  Throne: 'throne',
+  Passage: 'prison',
+};
+
+const ENEMY_CUSTOM_ATLAS: Record<string, string> = {
+  Zombie: 'zombie',
+  Runner: 'zombie',
+  Archer: 'deadArcher',
+  Grenader: 'grenadier',
+  Shield: 'zombieShield',
+  Mage360: 'mago360',
+  Protector: 'mago360',
+  Comboter: 'comboter',
+  Ninja: 'ninja',
+  LeapingDuelyst: 'leapingDuelyst',
+  ClusterGrenader: 'grenadierCluster',
+  PirateChief: 'pirate',
+  Lancer: 'lancer',
+  CastleKnight: 'knight',
+  Worm: 'zombieWorm',
+  BatKamikaze: 'zombieFly',
+  BatDasher: 'zombieFly',
+};
+
+const RE_BACK_WALL = /^backWall(_?\d+)?$/;
+const RE_FLOOR_STAMP = /^floorStamp_\d+$/;
+const RE_ALT_FLOOR_STAMP = /^(stoneWall|floorStampLeft|floorStampRight)_\d+$/;
+const RE_GROUND_CAP = /^ground_\d+$/;
+const RE_CEILING_CAP = /^ceiling_\d+$/;
+const RE_ARCH_REGION =
+  /^(archeSmall(_\d+)?|archeParallax_\d+|bridgeArch|alcovePillar|alcove_\d+|alcoveBench|columnTile3_\d+)$/;
+
+function buildBiomeAtlasCache(loaded: LoadedCustomAtlas): BiomeAtlasCache {
+  const backWalls: LibGdxRegion[] = [];
+  const floorStamps: LibGdxRegion[] = [];
+  const altFloorStamps: LibGdxRegion[] = [];
+  const groundCaps: LibGdxRegion[] = [];
+  const ceilingCaps: LibGdxRegion[] = [];
+  const oneWays: LibGdxRegion[] = [];
+  const chains: LibGdxRegion[] = [];
+  const arches: LibGdxRegion[] = [];
+  const banners: LibGdxRegion[] = [];
+  const exitDoors: LibGdxRegion[] = [];
+  const floorJunk: LibGdxRegion[] = [];
+  const wallJunk: LibGdxRegion[] = [];
+
+  const seen = new Set<LibGdxRegion>();
+  for (const reg of loaded.atlas.regions.values()) {
+    if (seen.has(reg)) continue;
+    seen.add(reg);
+    const name = reg.name;
+
+    if (RE_BACK_WALL.test(name) && reg.w === 24 && reg.h === 24) {
+      backWalls.push(reg);
+    } else if (RE_FLOOR_STAMP.test(name) && reg.w === 24 && reg.h === 24) {
+      floorStamps.push(reg);
+    } else if (RE_ALT_FLOOR_STAMP.test(name) && reg.w === 24 && reg.h === 24) {
+      altFloorStamps.push(reg);
+    } else if (RE_GROUND_CAP.test(name) && reg.w === 24 && reg.h > 0 && reg.h <= 8) {
+      groundCaps.push(reg);
+    } else if (RE_CEILING_CAP.test(name) && reg.w === 24 && reg.h > 0 && reg.h <= 8) {
+      ceilingCaps.push(reg);
+    }
+
+    if (name === 'ladderPlatform' || name === 'unstablePlatform_0' || name === 'bridgeTile') {
+      oneWays.push(reg);
+    }
+    if (name === 'chain_0' || name === 'chainTile') {
+      chains.push(reg);
+    }
+    if (RE_ARCH_REGION.test(name) && reg.w <= 220 && reg.h <= 260) {
+      arches.push(reg);
+    }
+    if (name === 'bannerBig' || name === 'bannerRoomTiled') {
+      banners.push(reg);
+    }
+    if (name === 'exitDoor' || name === 'bigDoor_0' || name === 'bigDoor') {
+      exitDoors.push(reg);
+    }
+    if (
+      (name.startsWith('floorJunk/') || name.startsWith('alchemyFloorJunk/')) &&
+      reg.w >= 6 &&
+      reg.h >= 6 &&
+      reg.w <= 64 &&
+      reg.h <= 64
+    ) {
+      floorJunk.push(reg);
+    }
+    if (
+      (name.startsWith('wallJunk/') || name.startsWith('alchemyWallJunk/')) &&
+      reg.w >= 6 &&
+      reg.h >= 6 &&
+      reg.w <= 64 &&
+      reg.h <= 64
+    ) {
+      wallJunk.push(reg);
+    }
+  }
+
+  const byName = (a: LibGdxRegion, b: LibGdxRegion): number =>
+    a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+
+  backWalls.sort(byName);
+  floorStamps.sort(byName);
+  altFloorStamps.sort(byName);
+  groundCaps.sort(byName);
+  ceilingCaps.sort(byName);
+  arches.sort(byName);
+  banners.sort(byName);
+  floorJunk.sort(byName);
+  wallJunk.sort(byName);
+
+  // Prefer 24px-wide platforms first (ladderPlatform / unstablePlatform_0), then bridgeTile
+  oneWays.sort((a, b) => a.w - b.w || byName(a, b));
+  chains.sort((a, b) => (a.name === 'chain_0' ? -1 : b.name === 'chain_0' ? 1 : byName(a, b)));
+  exitDoors.sort((a, b) =>
+    a.name === 'exitDoor' ? -1 : b.name === 'exitDoor' ? 1 : byName(a, b)
+  );
+
+  // Bridge & Throne atlases use stoneWall / floorStampLeft/Right / backWalls as 24x24 solid stonework
+  if (floorStamps.length === 0 && altFloorStamps.length > 0) {
+    for (let i = 0; i < altFloorStamps.length; i++) floorStamps.push(altFloorStamps[i]);
+  }
+  if (floorStamps.length < 2 && backWalls.length > 0) {
+    for (let i = 0; i < backWalls.length; i++) floorStamps.push(backWalls[i]);
+  }
+
+  const regs = loaded.atlas.regions;
+  return {
+    backWalls,
+    floorStamps,
+    groundCaps,
+    ceilingCaps,
+    oneWays,
+    chains,
+    arches,
+    banners,
+    exitDoors,
+    floorJunk,
+    wallJunk,
+    ladder: regs.get('ladder') ?? null,
+    brasero: regs.get('brasero') ?? null,
+    torch: regs.get('torch') ?? null,
+    chestBasicClosed: regs.get('chestBasicClosed') ?? null,
+    chestBasicOpen: regs.get('chestBasicOpen') ?? null,
+    chestTwClosed: regs.get('chestTwClosed') ?? null,
+    chestTwOpen: regs.get('chestTwOpen') ?? null,
+    woodDoorMeta: regs.get('woodDoorMeta') ?? null,
+    normalDoorSide: regs.get('normalDoorSide') ?? null,
+    goldDoor: regs.get('goldDoor') ?? null,
+    timeDoor: regs.get('timeDoor') ?? null,
+    collectorDoor: regs.get('collectorDoor') ?? null,
+    prisonBossDoor: regs.get('prisonBossDoor') ?? null,
+    collectorBack: regs.get('collectorBack') ?? null,
+    foundry: regs.get('foundry') ?? null,
+    teleportAltar: regs.get('teleportAltar') ?? null,
+    flagMetaObject: regs.get('flagMetaObject') ?? null,
+  };
+}
+
+function pickScrollerLayerPaths(
+  themeKey: string,
+  paths: readonly string[]
+): { far: string | null; mid: string | null } {
+  const findFirst = (names: readonly string[], exclude?: string | null): string | null => {
+    for (let n = 0; n < names.length; n++) {
+      const target = names[n];
+      for (let i = 0; i < paths.length; i++) {
+        const p = paths[i];
+        if (exclude && p === exclude) continue;
+        const base = (p.split('/').pop() ?? p).toLowerCase();
+        if (base === target) return p;
+      }
+    }
+    return null;
+  };
+
+  let far: string | null = null;
+  let mid: string | null = null;
+
+  if (themeKey === 'prison') {
+    far = findFirst([
+      'prisonstartscrollera.png',
+      'prisonscrollera.png',
+      'prisonhubscrollera.png',
+      'archesmallbg_0.png',
+    ]);
+    mid = findFirst(
+      ['archesmallbg_0.png', 'archesmallfg_0.png', 'prisonscrollera.png', 'prisonstartscrollerb.png'],
+      far
+    );
+  } else if (themeKey === 'courtyard') {
+    far = findFirst(['archesmallbg_0.png']);
+    mid = findFirst(['archesmallfg_0.png'], far);
+  } else if (themeKey === 'sewers') {
+    far = findFirst(['archesmallbg_0.png', 'archesmallbg_1.png']);
+    mid = findFirst(['archesmallfg_0.png', 'archesmallfg_1.png'], far);
+  } else if (themeKey === 'cliff') {
+    far = findFirst(['scrollerbg_0.png']);
+    mid = findFirst(['scrollerlayer1_0.png', 'scrollerlayer2_0.png'], far);
+  } else if (themeKey === 'castle') {
+    far = findFirst(['wallwindowscroller.png', 'archesmallbg_0.png']);
+    mid = findFirst(['archesmallfg_0.png', 'archesmallbg_0.png'], far);
+  }
+
+  if (!far && paths.length > 0) {
+    far = paths.find((p) => !p.toLowerCase().includes('fog')) ?? paths[0];
+  }
+  if (!mid && paths.length > 1) {
+    mid = paths.find((p) => p !== far && !p.toLowerCase().includes('fog')) ?? null;
+  }
+  return { far, mid };
+}
+
+async function decodeScrollerBlob(blob: Blob): Promise<ImageBitmap | HTMLImageElement | null> {
+  if (typeof createImageBitmap === 'function') {
+    try {
+      return await createImageBitmap(blob);
+    } catch {
+      // Fall through to HTMLImageElement
+    }
+  }
+  if (typeof Image === 'undefined' || typeof URL === 'undefined') return null;
+  const url = URL.createObjectURL(blob);
+  try {
+    return await new Promise<HTMLImageElement | null>((resolve) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => resolve(null);
+      img.src = url;
+    });
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 // Pre-allocated scratch buffer for hex color parsing (zero GC!)
@@ -147,6 +428,7 @@ export class WebGL2Renderer implements RendererAPI {
   private customGpuAtlases = new Map<string, CustomGpuAtlas>();
   private customLoadInFlight = new Set<string>();
   private customScrollersLoaded = new Set<string>();
+  private lastActiveBiomeId: BiomeId = 'PrisonStart';
 
   // GPU Atlas Textures
   private texAlbedo: WebGLTexture | null = null;
@@ -262,7 +544,18 @@ export class WebGL2Renderer implements RendererAPI {
     emissiveBoost: number,
     angleRad = 0
   ): void => {
-    const reg = resolveSpriteRegion(this.atlas.regions, spriteKey);
+    let reg = this.atlas.regions[spriteKey];
+    if (!reg) {
+      if (spriteKey === 'vfx:shockwave_ring') {
+        reg = resolveSpriteRegion(this.atlas.regions, 'vfx:parry_ring');
+      } else if (spriteKey === 'vfx:fireball_burst') {
+        reg = resolveSpriteRegion(this.atlas.regions, 'vfx:ember');
+      } else if (spriteKey === 'vfx:ice_burst') {
+        reg = resolveSpriteRegion(this.atlas.regions, 'vfx:spark');
+      } else {
+        reg = resolveSpriteRegion(this.atlas.regions, spriteKey);
+      }
+    }
     if (angleRad !== 0) {
       this.pushRotatedQuad(
         reg,
@@ -588,43 +881,90 @@ export class WebGL2Renderer implements RendererAPI {
         const nTex = p.normal ? this.uploadImageTexture(this.gl, p.normal) : this.texFlatNormal!;
         pages.push({ diffuseTex: dTex, normalTex: nTex, width: p.width, height: p.height });
       }
-      this.customGpuAtlases.set(name, { loaded, pages });
+      const cache = buildBiomeAtlasCache(loaded);
+      this.customGpuAtlases.set(name, { loaded, pages, cache });
     });
     return null;
   }
 
-  private prefetchCoreCustomAssets(): void {
+  private getBiomeCustomAtlas(biomeId: BiomeId): CustomGpuAtlas | null {
+    const atlasName = BIOME_CUSTOM_ATLAS_MAP[biomeId] ?? 'prison';
+    const primary = this.ensureCustomAtlasLoaded(atlasName);
+    if (primary) return primary;
+    if (biomeId === 'TopClockTower') {
+      return this.ensureCustomAtlasLoaded('clockTower');
+    }
+    return null;
+  }
+
+  private prefetchCoreCustomAssets(biomeId: BiomeId = this.lastActiveBiomeId): void {
     const loader = this.customPackLoader;
     const gl = this.gl;
     if (!loader || !gl) return;
     const manifest = loader.getManifest();
     if (!manifest) return;
 
+    // Immediately prefetch current biome atlas (+ clockTower fallback for TopClockTower)
+    this.ensureCustomAtlasLoaded(BIOME_CUSTOM_ATLAS_MAP[biomeId] ?? 'prison');
+    if (biomeId === 'TopClockTower') {
+      this.ensureCustomAtlasLoaded('clockTower');
+    }
+
     const coreAtlases = [
+      'common',
       'beheaded',
+      'fxWeapon',
+      'fxCommon',
       'behemoth',
       'timeKeeper',
       'HotK',
       'collector',
       'blacksmith',
+      'knight',
       'zombie',
       'deadArcher',
       'grenadier',
       'zombieShield',
       'mago360',
+      'comboter',
+      'ninja',
+      'leapingDuelyst',
+      'grenadierCluster',
+      'pirate',
+      'lancer',
+      'zombieWorm',
+      'zombieFly',
     ];
     for (const name of coreAtlases) {
       this.ensureCustomAtlasLoaded(name);
     }
 
+    // Load 2-layer far + mid Custom Pack parallax scrollers directly via loader.fetchBlob!
     for (const scrollerKey of Object.keys(manifest.scrollers)) {
       if (this.customScrollersLoaded.has(scrollerKey)) continue;
+      const paths = manifest.scrollers[scrollerKey];
+      if (!paths || paths.length === 0) continue;
       this.customScrollersLoaded.add(scrollerKey);
-      void loader.loadScrollerImage(scrollerKey).then((img) => {
-        if (img && this.gl && this.backdropPass) {
-          this.backdropPass.uploadScrollerImage(this.gl, scrollerKey, img);
-        }
-      });
+
+      const { far, mid } = pickScrollerLayerPaths(scrollerKey, paths);
+      if (far) {
+        void loader.fetchBlob(far).then(async (blob) => {
+          if (!blob || !this.gl || !this.backdropPass) return;
+          const img = await decodeScrollerBlob(blob);
+          if (img && this.gl && this.backdropPass) {
+            this.backdropPass.uploadScrollerLayer(this.gl, scrollerKey, 'far', img);
+          }
+        });
+      }
+      if (mid) {
+        void loader.fetchBlob(mid).then(async (blob) => {
+          if (!blob || !this.gl || !this.backdropPass) return;
+          const img = await decodeScrollerBlob(blob);
+          if (img && this.gl && this.backdropPass) {
+            this.backdropPass.uploadScrollerLayer(this.gl, scrollerKey, 'mid', img);
+          }
+        });
+      }
     }
   }
 
@@ -870,6 +1210,70 @@ export class WebGL2Renderer implements RendererAPI {
     this.quadCount++;
   }
 
+  private pushCustomRegion(
+    gpuAtlas: CustomGpuAtlas,
+    reg: LibGdxRegion,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    r = 1,
+    g = 1,
+    b = 1,
+    a = 1,
+    flipX = 1,
+    flashMix = 0,
+    emissiveBoost = 0,
+    normalStrength = 1.0
+  ): void {
+    const page = gpuAtlas.pages[reg.pageIndex];
+    if (!page) return;
+    this.ensureTextures(page.diffuseTex, page.normalTex, this.texBlackEmissive!);
+    const u0 = reg.x / page.width;
+    const v0 = reg.y / page.height;
+    const u1 = (reg.x + reg.w) / page.width;
+    const v1 = (reg.y + reg.h) / page.height;
+    this.pushRawQuad(
+      x,
+      y,
+      x + w,
+      y + h,
+      u0,
+      v0,
+      u1,
+      v1,
+      r,
+      g,
+      b,
+      a,
+      flipX,
+      flashMix,
+      emissiveBoost,
+      normalStrength
+    );
+  }
+
+  private pushCustomRegionSliceX(
+    gpuAtlas: CustomGpuAtlas,
+    reg: LibGdxRegion,
+    fracX0: number,
+    fracX1: number,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    normalStrength = 1.0
+  ): void {
+    const page = gpuAtlas.pages[reg.pageIndex];
+    if (!page) return;
+    this.ensureTextures(page.diffuseTex, page.normalTex, this.texBlackEmissive!);
+    const u0 = (reg.x + reg.w * fracX0) / page.width;
+    const v0 = reg.y / page.height;
+    const u1 = (reg.x + reg.w * fracX1) / page.width;
+    const v1 = (reg.y + reg.h) / page.height;
+    this.pushRawQuad(x, y, x + w, y + h, u0, v0, u1, v1, 1, 1, 1, 1, 1, 0, 0, normalStrength);
+  }
+
   private drawSpriteKey(
     key: string,
     anchorX: number,
@@ -1045,6 +1449,24 @@ export class WebGL2Renderer implements RendererAPI {
     );
     this.addLight(heroX, heroY - 22, 58, 1.0, 0.54, 0.22, 0.48 * heroFlick, 24);
 
+    // 1b. Active Hero Parry / Shield Block / CorruptedPower / Shield Dome Lights
+    const p = state.player;
+    if (p.parryWindowTicks > 0) {
+      this.addLight(heroX + p.facing * 8, heroY - 16, 92, 1.0, 0.90, 0.36, 1.45, 28);
+    } else if (p.shieldBlocking) {
+      this.addLight(heroX + p.facing * 10, heroY - 16, 68, 0.42, 0.84, 1.0, 0.88, 26);
+    }
+    for (let s = 0; s < p.statusEffects.length; s++) {
+      const sk = p.statusEffects[s].kind;
+      if (sk === 'corrupted') {
+        const pulse = 0.88 + 0.16 * Math.sin(elapsedSec * 14);
+        this.addLight(heroX, heroY - 16, 112 * pulse, 0.88, 0.24, 1.0, 1.25 * pulse, 28);
+      } else if (sk === 'shield') {
+        const pulse = 0.92 + 0.10 * Math.sin(elapsedSec * 9);
+        this.addLight(heroX, heroY - 16, 98 * pulse, 0.24, 1.0, 0.76, 1.05 * pulse, 28);
+      }
+    }
+
     // 2. Transient Combat Lights (slashes, crits, parries, dive-slam, heals)
     this.particles.emitTransientLights(this.emitDynamicLightBound);
 
@@ -1164,6 +1586,13 @@ export class WebGL2Renderer implements RendererAPI {
     const animFrame2 = Math.floor(elapsedSec * 4.0) & 1;
     const flameFrame3 = Math.floor(elapsedSec * 9.0) % 3;
 
+    const useCustomWorld =
+      this.settings.artPackMode === 'custom' && this.customPackStatus.available;
+    const biomeAtlas = useCustomWorld ? this.getBiomeCustomAtlas(state.activeBiomeId) : null;
+    const commonAtlas = useCustomWorld ? this.ensureCustomAtlasLoaded('common') : null;
+    const bCache = biomeAtlas ? biomeAtlas.cache : null;
+    const cCache = commonAtlas ? commonAtlas.cache : null;
+
     const minTx = Math.max(0, Math.floor(camX / TILE_SIZE) - 1);
     const maxTx = Math.min(grid.width - 1, Math.ceil((camX + VIEWPORT_W) / TILE_SIZE) + 1);
     const minTy = Math.max(0, Math.floor(camY / TILE_SIZE) - 1);
@@ -1187,6 +1616,7 @@ export class WebGL2Renderer implements RendererAPI {
     const regWater = resolveSpriteRegion(this.atlas.regions, `tile:water_${animFrame2}`);
 
     // 1. Background Masonry, Pillars, Arches (negative normalStrength => recessed bg lighting!)
+    const useCustomBg = Boolean(biomeAtlas && bCache && bCache.backWalls.length > 0);
     for (let ty = minTy; ty <= maxTy; ty++) {
       const sy = Math.round(ty * TILE_SIZE - camY);
       const rowOff = ty * grid.width;
@@ -1194,32 +1624,276 @@ export class WebGL2Renderer implements RendererAPI {
         const bg = grid.bgTiles[rowOff + tx];
         if (bg === 0) continue;
         const sx = Math.round(tx * TILE_SIZE - camX);
-        const modX = tx % 6;
-        const reg = modX === 0 ? regBgPillar : modX === 3 && (ty % 3 === 1) ? regBgArch : regBgWall;
-        this.pushQuad(reg, sx, sy, TILE_SIZE, TILE_SIZE, 1, 1, 1, 1, 1, 0, 0, -1.0);
+        if (useCustomBg) {
+          const bwList = bCache!.backWalls;
+          const reg = bwList[tileHash(tx, ty) % bwList.length];
+          this.pushCustomRegion(
+            biomeAtlas!,
+            reg,
+            sx,
+            sy,
+            TILE_SIZE,
+            TILE_SIZE,
+            1,
+            1,
+            1,
+            1,
+            1,
+            0,
+            0,
+            -1.0
+          );
+        } else {
+          const modX = tx % 6;
+          const reg =
+            modX === 0 ? regBgPillar : modX === 3 && ty % 3 === 1 ? regBgArch : regBgWall;
+          this.pushQuad(reg, sx, sy, TILE_SIZE, TILE_SIZE, 1, 1, 1, 1, 1, 0, 0, -1.0);
+        }
       }
     }
 
-    // 2. Deterministic Architectural Wall Banners & Cages inside visible rooms
-    const regBanner = resolveSpriteRegion(this.atlas.regions, `prop:banner_${animFrame2}`);
-    const regCage = resolveSpriteRegion(this.atlas.regions, 'prop:cage');
-    for (let i = 0; i < state.rooms.length; i++) {
-      const rm = state.rooms[i];
-      const rx0 = rm.tx * TILE_SIZE - camX;
-      const rx1 = (rm.tx + rm.tw) * TILE_SIZE - camX;
-      const ry0 = rm.ty * TILE_SIZE - camY;
-      const ry1 = (rm.ty + rm.th) * TILE_SIZE - camY;
-      if (rx1 < -48 || rx0 > VIEWPORT_W + 48 || ry1 < -48 || ry0 > VIEWPORT_H + 48) continue;
-
-      if (rm.tw >= 8) {
-        const bx = Math.round((rm.tx + Math.floor(rm.tw * 0.35)) * TILE_SIZE - camX);
-        const by = Math.round((rm.ty + 1) * TILE_SIZE - camY);
-        this.pushQuad(regBanner, bx, by, regBanner.w, regBanner.h, 1, 1, 1, 1, 1, 0, 0, -0.9);
+    // 2. Passage Workshop Backdrops (Collector Alcove & Blacksmith Foundry in Custom Pack Mode!)
+    if (state.activeBiomeId === 'Passage' && commonAtlas && cCache) {
+      for (let i = 0; i < state.shrines.length; i++) {
+        const sh = state.shrines[i];
+        const sx = sh.pos.x - camX;
+        const sy = sh.pos.y - camY;
+        if (sx < -160 || sx > VIEWPORT_W + 160 || sy < -160 || sy > VIEWPORT_H + 160) continue;
+        if (sh.kind === 'collector' && cCache.collectorBack) {
+          const reg = cCache.collectorBack;
+          const dw = Math.round(reg.w * 0.36);
+          const dh = Math.round(reg.h * 0.36);
+          this.pushCustomRegion(
+            commonAtlas,
+            reg,
+            Math.round(sx - dw * 0.5),
+            Math.round(sy - dh),
+            dw,
+            dh,
+            1,
+            1,
+            1,
+            1,
+            1,
+            0,
+            0.04,
+            -0.85
+          );
+        } else if (sh.kind === 'forge' && cCache.foundry) {
+          const reg = cCache.foundry;
+          const dw = Math.round(reg.w * 0.36);
+          const dh = Math.round(reg.h * 0.36);
+          this.pushCustomRegion(
+            commonAtlas,
+            reg,
+            Math.round(sx - dw * 0.5),
+            Math.round(sy - dh),
+            dw,
+            dh,
+            1,
+            1,
+            1,
+            1,
+            1,
+            0,
+            0.06,
+            -0.85
+          );
+        }
       }
-      if (rm.tw >= 12 && (rm.id & 1) === 0) {
-        const cx = Math.round((rm.tx + Math.floor(rm.tw * 0.68)) * TILE_SIZE - camX);
-        const cy = Math.round((rm.ty + 1) * TILE_SIZE - camY);
-        this.pushQuad(regCage, cx, cy, regCage.w, regCage.h, 1, 1, 1, 1, 1, 0, 0, -0.85);
+    }
+
+    // 2B. Deterministic Architectural Room Dressings (Custom Pack Arches/Banners/WallJunk OR Enhanced Built-In Props!)
+    if (biomeAtlas && bCache) {
+      const archList = bCache.arches;
+      const bannerList = bCache.banners;
+      const wallJunkList = bCache.wallJunk;
+      for (let i = 0; i < state.rooms.length; i++) {
+        const rm = state.rooms[i];
+        const rx0 = rm.tx * TILE_SIZE - camX;
+        const rx1 = (rm.tx + rm.tw) * TILE_SIZE - camX;
+        const ry0 = rm.ty * TILE_SIZE - camY;
+        const ry1 = (rm.ty + rm.th) * TILE_SIZE - camY;
+        if (rx1 < -96 || rx0 > VIEWPORT_W + 96 || ry1 < -96 || ry0 > VIEWPORT_H + 96) continue;
+
+        const floorTy = rm.type === 'passage' ? rm.ty + rm.th - 2 : rm.ty + rm.th - 1;
+        const floorScreenY = Math.round(floorTy * TILE_SIZE - camY);
+        const roomInnerH = Math.max(48, (floorTy - rm.ty - 1) * TILE_SIZE);
+
+        // Mounted gothic arches / pillars inside corridors & halls
+        if (archList.length > 0 && rm.tw >= 10 && rm.type !== 'passage') {
+          const count = rm.tw >= 18 ? 2 : 1;
+          for (let k = 0; k < count; k++) {
+            const frac = count === 1 ? 0.5 : k === 0 ? 0.28 : 0.72;
+            const atx = rm.tx + Math.floor(rm.tw * frac);
+            const h = tileHash(atx, rm.ty + k * 7);
+            const reg = archList[h % archList.length];
+            const scale = Math.min(0.88, (roomInnerH * 0.94) / Math.max(1, reg.h));
+            const dw = Math.round(reg.w * scale);
+            const dh = Math.round(reg.h * scale);
+            const ax = Math.round(atx * TILE_SIZE - dw * 0.5 - camX);
+            const ay = floorScreenY - dh;
+            this.pushCustomRegion(biomeAtlas, reg, ax, ay, dw, dh, 1, 1, 1, 1, 1, 0, 0, -0.92);
+          }
+        }
+
+        // Hanging Dead Cells banners
+        if (rm.tw >= 8) {
+          const h = tileHash(rm.tx + 3, rm.ty + 1);
+          const btx = rm.tx + Math.floor(rm.tw * 0.35);
+          const bty = rm.ty + 1;
+          if (
+            btx >= 0 &&
+            bty >= 0 &&
+            btx < grid.width &&
+            bty < grid.height &&
+            grid.bgTiles[bty * grid.width + btx] !== 0
+          ) {
+            if (bannerList.length > 0) {
+              const reg = bannerList[h % bannerList.length];
+              const targetW = reg.w > 48 ? 34 : reg.w;
+              const scale = targetW / Math.max(1, reg.w);
+              const dw = Math.round(reg.w * scale);
+              const dh = Math.min(roomInnerH - 12, Math.round(reg.h * scale));
+              const bx = Math.round(btx * TILE_SIZE - camX);
+              const by = Math.round(bty * TILE_SIZE - camY);
+              this.pushCustomRegion(biomeAtlas, reg, bx, by, dw, dh, 1, 1, 1, 1, 1, 0, 0, -0.88);
+            } else if (commonAtlas && cCache?.flagMetaObject && (rm.id & 1) === 0) {
+              const reg = cCache.flagMetaObject;
+              const dw = 28;
+              const dh = Math.min(roomInnerH - 14, Math.round(dw * (reg.h / reg.w)));
+              const bx = Math.round(btx * TILE_SIZE - camX);
+              const by = Math.round(bty * TILE_SIZE - camY);
+              this.pushCustomRegion(commonAtlas, reg, bx, by, dw, dh, 1, 1, 1, 1, 1, 0, 0, -0.88);
+            }
+          }
+        }
+
+        // Deterministic interior wallJunk props mounted cleanly against backWalls
+        if (wallJunkList.length > 0 && rm.tw >= 10) {
+          const slots = rm.tw >= 16 ? 3 : 2;
+          for (let s = 0; s < slots; s++) {
+            const wtx = rm.tx + 3 + Math.floor(((rm.tw - 6) * (s + 0.5)) / slots);
+            const wty = floorTy - 2 - (tileHash(wtx, rm.id + s) & 1);
+            if (wtx < 1 || wty < 1 || wtx >= grid.width - 1 || wty >= grid.height - 1) continue;
+            const idx = wty * grid.width + wtx;
+            if (grid.bgTiles[idx] === 0 || grid.tiles[idx] !== TileKind.EMPTY) continue;
+            const h = tileHash(wtx * 3 + s, wty);
+            const reg = wallJunkList[h % wallJunkList.length];
+            const scale = reg.w > 48 || reg.h > 48 ? 0.72 : 0.85;
+            const dw = Math.round(reg.w * scale);
+            const dh = Math.round(reg.h * scale);
+            const wx = Math.round(wtx * TILE_SIZE + 12 - dw * 0.5 - camX);
+            const wy = Math.round(wty * TILE_SIZE + 12 - dh * 0.5 - camY);
+            const flip = (h & 1) === 0 ? 1 : -1;
+            this.pushCustomRegion(biomeAtlas, reg, wx, wy, dw, dh, 1, 1, 1, 1, flip, 0, 0, -0.9);
+          }
+        }
+      }
+    } else {
+      // Built-In Mode: lush gothic room dressings (banners, hanging cages, ornate pillars, lanterns, floor crates/barrels/skulls!)
+      const regBanner = resolveSpriteRegion(this.atlas.regions, `prop:banner_${animFrame2}`);
+      const regCage = resolveSpriteRegion(this.atlas.regions, 'prop:cage');
+      const hasPillar = Boolean(this.atlas.regions['prop:pillar_ornate']);
+      const hasLantern = Boolean(this.atlas.regions[`prop:lantern_${flameFrame3}`]);
+      const hasChainHook = Boolean(this.atlas.regions['prop:chain_hook']);
+      const hasCrate = Boolean(this.atlas.regions['prop:crate']);
+      const hasBarrel = Boolean(this.atlas.regions['prop:barrel']);
+      const hasSkullPile = Boolean(this.atlas.regions['prop:skull_pile']);
+
+      for (let i = 0; i < state.rooms.length; i++) {
+        const rm = state.rooms[i];
+        const rx0 = rm.tx * TILE_SIZE - camX;
+        const rx1 = (rm.tx + rm.tw) * TILE_SIZE - camX;
+        const ry0 = rm.ty * TILE_SIZE - camY;
+        const ry1 = (rm.ty + rm.th) * TILE_SIZE - camY;
+        if (rx1 < -48 || rx0 > VIEWPORT_W + 48 || ry1 < -48 || ry0 > VIEWPORT_H + 48) continue;
+
+        const floorTy = rm.type === 'passage' ? rm.ty + rm.th - 2 : rm.ty + rm.th - 1;
+        const floorScreenY = Math.round(floorTy * TILE_SIZE - camY);
+
+        if (rm.tw >= 8) {
+          const bx = Math.round((rm.tx + Math.floor(rm.tw * 0.35)) * TILE_SIZE - camX);
+          const by = Math.round((rm.ty + 1) * TILE_SIZE - camY);
+          this.pushQuad(regBanner, bx, by, regBanner.w, regBanner.h, 1, 1, 1, 1, 1, 0, 0, -0.9);
+        }
+        if (rm.tw >= 12 && (rm.id & 1) === 0) {
+          const cx = Math.round((rm.tx + Math.floor(rm.tw * 0.68)) * TILE_SIZE - camX);
+          const cy = Math.round((rm.ty + 1) * TILE_SIZE - camY);
+          this.pushQuad(regCage, cx, cy, regCage.w, regCage.h, 1, 1, 1, 1, 1, 0, 0, -0.85);
+        }
+
+        // Ornate architectural pillars framing room interiors
+        if (hasPillar && rm.tw >= 12) {
+          const pLeftX = Math.round((rm.tx + 2) * TILE_SIZE + 12 - camX);
+          const pRightX = Math.round((rm.tx + rm.tw - 3) * TILE_SIZE + 12 - camX);
+          this.drawSpriteKey('prop:pillar_ornate', pLeftX, floorScreenY, 1, 1, 1, 1, 1, 0, 0, -0.88);
+          this.drawSpriteKey('prop:pillar_ornate', pRightX, floorScreenY, 1, 1, 1, 1, -1, 0, 0, -0.88);
+        }
+
+        // Hanging gothic lanterns or ceiling chains
+        if (rm.tw >= 10) {
+          const ltx = rm.tx + Math.floor(rm.tw * 0.52);
+          const lx = Math.round(ltx * TILE_SIZE + 12 - camX);
+          const ly = Math.round((rm.ty + 1) * TILE_SIZE - camY);
+          if (hasLantern) {
+            this.drawSpriteKey(
+              `prop:lantern_${flameFrame3}`,
+              lx,
+              ly + 16,
+              1,
+              1,
+              1,
+              1,
+              1,
+              0,
+              0.28,
+              0.9
+            );
+          } else if (hasChainHook) {
+            this.drawSpriteKey('prop:chain_hook', lx, ly + 18, 1, 1, 1, 1, 1, 0, 0, -0.85);
+          } else if ((rm.id % 3) === 1 && rm.th >= 8) {
+            this.pushQuad(regChain, lx - 12, ly, TILE_SIZE, TILE_SIZE, 0.82, 0.84, 0.9, 1, 1, 0, 0, -0.8);
+          }
+        }
+
+        // Grounded floor clutter (crates, barrels, skull piles) standing cleanly on solid floor
+        if (rm.tw >= 10 && rm.type !== 'bossArena' && rm.type !== 'passage') {
+          const propSlots = rm.tw >= 16 ? 2 : 1;
+          for (let s = 0; s < propSlots; s++) {
+            const ptx = rm.tx + (s === 0 ? 3 : rm.tw - 4);
+            if (ptx < 1 || ptx >= grid.width - 1 || floorTy < 2 || floorTy >= grid.height) continue;
+            const belowKind = grid.tiles[floorTy * grid.width + ptx];
+            const aboveKind = grid.tiles[(floorTy - 1) * grid.width + ptx];
+            if (belowKind !== TileKind.SOLID || aboveKind !== TileKind.EMPTY) continue;
+            const h = tileHash(ptx, floorTy + rm.id);
+            const px = Math.round(ptx * TILE_SIZE + 12 - camX);
+            let propKey: string | null = null;
+            const pick = h % 3;
+            if (pick === 0 && hasCrate) propKey = 'prop:crate';
+            else if (pick === 1 && hasBarrel) propKey = 'prop:barrel';
+            else if (pick === 2 && hasSkullPile) propKey = 'prop:skull_pile';
+            else if (hasCrate) propKey = 'prop:crate';
+            else if (hasBarrel) propKey = 'prop:barrel';
+            else if (hasSkullPile) propKey = 'prop:skull_pile';
+            else if (h % 5 === 0) propKey = 'prop:skeleton';
+            if (propKey) {
+              this.drawSpriteKey(
+                propKey,
+                px,
+                floorScreenY,
+                1,
+                1,
+                1,
+                1,
+                (h & 1) === 0 ? 1 : -1,
+                0,
+                0,
+                0.92
+              );
+            }
+          }
+        }
       }
     }
 
@@ -1230,13 +1904,74 @@ export class WebGL2Renderer implements RendererAPI {
       const sy = l.y - camY;
       if (sx < -32 || sx > VIEWPORT_W + 32 || sy < -40 || sy > VIEWPORT_H + 40) continue;
       if (l.kind === 'brazier') {
-        this.drawSpriteKey(`prop:brazier_${flameFrame3}`, sx, sy + 18, 1, 1, 1, 1, 1, 0, 0.10, 1.0);
+        if (commonAtlas && cCache?.brasero) {
+          const reg = cCache.brasero;
+          const dw = Math.round(reg.w * 0.88);
+          const dh = Math.round(reg.h * 0.88);
+          this.pushCustomRegion(
+            commonAtlas,
+            reg,
+            Math.round(sx - dw * 0.5),
+            Math.round(sy + 18 - dh),
+            dw,
+            dh,
+            1,
+            1,
+            1,
+            1,
+            1,
+            0,
+            0.12,
+            1.0
+          );
+        } else {
+          this.drawSpriteKey(`prop:brazier_${flameFrame3}`, sx, sy + 18, 1, 1, 1, 1, 1, 0, 0.10, 1.0);
+        }
       } else if (l.kind === 'torch') {
-        this.drawSpriteKey(`prop:torch_${flameFrame3}`, sx, sy + 8, 1, 1, 1, 1, 1, 0, 0.10, 1.0);
+        if (commonAtlas && cCache?.torch) {
+          const reg = cCache.torch;
+          this.pushCustomRegion(
+            commonAtlas,
+            reg,
+            Math.round(sx - reg.w * 0.5),
+            Math.round(sy + 10 - reg.h),
+            reg.w,
+            reg.h,
+            1,
+            1,
+            1,
+            1,
+            1,
+            0,
+            0.12,
+            1.0
+          );
+        } else {
+          this.drawSpriteKey(`prop:torch_${flameFrame3}`, sx, sy + 8, 1, 1, 1, 1, 1, 0, 0.10, 1.0);
+        }
       }
     }
 
-    // 4. Foreground Auto-Tiled Solid Masonry, One-Way Ledges, Ladders, Chains, Spikes, Acid, Water
+    // 4. Foreground Auto-Tiled Solid Masonry, Ground/Ceiling Caps, FloorJunk, One-Ways, Ladders, Chains, Hazards
+    const useCustomSolid = Boolean(biomeAtlas && bCache && bCache.floorStamps.length > 0);
+    const hasCustomGround = Boolean(biomeAtlas && bCache && bCache.groundCaps.length > 0);
+    const hasCustomCeiling = Boolean(biomeAtlas && bCache && bCache.ceilingCaps.length > 0);
+    const hasCustomFloorJunk =
+      state.activeBiomeId !== 'Passage' &&
+      Boolean(biomeAtlas && bCache && bCache.floorJunk.length > 0);
+    const hasCustomOneWay = Boolean(biomeAtlas && bCache && bCache.oneWays.length > 0);
+    const hasCustomChain = Boolean(biomeAtlas && bCache && bCache.chains.length > 0);
+    const hasCustomLadder = Boolean(commonAtlas && cCache?.ladder);
+    const hasBuiltinMossCap =
+      !useCustomSolid &&
+      Boolean(this.atlas.regions['prop:moss_cap']) &&
+      (state.activeBiomeId === 'PrisonStart' ||
+        state.activeBiomeId === 'PrisonCourtyard' ||
+        state.activeBiomeId === 'Sewer' ||
+        state.activeBiomeId === 'StiltVillage' ||
+        state.activeBiomeId === 'PrisonRoof');
+    const regBuiltinMossCap = hasBuiltinMossCap ? this.atlas.regions['prop:moss_cap'] : null;
+
     for (let ty = minTy; ty <= maxTy; ty++) {
       const sy = Math.round(ty * TILE_SIZE - camY);
       const rowOff = ty * grid.width;
@@ -1255,30 +1990,300 @@ export class WebGL2Renderer implements RendererAPI {
           const sBelow = isSolid(tx, ty + 1);
           const sLeft = isSolid(tx - 1, ty);
           const sRight = isSolid(tx + 1, ty);
+          const h = tileHash(tx, ty);
 
-          let reg = regSolidDeep;
-          if (!sAbove) {
-            reg = regSolidTop;
-          } else if (!sBelow || !sLeft || !sRight) {
-            reg = (tileHash(tx, ty) % 4 === 0) ? regSolidVar : regSolidMid;
+          if (useCustomSolid) {
+            const fsList = bCache!.floorStamps;
+            const stamp = fsList[h % fsList.length];
+            if (sAbove && sBelow && sLeft && sRight) {
+              // Deep dark silhouette bedrock inside buried interiors (stays in same GPU batch!)
+              this.pushCustomRegion(
+                biomeAtlas!,
+                stamp,
+                sx,
+                sy,
+                TILE_SIZE,
+                TILE_SIZE,
+                0.18,
+                0.20,
+                0.27,
+                1,
+                1,
+                0,
+                0,
+                0.35
+              );
+            } else {
+              // Exposed solid terrain: real Dead Cells floorStamp + real *_n.png normal map!
+              this.pushCustomRegion(
+                biomeAtlas!,
+                stamp,
+                sx,
+                sy,
+                TILE_SIZE,
+                TILE_SIZE,
+                1,
+                1,
+                1,
+                1,
+                1,
+                0,
+                0,
+                1.0
+              );
+              if (!sAbove && hasCustomGround) {
+                const gcList = bCache!.groundCaps;
+                const cap = gcList[h % gcList.length];
+                this.pushCustomRegion(
+                  biomeAtlas!,
+                  cap,
+                  sx,
+                  sy,
+                  TILE_SIZE,
+                  Math.min(6, cap.h),
+                  1,
+                  1,
+                  1,
+                  1,
+                  1,
+                  0,
+                  0,
+                  1.0
+                );
+              }
+              if (!sBelow && hasCustomCeiling) {
+                const ccList = bCache!.ceilingCaps;
+                const cap = ccList[h % ccList.length];
+                const ch = Math.min(6, cap.h);
+                this.pushCustomRegion(
+                  biomeAtlas!,
+                  cap,
+                  sx,
+                  sy + TILE_SIZE - ch,
+                  TILE_SIZE,
+                  ch,
+                  1,
+                  1,
+                  1,
+                  1,
+                  1,
+                  0,
+                  0,
+                  1.0
+                );
+              }
+              // Deterministic Dead Cells floorJunk props (skulls, rubble, crates, mushrooms) standing cleanly on exposed floors!
+              if (
+                !sAbove &&
+                hasCustomFloorJunk &&
+                ty > 0 &&
+                grid.tiles[(ty - 1) * grid.width + tx] === TileKind.EMPTY &&
+                (tx & 1) === 0 &&
+                h % 7 === 0
+              ) {
+                const fjList = bCache!.floorJunk;
+                const junk = fjList[(h >>> 4) % fjList.length];
+                const scale = junk.w > 42 || junk.h > 42 ? 0.65 : 0.78;
+                const jw = Math.round(junk.w * scale);
+                const jh = Math.min(40, Math.round(junk.h * scale));
+                const jx = Math.round(sx + TILE_SIZE * 0.5 - jw * 0.5);
+                const jy = sy - jh;
+                this.pushCustomRegion(
+                  biomeAtlas!,
+                  junk,
+                  jx,
+                  jy,
+                  jw,
+                  jh,
+                  1,
+                  1,
+                  1,
+                  1,
+                  (h & 2) === 0 ? 1 : -1,
+                  0,
+                  0,
+                  0.92
+                );
+              }
+            }
           } else {
-            reg = regSolidDeep;
+            let reg = regSolidDeep;
+            if (!sAbove) {
+              reg = regSolidTop;
+            } else if (!sBelow || !sLeft || !sRight) {
+              reg = h % 4 === 0 ? regSolidVar : regSolidMid;
+            } else {
+              reg = regSolidDeep;
+            }
+            this.pushQuad(reg, sx, sy, TILE_SIZE, TILE_SIZE, 1, 1, 1, 1, 1, 0, 0, 1.0);
+            if (regBuiltinMossCap && !sAbove && h % 3 === 0) {
+              this.pushQuad(
+                regBuiltinMossCap,
+                sx,
+                sy,
+                TILE_SIZE,
+                Math.min(10, regBuiltinMossCap.h),
+                1,
+                1,
+                1,
+                1,
+                (h & 1) === 0 ? 1 : -1,
+                0,
+                0,
+                1.0
+              );
+            } else if (regBuiltinMossCap && !sBelow && h % 5 === 0) {
+              const mh = Math.min(8, regBuiltinMossCap.h);
+              this.pushQuad(
+                regBuiltinMossCap,
+                sx,
+                sy + TILE_SIZE - mh,
+                TILE_SIZE,
+                mh,
+                0.85,
+                0.92,
+                0.88,
+                1,
+                (h & 1) === 0 ? 1 : -1,
+                0,
+                0,
+                0.85
+              );
+            }
           }
-          this.pushQuad(reg, sx, sy, TILE_SIZE, TILE_SIZE, 1, 1, 1, 1, 1, 0, 0, 1.0);
         } else if (tile === TileKind.ONE_WAY) {
-          this.pushQuad(regOneWay, sx, sy, TILE_SIZE, TILE_SIZE, 1, 1, 1, 1, 1, 0, 0, 1.0);
+          if (hasCustomOneWay) {
+            const ow = bCache!.oneWays[0];
+            if (ow.w > 48) {
+              const seg = tx % 6;
+              this.pushCustomRegionSliceX(
+                biomeAtlas!,
+                ow,
+                seg / 6,
+                (seg + 1) / 6,
+                sx,
+                sy,
+                TILE_SIZE,
+                14,
+                1.0
+              );
+            } else {
+              this.pushCustomRegion(
+                biomeAtlas!,
+                ow,
+                sx,
+                sy,
+                TILE_SIZE,
+                Math.min(24, ow.h),
+                1,
+                1,
+                1,
+                1,
+                1,
+                0,
+                0,
+                1.0
+              );
+            }
+          } else {
+            this.pushQuad(regOneWay, sx, sy, TILE_SIZE, TILE_SIZE, 1, 1, 1, 1, 1, 0, 0, 1.0);
+          }
         } else if (tile === TileKind.LADDER) {
-          this.pushQuad(regLadder, sx, sy, TILE_SIZE, TILE_SIZE, 1, 1, 1, 1, 1, 0, 0, 0.9);
+          if (hasCustomLadder) {
+            const ld = cCache!.ladder!;
+            const lw = Math.min(TILE_SIZE, ld.w);
+            this.pushCustomRegion(
+              commonAtlas!,
+              ld,
+              Math.round(sx + (TILE_SIZE - lw) * 0.5),
+              sy,
+              lw,
+              TILE_SIZE,
+              1,
+              1,
+              1,
+              1,
+              1,
+              0,
+              0,
+              0.9
+            );
+          } else {
+            this.pushQuad(regLadder, sx, sy, TILE_SIZE, TILE_SIZE, 1, 1, 1, 1, 1, 0, 0, 0.9);
+          }
         } else if (tile === TileKind.CHAIN) {
-          this.pushQuad(regChain, sx, sy, TILE_SIZE, TILE_SIZE, 1, 1, 1, 1, 1, 0, 0, 0.9);
+          if (hasCustomChain) {
+            const ch = bCache!.chains[0];
+            const cw = Math.min(TILE_SIZE, ch.w);
+            this.pushCustomRegion(
+              biomeAtlas!,
+              ch,
+              Math.round(sx + (TILE_SIZE - cw) * 0.5),
+              sy,
+              cw,
+              TILE_SIZE,
+              1,
+              1,
+              1,
+              1,
+              1,
+              0,
+              0,
+              0.9
+            );
+          } else {
+            this.pushQuad(regChain, sx, sy, TILE_SIZE, TILE_SIZE, 1, 1, 1, 1, 1, 0, 0, 0.9);
+          }
         } else if (tile === TileKind.SPIKES) {
           this.pushQuad(regSpikes, sx, sy, TILE_SIZE, TILE_SIZE, 1, 1, 1, 1, 1, 0, 0, 1.0);
         } else if (tile === TileKind.CRACKED_FLOOR) {
-          this.pushQuad(regCracked, sx, sy, TILE_SIZE, TILE_SIZE, 1, 1, 1, 1, 1, 0, 0.1, 1.0);
+          if (useCustomSolid) {
+            const stamp = bCache!.floorStamps[tileHash(tx, ty) % bCache!.floorStamps.length];
+            this.pushCustomRegion(
+              biomeAtlas!,
+              stamp,
+              sx,
+              sy,
+              TILE_SIZE,
+              TILE_SIZE,
+              0.88,
+              0.94,
+              1.1,
+              1,
+              1,
+              0.08,
+              0.16,
+              1.0
+            );
+          } else {
+            this.pushQuad(regCracked, sx, sy, TILE_SIZE, TILE_SIZE, 1, 1, 1, 1, 1, 0, 0.1, 1.0);
+          }
         } else if (tile === TileKind.SECRET_WALL) {
-          this.pushQuad(regSecret, sx, sy, TILE_SIZE, TILE_SIZE, 1, 1, 1, 1, 1, 0, 0.08, 1.0);
+          if (useCustomSolid) {
+            const stamp = bCache!.floorStamps[tileHash(tx, ty) % bCache!.floorStamps.length];
+            this.pushCustomRegion(
+              biomeAtlas!,
+              stamp,
+              sx,
+              sy,
+              TILE_SIZE,
+              TILE_SIZE,
+              0.94,
+              0.96,
+              1.08,
+              1,
+              1,
+              0.05,
+              0.12,
+              1.0
+            );
+          } else {
+            this.pushQuad(regSecret, sx, sy, TILE_SIZE, TILE_SIZE, 1, 1, 1, 1, 1, 0, 0.08, 1.0);
+          }
         } else if (tile === TileKind.EXIT_GATE) {
-          this.pushQuad(regExitGate, sx, sy, TILE_SIZE, TILE_SIZE, 1, 1, 1, 1, 1, 0, 0.1, 0.9);
+          if (!useCustomBg) {
+            this.pushQuad(regExitGate, sx, sy, TILE_SIZE, TILE_SIZE, 1, 1, 1, 1, 1, 0, 0.1, 0.9);
+          }
         } else if (tile === TileKind.ACID) {
           this.pushQuad(regAcid, sx, sy, TILE_SIZE, TILE_SIZE, 1, 1, 1, 1, 1, 0, 0.45, 0.6);
         } else if (tile === TileKind.WATER) {
@@ -1302,12 +2307,146 @@ export class WebGL2Renderer implements RendererAPI {
     }
 
     // 5. Doors, Teleporters, Chests, Shrines & Passage NPCs (all grounded cleanly to floor!)
+    const isPassage = state.activeBiomeId === 'Passage';
     for (let i = 0; i < state.doors.length; i++) {
       const d = state.doors[i];
       if (d.broken) continue;
       const sx = d.pos.x - camX;
-      const sy = d.pos.y + d.height * 0.5 - camY;
-      if (sx < -48 || sx > VIEWPORT_W + 48 || sy < -72 || sy > VIEWPORT_H + 72) continue;
+      // Passage doors store pos.y directly on floorY; regular biome doors store center pos.y
+      const sy = (isPassage ? d.pos.y : d.pos.y + d.height * 0.5) - camY;
+      if (sx < -96 || sx > VIEWPORT_W + 96 || sy < -96 || sy > VIEWPORT_H + 96) continue;
+
+      if (useCustomWorld) {
+        if ((d.kind === 'biomeExit' || d.kind === 'bossGate') && biomeAtlas && bCache && bCache.exitDoors.length > 0) {
+          const reg = bCache.exitDoors[0];
+          const targetW = d.kind === 'bossGate' ? 84 : 90;
+          const targetH = Math.min(92, Math.round(targetW * (reg.h / Math.max(1, reg.w))));
+          this.pushCustomRegion(
+            biomeAtlas,
+            reg,
+            Math.round(sx - targetW * 0.5),
+            Math.round(sy - targetH),
+            targetW,
+            targetH,
+            1,
+            1,
+            1,
+            1,
+            1,
+            0,
+            d.kind === 'biomeExit' ? 0.12 : 0.04,
+            1.0
+          );
+          continue;
+        } else if (d.kind === 'bossGate' && commonAtlas && cCache?.prisonBossDoor) {
+          const reg = cCache.prisonBossDoor;
+          const dw = 54;
+          const dh = Math.round(dw * (reg.h / Math.max(1, reg.w)));
+          this.pushCustomRegion(
+            commonAtlas,
+            reg,
+            Math.round(sx - dw * 0.5),
+            Math.round(sy - dh),
+            dw,
+            dh,
+            1,
+            1,
+            1,
+            1,
+            1,
+            0,
+            0.06,
+            1.0
+          );
+          continue;
+        } else if (d.kind === 'timed' && commonAtlas && (cCache?.goldDoor || cCache?.timeDoor)) {
+          const reg = cCache.goldDoor ?? cCache.timeDoor!;
+          const dw = 46;
+          const dh = Math.round(dw * (reg.h / Math.max(1, reg.w)));
+          this.pushCustomRegion(
+            commonAtlas,
+            reg,
+            Math.round(sx - dw * 0.5),
+            Math.round(sy - dh),
+            dw,
+            dh,
+            1,
+            1,
+            1,
+            1,
+            1,
+            0,
+            d.opened ? 0.12 : 0.02,
+            1.0
+          );
+          continue;
+        } else if (d.kind === 'killStreak' && commonAtlas && (cCache?.collectorDoor || cCache?.goldDoor)) {
+          const reg = cCache.collectorDoor ?? cCache.goldDoor!;
+          const dw = 46;
+          const dh = Math.round(dw * (reg.h / Math.max(1, reg.w)));
+          this.pushCustomRegion(
+            commonAtlas,
+            reg,
+            Math.round(sx - dw * 0.5),
+            Math.round(sy - dh),
+            dw,
+            dh,
+            1,
+            1,
+            1,
+            1,
+            1,
+            0,
+            d.opened ? 0.12 : 0.02,
+            1.0
+          );
+          continue;
+        } else if (d.kind === 'wood' && commonAtlas && cCache?.woodDoorMeta) {
+          if (d.opened && cCache.normalDoorSide) {
+            const reg = cCache.normalDoorSide;
+            const dw = 6;
+            const dh = 48;
+            this.pushCustomRegion(
+              commonAtlas,
+              reg,
+              Math.round(sx - dw * 0.5),
+              Math.round(sy - dh),
+              dw,
+              dh,
+              0.85,
+              0.85,
+              0.9,
+              1,
+              1,
+              0,
+              0,
+              0.9
+            );
+          } else {
+            const reg = cCache.woodDoorMeta;
+            const dw = 50;
+            const dh = Math.round(dw * (reg.h / Math.max(1, reg.w)));
+            this.pushCustomRegion(
+              commonAtlas,
+              reg,
+              Math.round(sx - dw * 0.5),
+              Math.round(sy - dh),
+              dw,
+              dh,
+              d.opened ? 0.65 : 1,
+              d.opened ? 0.65 : 1,
+              d.opened ? 0.72 : 1,
+              1,
+              1,
+              0,
+              0,
+              1.0
+            );
+          }
+          continue;
+        }
+      }
+
       let key = 'prop:door_wood';
       if (d.kind === 'biomeExit') key = 'prop:door_exit';
       else if (d.kind === 'bossGate') key = 'prop:door_boss';
@@ -1320,7 +2459,29 @@ export class WebGL2Renderer implements RendererAPI {
       const tp = state.teleporters[i];
       const sx = tp.pos.x - camX;
       const sy = tp.pos.y + 12 - camY;
-      if (sx < -40 || sx > VIEWPORT_W + 40 || sy < -64 || sy > VIEWPORT_H + 64) continue;
+      if (sx < -64 || sx > VIEWPORT_W + 64 || sy < -64 || sy > VIEWPORT_H + 64) continue;
+      if (commonAtlas && cCache?.teleportAltar) {
+        const reg = cCache.teleportAltar;
+        const dw = 58;
+        const dh = Math.round(dw * (reg.h / Math.max(1, reg.w)));
+        this.pushCustomRegion(
+          commonAtlas,
+          reg,
+          Math.round(sx - dw * 0.5),
+          Math.round(sy - dh),
+          dw,
+          dh,
+          tp.activated ? 0.88 : 0.78,
+          tp.activated ? 1.05 : 0.82,
+          tp.activated ? 1.15 : 0.92,
+          1,
+          1,
+          0,
+          tp.activated ? 0.18 : 0.05,
+          1.0
+        );
+        continue;
+      }
       this.drawSpriteKey(
         tp.activated ? 'prop:teleporter_active' : 'prop:teleporter_idle',
         sx,
@@ -1340,7 +2501,38 @@ export class WebGL2Renderer implements RendererAPI {
       const ch = state.chests[i];
       const sx = ch.pos.x - camX;
       const sy = ch.pos.y + 12 - camY;
-      if (sx < -40 || sx > VIEWPORT_W + 40 || sy < -40 || sy > VIEWPORT_H + 40) continue;
+      if (sx < -48 || sx > VIEWPORT_W + 48 || sy < -48 || sy > VIEWPORT_H + 48) continue;
+      if (commonAtlas && cCache) {
+        const isSpecial = ch.kind === 'cursed' || ch.kind === 'boss';
+        const reg = isSpecial
+          ? ch.opened
+            ? cCache.chestTwOpen
+            : cCache.chestTwClosed
+          : ch.opened
+          ? cCache.chestBasicOpen
+          : cCache.chestBasicClosed;
+        if (reg) {
+          const targetW = ch.opened ? 48 : 44;
+          const targetH = Math.round(targetW * (reg.h / Math.max(1, reg.w)));
+          this.pushCustomRegion(
+            commonAtlas,
+            reg,
+            Math.round(sx - targetW * 0.5),
+            Math.round(sy - targetH),
+            targetW,
+            targetH,
+            ch.kind === 'cursed' ? 1.05 : 1,
+            ch.kind === 'cursed' ? 0.85 : 1,
+            ch.kind === 'cursed' ? 1.15 : 1,
+            1,
+            1,
+            0,
+            ch.kind === 'cursed' && !ch.opened ? 0.14 : 0.02,
+            1.0
+          );
+          continue;
+        }
+      }
       const key =
         ch.kind === 'cursed'
           ? ch.opened
@@ -1523,33 +2715,18 @@ export class WebGL2Renderer implements RendererAPI {
     }
 
     // Owned Custom Pack enemy atlases (with seamless per-key fallback to Built-In Krunked Art!)
-    const ENEMY_CUSTOM_ATLAS: Record<string, string> = {
-      Zombie: 'zombie',
-      Runner: 'zombie',
-      Archer: 'deadArcher',
-      Grenader: 'grenadier',
-      Shield: 'zombieShield',
-      Mage360: 'mago360',
-      Protector: 'mago360',
-      Comboter: 'comboter',
-      Ninja: 'ninja',
-      LeapingDuelyst: 'leapingDuelyst',
-      ClusterGrenader: 'grenadierCluster',
-      PirateChief: 'pirate',
-      Lancer: 'lancer',
-      Worm: 'zombieWorm',
-      BatKamikaze: 'zombieFly',
-      BatDasher: 'zombieFly',
-    };
     const cAtlas = ENEMY_CUSTOM_ATLAS[en.defId];
     if (cAtlas) {
       const isAtk = en.state === 'attack' || en.state === 'windup';
       const isMoving = Math.abs(en.vel.x) > 8;
-      const anims = isAtk
-        ? ['atkA', 'atk', 'shoot', 'cast', 'bash', 'idle']
-        : isMoving
-        ? ['run', 'walk', 'idle']
-        : ['idle', 'walk', 'run'];
+      const anims =
+        cAtlas === 'knight'
+          ? ['npcKnightTrainingRoom', 'npcKnightIdle']
+          : isAtk
+          ? ['atkA', 'atk', 'shoot', 'cast', 'bash', 'idle']
+          : isMoving
+          ? ['run', 'walk', 'idle']
+          : ['idle', 'walk', 'run'];
       if (
         this.tryDrawCustomPackSprite(
           cAtlas,
@@ -1695,8 +2872,58 @@ export class WebGL2Renderer implements RendererAPI {
     heroX: number,
     heroY: number
   ): void {
-    // 1. Roll Ghost Afterimage / Parry Shield Glow
+    // 0. Animated Emissive Flames atop Custom Pack Braziers & Wall Torches!
+    const useCustomWorld =
+      this.settings.artPackMode === 'custom' && this.customPackStatus.available;
+    const commonAtlas = useCustomWorld ? this.customGpuAtlases.get('common') ?? null : null;
+    if (commonAtlas && (commonAtlas.cache.brasero || commonAtlas.cache.torch)) {
+      for (let i = 0; i < state.lights.length; i++) {
+        const l = state.lights[i];
+        if (l.kind !== 'brazier' && l.kind !== 'torch') continue;
+        const sx = l.x - camX;
+        const sy = l.y - camY;
+        if (sx < -32 || sx > VIEWPORT_W + 32 || sy < -40 || sy > VIEWPORT_H + 40) continue;
+        const flick = 0.84 + 0.16 * Math.sin(elapsedSec * 17.0 + l.id * 2.3);
+        const sway = Math.sin(elapsedSec * 11.5 + l.id * 1.7) * 1.3;
+        const fy = l.kind === 'brazier' ? sy - 12 : sy - 10;
+        const baseSz = l.kind === 'brazier' ? 14 : 9;
+        // Warm outer fire halo
+        this.emitVfxQuadBound(
+          'vfx:ember',
+          sx + sway * 0.6,
+          fy,
+          baseSz * 1.35 * flick,
+          baseSz * 1.65 * flick,
+          l.color[0] * 0.5 + 0.5,
+          l.color[1] * 0.5 + 0.25,
+          l.color[2] * 0.4 + 0.08,
+          0.72,
+          1,
+          0.1,
+          1.35
+        );
+        // Bright dancing flame core
+        this.emitVfxQuadBound(
+          'vfx:spark',
+          sx + sway,
+          fy - 2,
+          baseSz * 0.85 * flick,
+          baseSz * 1.15 * flick,
+          1.0,
+          0.92,
+          0.48,
+          0.92,
+          1,
+          0.45,
+          1.45
+        );
+      }
+    }
+
+    // 1. Roll Ghost Afterimage, Parry Golden Glow, Shield Block Arc, CorruptedPower Aura & Shield Dome
     const p = state.player;
+    const hsx = heroX - camX;
+    const hsy = heroY - camY;
     if (p.actionState === 'roll' || p.speedBuffTicks > 0) {
       const ghostX = heroX - p.vel.x * 0.035 - camX;
       const ghostY = heroY - p.vel.y * 0.02 - camY;
@@ -1714,20 +2941,136 @@ export class WebGL2Renderer implements RendererAPI {
         1.0
       );
     }
+
+    // Active status visual overlays: CorruptedPower pulsing crimson-violet aura & Shield emerald-cyan dome
+    for (let s = 0; s < p.statusEffects.length; s++) {
+      const sk = p.statusEffects[s].kind;
+      if (sk === 'corrupted') {
+        const pulse = 1.0 + Math.sin(elapsedSec * 16.0) * 0.09;
+        this.emitVfxQuadBound(
+          'vfx:aura_ring',
+          hsx,
+          hsy - 16,
+          50 * pulse,
+          50 * pulse,
+          0.86,
+          0.22,
+          1.0,
+          0.76,
+          1,
+          0.15,
+          1.4,
+          elapsedSec * 4.4
+        );
+        this.emitVfxQuadBound(
+          'vfx:aura_ring',
+          hsx,
+          hsy - 16,
+          36 * (2.0 - pulse),
+          36 * (2.0 - pulse),
+          1.0,
+          0.24,
+          0.38,
+          0.62,
+          1,
+          0.1,
+          1.3,
+          -elapsedSec * 6.2
+        );
+      } else if (sk === 'shield') {
+        const pulse = 1.0 + Math.sin(elapsedSec * 10.0) * 0.05;
+        this.emitVfxQuadBound(
+          'vfx:shield_dome',
+          hsx,
+          hsy - 15,
+          42 * pulse,
+          44 * pulse,
+          0.24,
+          1.0,
+          0.76,
+          0.64,
+          1,
+          0.12,
+          1.22
+        );
+        this.emitVfxQuadBound(
+          'vfx:parry_ring',
+          hsx,
+          hsy - 15,
+          36 * pulse,
+          38 * pulse,
+          0.58,
+          1.0,
+          0.92,
+          0.42,
+          1,
+          0.2,
+          1.3
+        );
+      }
+    }
+
+    // Unmistakable bright-gold active parry window glow!
     if (p.parryWindowTicks > 0) {
+      const pop = 1.0 + Math.sin(elapsedSec * 36.0) * 0.08;
+      this.emitVfxQuadBound(
+        'vfx:parry_ring',
+        hsx + p.facing * 8,
+        hsy - 15,
+        40 * pop,
+        40 * pop,
+        1.0,
+        0.94,
+        0.40,
+        0.92,
+        1,
+        0.45,
+        1.5
+      );
       this.emitVfxQuadBound(
         'vfx:shield_dome',
-        heroX + p.facing * 8 - camX,
-        heroY - 15 - camY,
-        28,
-        34,
+        hsx + p.facing * 10,
+        hsy - 15,
+        28 * pop,
+        36 * pop,
         1.0,
-        0.9,
-        0.4,
-        0.55,
-        1,
-        0.2,
-        1.1
+        0.92,
+        0.38,
+        0.86,
+        p.facing,
+        0.35,
+        1.45
+      );
+    } else if (p.shieldBlocking) {
+      // Crisp raised blue-gold directional guard arc in front of the Prisoner!
+      const pulse = 1.0 + Math.sin(elapsedSec * 14.0) * 0.04;
+      this.emitVfxQuadBound(
+        'vfx:shield_dome',
+        hsx + p.facing * 12,
+        hsy - 15,
+        15 * pulse,
+        32 * pulse,
+        0.36,
+        0.82,
+        1.0,
+        0.78,
+        p.facing,
+        0.15,
+        1.25
+      );
+      this.emitVfxQuadBound(
+        'vfx:shield_dome',
+        hsx + p.facing * 14,
+        hsy - 15,
+        9 * pulse,
+        26 * pulse,
+        1.0,
+        0.88,
+        0.36,
+        0.82,
+        p.facing,
+        0.25,
+        1.35
       );
     }
 
@@ -1970,6 +3313,14 @@ export class WebGL2Renderer implements RendererAPI {
   render(state: SimState, interpAlpha: number, elapsedSec: number): void {
     const a = interpAlpha < 0 ? 0 : interpAlpha > 1 ? 1 : interpAlpha;
     const theme = getBiomeVisualTheme(state.activeBiomeId);
+
+    // Lazy-prefetch Custom Pack biome atlas whenever active biome changes!
+    if (state.activeBiomeId !== this.lastActiveBiomeId) {
+      this.lastActiveBiomeId = state.activeBiomeId;
+      if (this.settings.artPackMode === 'custom' && this.customPackStatus.available) {
+        this.getBiomeCustomAtlas(state.activeBiomeId);
+      }
+    }
 
     const shakeScale = this.settings.screenShakeScale;
     const camX =

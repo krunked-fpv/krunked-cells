@@ -41,8 +41,10 @@ uniform vec3 u_fogColor;
 uniform vec3 u_celShadow;
 uniform vec3 u_accentColor;
 uniform int u_themeId;
-uniform float u_hasScrollerTex;
-uniform sampler2D u_scrollerTex;
+uniform float u_hasFarTex;
+uniform sampler2D u_scrollerFarTex;
+uniform float u_hasMidTex;
+uniform sampler2D u_scrollerMidTex;
 
 out vec4 o_color;
 
@@ -88,6 +90,47 @@ float gearMask(vec2 p, vec2 center, float radius, float teeth, float speed) {
   return body;
 }
 
+// Pixel-crisp Dead Cells Custom Pack scroller sampler (handles 128x128 seamless
+// tiles, 256x128 wide arch banners, and 512x512 landscape panoramas cleanly!)
+vec4 sampleScrollerLayer(
+  sampler2D tex,
+  vec2 px,
+  float sy,
+  float speedX,
+  float speedY,
+  bool isMid
+) {
+  vec2 sz = max(vec2(1.0), vec2(textureSize(tex, 0)));
+  float py = u_resolution.y - 1.0 - px.y;
+  float u;
+  float v;
+  if (sz.y <= 160.0 && abs(sz.x - sz.y) < 4.0) {
+    // 128x128 seamless 2D dungeon wallpaper (e.g. prisonStartScrollerA.png)
+    u = fract((px.x + u_camera.x * speedX) / sz.x);
+    v = fract((py + u_camera.y * speedY) / sz.y);
+  } else if (sz.y <= 200.0) {
+    // 256x128 repeating gothic arch panoramas (archeSmallBg_0 / archeSmallFg_0)
+    float scale = isMid ? 1.72 : (u_resolution.y / sz.y);
+    float tileW = max(64.0, sz.x * scale);
+    float tileH = sz.y * scale;
+    u = fract((px.x + u_camera.x * speedX) / tileW);
+    if (isMid) {
+      float topOff = u_resolution.y - tileH;
+      if (py < topOff) return vec4(0.0);
+      v = clamp((py - topOff) / tileH, 0.002, 0.998);
+    } else {
+      v = clamp(sy, 0.002, 0.998);
+    }
+  } else {
+    // Tall 512x512 cliff / castle / skylight panoramas (scrollerBg_0 / scrollerLayer1_0)
+    u = fract((px.x + u_camera.x * speedX) / max(128.0, sz.x));
+    float span = min(sz.y, u_resolution.y * (isMid ? 1.35 : 1.55));
+    float yBase = (sz.y - span) * (isMid ? 0.60 : 0.46) + u_camera.y * speedY * 0.12;
+    v = clamp((yBase + sy * span) / sz.y, 0.002, 0.998);
+  }
+  return texture(tex, vec2(u, v));
+}
+
 void main() {
   // Snap to crisp logical 480x270 pixel grid (Y-down screen uv: sy=0 top, sy=1 bottom)
   vec2 px = floor(v_uv * u_resolution);
@@ -99,11 +142,36 @@ void main() {
     ? mix(u_skyTop, u_skyMid, smoothstep(0.0, 0.52, sy))
     : mix(u_skyMid, u_skyBottom, smoothstep(0.52, 1.0, sy));
 
-  // Optional Owned Custom Pack scroller texture blend
-  if (u_hasScrollerTex > 0.5) {
-    vec2 scUv = vec2(uv.x + u_camera.x * 0.00025, 1.0 - uv.y);
-    vec4 scTex = texture(u_scrollerTex, scUv);
-    col = mix(col, scTex.rgb * mix(u_skyMid, vec3(1.0), 0.45), scTex.a * 0.62);
+  // Owned Custom Pack Multi-Layer Dead Cells Parallax Scrollers (UNMISTAKABLE 0.88-0.94 blend!)
+  if (u_hasFarTex > 0.5) {
+    // Subtle sky moon glow behind transparent outdoor scroller sky edges
+    vec2 moonPos = vec2(0.76 - fract(u_camera.x * 0.000025) * 0.08, 0.20);
+    vec2 mDelta = (vec2(uv.x, sy) - moonPos) * vec2(u_resolution.x / u_resolution.y, 1.0);
+    float mDist = length(mDelta);
+    vec3 moonTint = mix(u_accentColor, vec3(1.0, 0.96, 0.88), 0.65);
+    col += moonTint * (exp(-mDist * 3.4) * 0.36);
+
+    vec3 atmosTint = mix(
+      vec3(1.0),
+      mix(u_skyMid * 1.45 + vec3(0.20), u_accentColor * 0.45 + vec3(0.68), 0.35),
+      0.22
+    );
+
+    vec4 farTex = sampleScrollerLayer(u_scrollerFarTex, px, sy, 0.07, 0.035, false);
+    col = mix(col, farTex.rgb * atmosTint, clamp(farTex.a * 0.92, 0.0, 0.94));
+
+    if (u_hasMidTex > 0.5) {
+      vec4 midTex = sampleScrollerLayer(u_scrollerMidTex, px, sy, 0.17, 0.06, true);
+      vec3 midTint = mix(vec3(1.0), atmosTint, 0.72);
+      col = mix(col, midTex.rgb * midTint, clamp(midTex.a * 0.90, 0.0, 0.92));
+    }
+
+    // Subtle atmospheric horizon depth mist so foreground gameplay silhouettes pop cleanly
+    float horizonMist = smoothstep(0.58, 1.0, sy);
+    col = mix(col, u_fogColor * 0.82, horizonMist * 0.28);
+
+    o_color = vec4(col, 1.0);
+    return;
   }
 
   // Subtle twinkling night stars in high sky
