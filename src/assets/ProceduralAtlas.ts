@@ -387,6 +387,63 @@ class PixelAtlasBuilder {
   }
 
   /**
+   * Scanline-filled sculpted polygon with domed heightfield & directional upper-left
+   * shading for organic gothic armor plates, horned pauldrons, tattered cloaks & blades.
+   */
+  polygon(
+    pts: ReadonlyArray<readonly [number, number]>,
+    rgb: RGB,
+    baseHeight = 0.72,
+    bevelScale = 0.24,
+    em?: RGB,
+    emA = 0
+  ): void {
+    if (pts.length < 3) return;
+    let minX = this.rw;
+    let maxX = 0;
+    let minY = this.rh;
+    let maxY = 0;
+    for (const [px, py] of pts) {
+      if (px < minX) minX = px;
+      if (px > maxX) maxX = px;
+      if (py < minY) minY = py;
+      if (py > maxY) maxY = py;
+    }
+    const cx = (minX + maxX) * 0.5;
+    const cy = (minY + maxY) * 0.5;
+    const halfW = Math.max(1, (maxX - minX) * 0.5);
+    const halfH = Math.max(1, (maxY - minY) * 0.5);
+    const y0 = Math.max(0, Math.floor(minY));
+    const y1 = Math.min(this.rh - 1, Math.ceil(maxY));
+
+    for (let y = y0; y <= y1; y++) {
+      const scanY = y + 0.05;
+      const xs: number[] = [];
+      for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+        const [xi, yi] = pts[i];
+        const [xj, yj] = pts[j];
+        if ((yi > scanY) !== (yj > scanY)) {
+          xs.push(xi + ((scanY - yi) * (xj - xi)) / (yj - yi));
+        }
+      }
+      xs.sort((a, b) => a - b);
+      for (let k = 0; k + 1 < xs.length; k += 2) {
+        const sx = Math.max(0, Math.floor(xs[k]));
+        const ex = Math.min(this.rw - 1, Math.ceil(xs[k + 1]));
+        for (let x = sx; x <= ex; x++) {
+          const nx = (x - cx) / halfW;
+          const ny = (y - cy) / halfH;
+          const d = Math.min(1, Math.hypot(nx * 0.85, ny * 0.85));
+          const dome = Math.sqrt(Math.max(0, 1 - d * d));
+          const shade = 0.82 + 0.26 * Math.max(0, -nx * 0.35 - ny * 0.6 + dome * 0.45);
+          const col = scaleRgb(rgb, shade);
+          this.pxRgb(x, y, col, baseHeight + dome * bevelScale, em, emA);
+        }
+      }
+    }
+  }
+
+  /**
    * Computes genuine 3x3 Sobel tangent-space normal maps strictly within the
    * current region bounds.
    * Convention (World Y-Down):
@@ -1259,6 +1316,223 @@ function paintPropsAndNpcs(b: PixelAtlasBuilder): void {
   b.ellipse(28, 8, 4.5, 4.5, hexRgb('#d9a882'), 0.88, 0.12);
   b.addOutline();
   b.bakeRegionNormals(3.2, false);
+
+  // ===========================================================================
+  // Rich Architectural Dungeon Props (Paired Normal + Emissive Maps)
+  // ===========================================================================
+
+  // 1. Reinforced Wooden Supply Crate (24x22)
+  b.alloc('prop:crate', 24, 22, 0.5, 1.0);
+  const crateDark = hexRgb('#472c1c');
+  const crateMid = hexRgb('#754a2e');
+  const crateHi = hexRgb('#a86e46');
+  b.rect(2, 2, 20, 19, crateMid, 0.72, 2);
+  // Horizontal plank seams & wood grain
+  for (let y = 3; y < 20; y++) {
+    for (let x = 3; x < 21; x++) {
+      const g = hash2(x, y, 401);
+      if (y === 8 || y === 14) {
+        b.pxRgb(x, y, crateDark, 0.32);
+      } else {
+        b.pxRgb(x, y, scaleRgb(y < 8 ? crateHi : crateMid, 0.88 + g * 0.2), 0.74 + g * 0.08);
+      }
+    }
+  }
+  // Diagonal cross-brace & outer timber frame
+  b.line(4, 18, 19, 4, crateHi, 3, 0.86);
+  b.line(4, 19, 20, 5, crateDark, 1, 0.52);
+  b.rect(2, 2, 20, 3, crateHi, 0.88, 1);
+  b.rect(2, 18, 20, 3, crateDark, 0.84, 1);
+  b.rect(2, 2, 3, 19, crateHi, 0.86, 1);
+  b.rect(19, 2, 3, 19, crateDark, 0.84, 1);
+  // Iron corner brackets & nails
+  for (const [bx, by] of [[2, 2], [18, 2], [2, 17], [18, 17]] as const) {
+    b.rect(bx, by, 4, 4, ironMid, 0.94, 1);
+    b.pxRgb(bx + 1, by + 1, ironHi, 0.98);
+  }
+  b.addOutline([14, 11, 20]);
+  b.bakeRegionNormals(3.5, false);
+
+  // 2. Iron-Banded Oak Dungeon Barrel (20x24) — cylindrical horizontal normals!
+  b.alloc('prop:barrel', 20, 24, 0.5, 1.0);
+  for (let y = 2; y < 23; y++) {
+    const vNorm = (y - 12.5) / 10.5;
+    const bulge = Math.sqrt(Math.max(0.15, 1 - vNorm * vNorm * 0.42));
+    const halfW = Math.round(7.4 * bulge);
+    const isHoop = y === 6 || y === 7 || y === 17 || y === 18;
+    const isRim = y === 2 || y === 3 || y === 21 || y === 22;
+    for (let dx = -halfW; dx <= halfW; dx++) {
+      const x = 10 + dx;
+      const u = dx / Math.max(1, halfW); // -1..1
+      const nz = Math.sqrt(Math.max(0.12, 1 - u * u * 0.82));
+      const staveSeam = !isHoop && (Math.abs(dx) === 3 || dx === 0);
+      const shade = 0.58 + nz * 0.5 + (u < -0.15 ? 0.1 : -0.06);
+      let col: RGB;
+      if (isHoop) {
+        col = scaleRgb(y === 6 || y === 17 ? ironHi : ironDark, shade);
+      } else if (isRim) {
+        col = scaleRgb(crateDark, shade);
+      } else if (staveSeam) {
+        col = scaleRgb(crateDark, 0.72);
+      } else {
+        const g = hash2(x, y, 509);
+        col = scaleRgb(mixRgb(crateMid, crateHi, 0.25 + g * 0.25), shade);
+      }
+      b.pxRgb(x, y, col, isHoop ? 0.92 : staveSeam ? 0.48 : 0.78);
+      b.setNormalDirect(x, y, u * 0.88, isHoop ? -0.18 : vNorm * 0.22, nz);
+    }
+  }
+  // Wooden bung plug + rivets on hoops
+  b.ellipse(10, 12, 1.6, 1.6, crateDark, 0.85, 0.12);
+  b.pxRgb(6, 6, ironHi, 0.98);
+  b.pxRgb(14, 6, ironHi, 0.98);
+  b.pxRgb(6, 17, ironHi, 0.98);
+  b.pxRgb(14, 17, ironHi, 0.98);
+  b.addOutline([14, 11, 20]);
+
+  // 3. Gothic Skull Pile (26x16) — bone cluster with hollow sockets & eerie faint soul sheen
+  b.alloc('prop:skull_pile', 26, 16, 0.5, 1.0);
+  const boneHi = hexRgb('#eee7d6');
+  const boneMid = hexRgb('#bfb6a1');
+  const boneSh = hexRgb('#6e665a');
+  const socketCol = hexRgb('#14101c');
+  const soulWisp = hexRgb('#5be0ff');
+  // Base bone rubble & rib fragments
+  b.polygon([[2, 15], [7, 10], [19, 10], [24, 15]], boneSh, 0.55, 0.18);
+  b.line(3, 14, 11, 11, boneMid, 2, 0.72);
+  b.line(15, 11, 23, 14, boneMid, 2, 0.72);
+  // Left skull (tilted)
+  b.ellipse(8, 10, 4.0, 3.6, boneMid, 0.78, 0.2);
+  b.ellipse(7.5, 9, 2.5, 2.0, boneHi, 0.88, 0.12);
+  b.pxRgb(6, 10, socketCol, 0.2);
+  b.pxRgb(9, 10, socketCol, 0.2);
+  // Right skull
+  b.ellipse(18, 10.5, 3.8, 3.4, boneMid, 0.78, 0.2);
+  b.ellipse(17.5, 9.5, 2.2, 1.8, boneHi, 0.86, 0.12);
+  b.pxRgb(16, 11, socketCol, 0.2);
+  b.pxRgb(19, 11, socketCol, 0.2);
+  // Top hero skull crowning pile
+  b.ellipse(13, 6.2, 4.3, 3.8, boneHi, 0.86, 0.22);
+  b.rect(10, 9, 6, 3, boneMid, 0.8);
+  b.rect(10, 6, 2, 2, socketCol, 0.15);
+  b.rect(14, 6, 2, 2, socketCol, 0.15);
+  // Faint haunting cyan pinhole glow in upper skull eye socket
+  b.pxRgb(11, 6, soulWisp, 0.9, soulWisp, 165);
+  b.pxRgb(14, 6, soulWisp, 0.9, soulWisp, 165);
+  b.pxRgb(12, 10, socketCol, 0.25);
+  b.pxRgb(14, 10, socketCol, 0.25);
+  b.addOutline([14, 10, 18]);
+  b.bakeRegionNormals(3.3, false);
+
+  // 4. Hanging Gothic Iron Lanterns (3 animated sway/flicker frames, 16x28)
+  for (let f = 0; f < 3; f++) {
+    b.alloc(`prop:lantern_${f}`, 16, 28, 0.5, 0.0);
+    const sway = f === 0 ? -1 : f === 2 ? 1 : 0;
+    const cx = 8 + sway;
+    // Ceiling mounting ring & chain links
+    b.rect(7, 0, 2, 3, ironHi, 0.88);
+    b.line(8, 2, cx, 10, ironMid, 1.5, 0.84);
+    // Pointed gothic lantern hood
+    b.polygon([[cx, 8], [cx + 5, 13], [cx - 5, 13]], ironHi, 0.9, 0.14);
+    b.rect(cx - 5, 12, 10, 2, ironDark, 0.86);
+    // Glowing amber-gold glass chamber
+    const pulse = f === 1 ? 1.0 : 0.88;
+    const glassMid = scaleRgb(flameOrg, pulse);
+    const glassCore = scaleRgb(flameYel, pulse);
+    b.rect(cx - 3, 14, 7, 9, flameRed, 0.78, 0, flameRed, 220);
+    b.rect(cx - 2, 15, 5, 7, glassMid, 0.86, 0, glassMid, 245);
+    b.ellipse(cx, 18.5, 1.6, 2.4, glassCore, 0.96, 0.04, glassCore, 255);
+    // Forged iron cage bars framing the glass
+    b.rect(cx - 4, 14, 1, 9, ironDark, 0.92);
+    b.rect(cx + 4, 14, 1, 9, ironDark, 0.92);
+    b.rect(cx, 14, 1, 9, ironDark, 0.9);
+    // Tapered finial base
+    b.rect(cx - 4, 23, 9, 2, ironHi, 0.9);
+    b.polygon([[cx - 2, 25], [cx + 3, 25], [cx, 27]], ironMid, 0.85, 0.1);
+    b.addOutline([12, 10, 18]);
+    b.bakeRegionNormals(3.1, false);
+  }
+
+  // 5. Overhanging Lush Dungeon Moss Cap (24x12) — with subtle glowing spore specks
+  b.alloc('prop:moss_cap', 24, 12, 0.5, 0.0);
+  const mossDeep = hexRgb('#1a4a2c');
+  const mossMid = hexRgb('#2f7d47');
+  const mossHi = hexRgb('#62c472');
+  const sporeGlow = hexRgb('#a8ff75');
+  for (let x = 0; x < 24; x++) {
+    const wave = Math.sin(x * 0.55) * 2.2 + Math.cos(x * 1.3) * 1.4;
+    const len = Math.max(2, Math.min(11, Math.round(5.5 + wave + hash2(x, 1, 711) * 3.0)));
+    for (let y = 0; y < len; y++) {
+      const g = hash2(x, y, 719);
+      const col = y === 0 ? mossHi : y < len - 2 ? mossMid : mossDeep;
+      const isSpore = y === len - 1 && g > 0.84;
+      b.pxRgb(
+        x,
+        y,
+        isSpore ? sporeGlow : scaleRgb(col, 0.88 + g * 0.22),
+        0.85 - y * 0.05,
+        isSpore ? sporeGlow : undefined,
+        isSpore ? 175 : 0
+      );
+    }
+  }
+  b.bakeRegionNormals(2.8, false);
+
+  // 6. Ornate Fluted Gothic Pillar (24x48) — carved capital, gilded rings & cylindrical normals!
+  b.alloc('prop:pillar_ornate', 24, 48, 0.5, 1.0);
+  const colDark = hexRgb('#2a3044');
+  const colMid = hexRgb('#535d78');
+  const colHi = hexRgb('#8795b8');
+  // Carved capital (y=0..8) & stepped plinth base (y=40..47)
+  b.rect(1, 0, 22, 4, colHi, 0.92, 1);
+  b.rect(3, 4, 18, 4, colMid, 0.88, 1);
+  b.rect(4, 8, 16, 2, goldMid, 0.95);
+  b.rect(4, 38, 16, 2, goldMid, 0.95);
+  b.rect(3, 40, 18, 4, colMid, 0.88, 1);
+  b.rect(1, 44, 22, 4, colDark, 0.92, 1);
+  b.bakeRegionNormals(3.2, false);
+  // Fluted cylindrical shaft (y=10..37) with genuine cylindrical normals!
+  for (let y = 10; y < 38; y++) {
+    const isBand = y === 23 || y === 24;
+    for (let x = 5; x < 19; x++) {
+      const u = ((x - 5) / 13) * 2 - 1;
+      const flute = Math.sin((x - 5) * 1.7) * 0.16;
+      const nx = Math.max(-0.92, Math.min(0.92, u * 0.86 + flute));
+      const nz = Math.sqrt(Math.max(0.08, 1 - nx * nx));
+      const g = hash2(x, y, 823);
+      const shade = 0.62 + nz * 0.44 + (g - 0.5) * 0.08;
+      const base = isBand ? goldMid : flute > 0.06 ? colHi : colMid;
+      b.pxRgb(x, y, scaleRgb(base, shade), 0.78);
+      b.setNormalDirect(x, y, nx, isBand ? -0.15 : 0, nz);
+    }
+  }
+  // Subtle gothic rune etched in center band
+  b.pxRgb(11, 23, hexRgb('#52e8ff'), 0.95, hexRgb('#52e8ff'), 160);
+  b.pxRgb(12, 24, hexRgb('#52e8ff'), 0.95, hexRgb('#52e8ff'), 160);
+
+  // 7. Forged Iron Dungeon Chain & Hook (14x34)
+  b.alloc('prop:chain_hook', 14, 34, 0.5, 0.0);
+  // 4 forged iron chain links
+  for (let link = 0; link < 4; link++) {
+    const ly = link * 5 + 1;
+    if (link % 2 === 0) {
+      b.rect(5, ly, 4, 5, ironMid, 0.85);
+      b.pxRgb(5, ly, ironHi, 0.94);
+      b.pxRgb(6, ly, ironHi, 0.94);
+      b.rect(6, ly + 1, 2, 3, ironDark, 0.35);
+    } else {
+      b.rect(6, ly, 2, 5, ironHi, 0.94);
+      b.pxRgb(7, ly + 3, ironDark, 0.72);
+    }
+  }
+  // Swivel collar + curved barbed dungeon hook
+  b.rect(5, 20, 4, 3, ironHi, 0.92);
+  b.line(7, 23, 7, 28, ironMid, 2.5, 0.9);
+  b.line(7, 28, 10, 31, ironHi, 2.2, 0.94);
+  b.line(10, 31, 11, 27, hexRgb('#cfd9eb'), 1.8, 0.96);
+  b.pxRgb(11, 26, hexRgb('#c72a3c'), 0.98); // dried crimson glint on hook barb
+  b.addOutline([12, 10, 18]);
+  b.bakeRegionNormals(3.4, false);
 }
 
 // =============================================================================
@@ -1287,137 +1561,335 @@ function paintHeroPose(
   const H = 38;
   b.alloc(key, W, H, 0.5, 1.0);
 
-  const tunic = hexRgb('#192234');
-  const tunicHi = hexRgb('#2e405e');
-  const cloak = hexRgb('#261224');
-  const leather = hexRgb('#4d3020');
-  const leatherHi = hexRgb('#7d5236');
-  const scarfRed = hexRgb('#bd1b2e');
-  const scarfHi = hexRgb('#ed3447');
-  const steel = hexRgb('#bcc8de');
+  const tunicDark = hexRgb('#121a2b');
+  const tunic = hexRgb('#1e2c45');
+  const tunicHi = hexRgb('#374f78');
+  const armorPlate = hexRgb('#4c6082');
+  const armorRim = hexRgb('#87a1cc');
+  const cloakDark = hexRgb('#1b0d1f');
+  const cloak = hexRgb('#311636');
+  const leatherDark = hexRgb('#362015');
+  const leather = hexRgb('#5c3926');
+  const leatherHi = hexRgb('#8f5e3e');
+  const scarfDark = hexRgb('#7d0f20');
+  const scarfRed = hexRgb('#c91d32');
+  const scarfHi = hexRgb('#ff3b52');
+  const gold = hexRgb('#e6b84c');
+  const steel = hexRgb('#ccd8ed');
+  const steelHi = hexRgb('#f2f7ff');
   const cyanCollar = hexRgb('#4de8ff');
   const greenFlask = hexRgb('#4aff9e');
 
   if (pose === 'roll') {
     const cy = 26;
     const rot = frame * 2.1;
-    b.ellipse(16, cy, 9.5, 8.5, tunic, 0.72, 0.28);
-    b.ellipse(16 + Math.cos(rot) * 3, cy + Math.sin(rot) * 2, 6, 4.5, scarfRed, 0.85, 0.15);
-    b.ellipse(16 - Math.cos(rot) * 4, cy - Math.sin(rot) * 2, 3.5, 3.5, leatherHi, 0.9, 0.1);
-    b.ellipse(16 + Math.cos(rot + 1.4) * 5, cy + Math.sin(rot + 1.4) * 3, 2.8, 2.8, cyanCollar, 0.95, 0.05, cyanCollar, 235);
-    b.addOutline();
-    b.bakeRegionNormals(3.2, false);
+    // Dynamic somersault tuck with swirling crimson scarf & armor flash
+    b.ellipse(16, cy, 9.6, 8.4, cloakDark, 0.68, 0.26);
+    b.ellipse(16, cy, 7.6, 6.8, tunic, 0.78, 0.22);
+    b.polygon(
+      [
+        [16 + Math.cos(rot) * 9, cy + Math.sin(rot) * 7],
+        [16 + Math.cos(rot + 1.1) * 7, cy + Math.sin(rot + 1.1) * 6],
+        [16 + Math.cos(rot + 2.2) * 5, cy + Math.sin(rot + 2.2) * 5],
+      ],
+      scarfRed,
+      0.88,
+      0.14
+    );
+    b.ellipse(16 - Math.cos(rot) * 4.5, cy - Math.sin(rot) * 2.5, 3.6, 3.2, armorRim, 0.92, 0.1);
+    b.ellipse(
+      16 + Math.cos(rot + 1.5) * 5.2,
+      cy + Math.sin(rot + 1.5) * 3.4,
+      2.6,
+      2.6,
+      cyanCollar,
+      0.96,
+      0.04,
+      cyanCollar,
+      245
+    );
+    b.addOutline([12, 9, 20]);
+    b.bakeRegionNormals(3.5, false);
     return;
   }
 
   if (pose === 'dead') {
-    b.ellipse(16, 33, 12, 4.5, tunic, 0.65, 0.25);
-    b.ellipse(12, 32, 6, 3, scarfRed, 0.78, 0.15);
-    b.ellipse(22, 31, 3, 2.5, cyanCollar, 0.85, 0.05, cyanCollar, 140);
-    b.addOutline();
-    b.bakeRegionNormals(2.8, false);
+    b.polygon([[4, 35], [10, 29], [23, 30], [28, 35]], cloakDark, 0.58, 0.18);
+    b.ellipse(15, 33, 10.5, 4.2, tunic, 0.72, 0.22);
+    b.polygon([[8, 31], [16, 29], [18, 34], [10, 35]], scarfRed, 0.84, 0.14);
+    b.ellipse(22, 31, 3.2, 2.4, cyanCollar, 0.88, 0.05, cyanCollar, 150);
+    b.addOutline([12, 9, 20]);
+    b.bakeRegionNormals(3.0, false);
     return;
   }
 
-  // Dynamic limb kinematics per pose
-  const bob = pose === 'idle' ? (frame % 2 === 0 ? 0 : 1) : pose === 'run' ? (frame % 2 === 0 ? -1 : 1) : 0;
-  const lean = pose === 'run' ? 2 : pose === 'attack' ? 3 : pose === 'hurt' ? -2 : pose === 'dive' ? 0 : 0;
+  // Dynamic gothic combat kinematics per pose
+  const bob =
+    pose === 'idle'
+      ? frame % 2 === 0
+        ? 0
+        : 1
+      : pose === 'run'
+      ? frame % 2 === 0
+        ? -1
+        : 1
+      : 0;
+  const lean =
+    pose === 'run' ? 2 : pose === 'attack' ? 3 : pose === 'hurt' ? -2 : pose === 'parry' ? 1 : 0;
   const torsoX = 16 + lean;
   const torsoY = 20 + bob;
 
-  // Legs
+  // 1. Billowing tattered back cloak (asymmetric jagged hem, distinct per pose!)
+  const cloakFlare = pose === 'run' ? 4 + (frame % 2) : pose === 'jump' || pose === 'fall' ? 5 : pose === 'attack' ? 3 : 1;
+  b.polygon(
+    [
+      [torsoX - 3, torsoY - 5],
+      [torsoX - 7 - cloakFlare, torsoY + 3],
+      [torsoX - 9 - cloakFlare, torsoY + 12],
+      [torsoX - 5 - Math.floor(cloakFlare * 0.5), torsoY + 9],
+      [torsoX - 4 - cloakFlare, torsoY + 14],
+      [torsoX + 1, torsoY + 9],
+    ],
+    cloakDark,
+    0.58,
+    0.16
+  );
+  b.polygon(
+    [
+      [torsoX - 2, torsoY - 4],
+      [torsoX - 6 - Math.floor(cloakFlare * 0.7), torsoY + 4],
+      [torsoX - 6 - Math.floor(cloakFlare * 0.6), torsoY + 11],
+      [torsoX - 1, torsoY + 7],
+    ],
+    cloak,
+    0.66,
+    0.14
+  );
+
+  // 2. Articulated legs + wrapped shin greaves & boots
   if (pose === 'run') {
     const phase = (frame / 6) * Math.PI * 2;
-    const lx1 = torsoX + Math.sin(phase) * 7;
-    const ly1 = 35 - Math.max(0, Math.cos(phase) * 4);
-    const lx2 = torsoX - Math.sin(phase) * 7;
-    const ly2 = 35 - Math.max(0, -Math.cos(phase) * 4);
-    b.line(torsoX - 1, torsoY + 6, lx2, ly2, leather, 3, 0.68);
-    b.line(torsoX + 1, torsoY + 6, lx1, ly1, leatherHi, 3, 0.78);
+    const lx1 = torsoX + Math.sin(phase) * 7.5;
+    const ly1 = 35 - Math.max(0, Math.cos(phase) * 4.5);
+    const lx2 = torsoX - Math.sin(phase) * 7.5;
+    const ly2 = 35 - Math.max(0, -Math.cos(phase) * 4.5);
+    b.line(torsoX - 1, torsoY + 6, lx2, ly2, leatherDark, 3.2, 0.68);
+    b.pxRgb(lx2, ly2, armorRim, 0.76);
+    b.line(torsoX + 1, torsoY + 6, lx1, ly1, leatherHi, 3.2, 0.8);
+    b.pxRgb(lx1 + 1, ly1, armorRim, 0.86);
   } else if (pose === 'jump') {
-    b.line(torsoX - 2, torsoY + 5, torsoX - 5, torsoY + 13, leather, 3, 0.68);
-    b.line(torsoX + 2, torsoY + 5, torsoX + 5, torsoY + 11, leatherHi, 3, 0.78);
+    b.line(torsoX - 2, torsoY + 5, torsoX - 6, torsoY + 12, leatherDark, 3, 0.68);
+    b.line(torsoX + 2, torsoY + 5, torsoX + 6, torsoY + 10, leatherHi, 3.2, 0.82);
   } else if (pose === 'fall') {
-    b.line(torsoX - 2, torsoY + 5, torsoX - 4, torsoY + 14, leather, 3, 0.68);
-    b.line(torsoX + 2, torsoY + 5, torsoX + 4, torsoY + 15, leatherHi, 3, 0.78);
+    b.line(torsoX - 2, torsoY + 5, torsoX - 5, torsoY + 14, leatherDark, 3, 0.68);
+    b.line(torsoX + 2, torsoY + 5, torsoX + 4, torsoY + 15, leatherHi, 3.2, 0.8);
   } else if (pose === 'dive') {
-    b.line(torsoX - 2, torsoY + 5, torsoX - 3, 36, leatherHi, 3, 0.85);
-    b.line(torsoX + 2, torsoY + 5, torsoX + 3, 36, steel, 3, 0.92, cyanCollar, 180);
+    b.line(torsoX - 2, torsoY + 5, torsoX - 4, 36, leatherHi, 3, 0.86);
+    b.line(torsoX + 2, torsoY + 5, torsoX + 4, 36, steelHi, 3.2, 0.94, cyanCollar, 200);
+    // Downward plunge energy streak
+    b.line(torsoX, torsoY + 8, torsoX, 37, cyanCollar, 1.5, 0.96, cyanCollar, 240);
   } else if (pose === 'wall') {
-    b.line(torsoX - 1, torsoY + 5, torsoX + 4, torsoY + 12, leatherHi, 3, 0.78);
-    b.line(torsoX - 2, torsoY + 6, torsoX + 3, torsoY + 16, leather, 3, 0.7);
+    b.line(torsoX - 1, torsoY + 5, torsoX + 4, torsoY + 11, leatherHi, 3, 0.8);
+    b.line(torsoX - 2, torsoY + 6, torsoX + 3, torsoY + 16, leather, 3, 0.72);
   } else {
-    const stance = pose === 'attack' ? 5 : 3;
-    b.line(torsoX - 2, torsoY + 6, torsoX - stance - 1, 36, leather, 3, 0.7);
-    b.line(torsoX + 2, torsoY + 6, torsoX + stance + 1, 36, leatherHi, 3, 0.78);
+    const stance = pose === 'attack' ? 5.5 : 3.5;
+    b.line(torsoX - 2, torsoY + 6, torsoX - stance - 1, 36, leatherDark, 3.2, 0.7);
+    b.rect(Math.round(torsoX - stance - 2), 34, 4, 3, armorPlate, 0.8);
+    b.line(torsoX + 2, torsoY + 6, torsoX + stance + 1, 36, leatherHi, 3.2, 0.8);
+    b.rect(Math.round(torsoX + stance), 34, 4, 3, armorRim, 0.86);
   }
 
-  // Flowing back cloak hem
-  b.ellipse(torsoX - 3, torsoY + 4, 5.2, 6.8, cloak, 0.62, 0.18);
+  // 3. Sculpted gothic tapered chest cuirass, diagonal leather bandolier & belt
+  b.polygon(
+    [
+      [torsoX - 6, torsoY - 5],
+      [torsoX + 6, torsoY - 5],
+      [torsoX + 4, torsoY + 6],
+      [torsoX - 4, torsoY + 6],
+    ],
+    tunicDark,
+    0.74,
+    0.22
+  );
+  b.polygon(
+    [
+      [torsoX - 4, torsoY - 4],
+      [torsoX + 5, torsoY - 4],
+      [torsoX + 3, torsoY + 4],
+      [torsoX - 3, torsoY + 4],
+    ],
+    tunic,
+    0.82,
+    0.18
+  );
+  b.polygon(
+    [
+      [torsoX - 2, torsoY - 4],
+      [torsoX + 4, torsoY - 4],
+      [torsoX + 2, torsoY + 2],
+      [torsoX - 1, torsoY + 2],
+    ],
+    tunicHi,
+    0.88,
+    0.12
+  );
+  // Diagonal chest leather strap + brass buckle
+  b.line(torsoX - 4, torsoY - 4, torsoX + 3, torsoY + 4, leatherHi, 1.8, 0.9);
+  b.rect(torsoX - 4, torsoY + 3, 9, 2, leather, 0.9);
+  b.rect(torsoX, torsoY + 3, 2, 2, gold, 0.96);
 
-  // Armored gothic torso + chest strap + belt
-  b.ellipse(torsoX, torsoY, 5.6, 7.2, tunic, 0.74, 0.24);
-  b.ellipse(torsoX + 1, torsoY - 1, 3.8, 5.2, tunicHi, 0.84, 0.16);
-  b.rect(torsoX - 4, torsoY + 3, 9, 2, leatherHi, 0.88);
-  b.pxRgb(torsoX + 1, torsoY + 3, hexRgb('#ffd452'), 0.95); // belt buckle
+  // 4. Sculpted beveled shoulder pauldron (catches torchlight!)
+  b.polygon(
+    [
+      [torsoX - 6, torsoY - 6],
+      [torsoX - 1, torsoY - 7],
+      [torsoX - 2, torsoY - 1],
+      [torsoX - 7, torsoY - 2],
+    ],
+    armorPlate,
+    0.9,
+    0.16
+  );
+  b.line(torsoX - 6, torsoY - 6, torsoX - 1, torsoY - 7, armorRim, 1, 0.96);
 
-  // Crimson scarf wrap around neck
-  b.ellipse(torsoX, torsoY - 6, 5.4, 2.8, scarfRed, 0.88, 0.12);
-  b.rect(torsoX - 4, torsoY - 7, 8, 2, scarfHi, 0.92);
+  // 5. Iconic layered crimson scarf collar + fluttering trailing tail
+  b.polygon(
+    [
+      [torsoX - 5, torsoY - 7],
+      [torsoX - 11 - Math.min(3, cloakFlare), torsoY - 4 + (frame % 2)],
+      [torsoX - 9 - Math.min(3, cloakFlare), torsoY - 1 + (frame % 2)],
+      [torsoX - 4, torsoY - 4],
+    ],
+    scarfDark,
+    0.82,
+    0.12
+  );
+  b.line(
+    torsoX - 5,
+    torsoY - 6,
+    torsoX - 10 - Math.min(3, cloakFlare),
+    torsoY - 3 + (frame % 2),
+    scarfHi,
+    1.2,
+    0.9
+  );
+  b.polygon(
+    [
+      [torsoX - 5, torsoY - 7],
+      [torsoX + 5, torsoY - 7],
+      [torsoX + 6, torsoY - 4],
+      [torsoX - 5, torsoY - 4],
+    ],
+    scarfRed,
+    0.9,
+    0.14
+  );
+  b.line(torsoX - 4, torsoY - 7, torsoX + 4, torsoY - 7, scarfHi, 1.2, 0.95);
 
-  // Glowing cyan homunculus neck collar ring (flame head draws dynamically above!)
-  b.rect(torsoX - 2, torsoY - 9, 5, 2, cyanCollar, 0.95, 0, cyanCollar, 220);
+  // 6. Glowing cyan homunculus neck collar ring (flame head draws dynamically above!)
+  b.rect(torsoX - 2, torsoY - 9, 5, 2, cyanCollar, 0.96, 0, cyanCollar, 235);
 
-  // Arms + action props
+  // 7. Dynamic arms & held combat props
   if (pose === 'attack') {
-    const swingAng = frame === 0 ? -0.45 : frame === 1 ? 0.1 : 0.4;
-    const ax = torsoX + 9;
+    const swingAng = frame === 0 ? -0.55 : frame === 1 ? 0.08 : 0.45;
+    const ax = torsoX + 8;
     const ay = torsoY - 2 + Math.round(swingAng * 8);
-    b.line(torsoX + 2, torsoY - 3, ax, ay, leatherHi, 3, 0.86);
-    // Gleaming curved blade held out
-    b.line(ax, ay, ax + 6, ay - 6 + frame * 5, steel, 2, 0.95, hexRgb('#d6ecff'), 120);
+    b.line(torsoX + 2, torsoY - 3, ax, ay, leatherHi, 3, 0.88);
+    b.pxRgb(ax - 1, ay, armorRim, 0.92); // gauntlet cuff
+    // Gleaming curved steel sword with glowing leading edge
+    b.line(ax, ay, ax + 7, ay - 7 + frame * 6, steel, 2.4, 0.95, hexRgb('#d6ecff'), 110);
+    b.line(ax + 1, ay - 1, ax + 7, ay - 7 + frame * 6, steelHi, 1, 0.98, hexRgb('#e0f4ff'), 160);
+    b.pxRgb(ax, ay, gold, 0.96);
   } else if (pose === 'parry') {
-    b.line(torsoX + 2, torsoY - 2, torsoX + 8, torsoY - 1, leatherHi, 3, 0.86);
-    b.rect(torsoX + 7, torsoY - 7, 4, 14, hexRgb('#d9a438'), 0.95, 1, hexRgb('#ffe885'), 160);
+    b.line(torsoX + 2, torsoY - 2, torsoX + 7, torsoY - 1, leatherHi, 3, 0.88);
+    // Ornate beveled gold-rimmed tower buckler
+    b.polygon(
+      [
+        [torsoX + 6, torsoY - 8],
+        [torsoX + 11, torsoY - 6],
+        [torsoX + 11, torsoY + 5],
+        [torsoX + 7, torsoY + 8],
+        [torsoX + 6, torsoY + 4],
+      ],
+      gold,
+      0.95,
+      0.14,
+      hexRgb('#ffe885'),
+      165
+    );
+    b.rect(torsoX + 7, torsoY - 4, 3, 8, armorPlate, 0.9);
   } else if (pose === 'heal') {
-    b.line(torsoX + 2, torsoY - 3, torsoX + 4, torsoY - 11, leatherHi, 2, 0.86);
-    b.ellipse(torsoX + 4, torsoY - 14, 3.0, 3.8, greenFlask, 0.95, 0.05, greenFlask, 255);
+    b.line(torsoX + 2, torsoY - 3, torsoX + 4, torsoY - 10, leatherHi, 2.5, 0.88);
+    b.ellipse(torsoX + 4, torsoY - 14, 3.2, 4.0, greenFlask, 0.96, 0.06, greenFlask, 255);
+    b.pxRgb(torsoX + 3, torsoY - 15, steelHi, 1.0, steelHi, 255);
   } else if (pose === 'wall') {
-    b.line(torsoX + 1, torsoY - 3, torsoX + 6, torsoY - 7, leatherHi, 3, 0.86);
+    b.line(torsoX + 1, torsoY - 3, torsoX + 6, torsoY - 7, leatherHi, 3, 0.88);
+    b.pxRgb(torsoX + 6, torsoY - 7, armorRim, 0.94);
   } else {
-    const armSwing = pose === 'run' ? Math.cos((frame / 6) * Math.PI * 2) * 4 : 0;
-    b.line(torsoX + 1, torsoY - 2, torsoX + 4 + armSwing, torsoY + 4, leatherHi, 2.5, 0.84);
-    // Sheathed dagger/hilt silhouette at hip
-    b.line(torsoX - 4, torsoY + 3, torsoX - 8, torsoY + 6, steel, 1.5, 0.82);
+    const armSwing = pose === 'run' ? Math.cos((frame / 6) * Math.PI * 2) * 4.5 : 0;
+    b.line(torsoX + 1, torsoY - 2, torsoX + 4 + armSwing, torsoY + 4, leatherHi, 2.6, 0.86);
+    b.pxRgb(torsoX + 4 + armSwing, torsoY + 4, armorRim, 0.9);
+    // Sheathed sword scabbard angled behind hip
+    b.line(torsoX - 3, torsoY + 2, torsoX - 9, torsoY + 7, armorPlate, 2, 0.84);
+    b.pxRgb(torsoX - 3, torsoY + 2, gold, 0.94);
   }
 
-  b.addOutline();
-  b.bakeRegionNormals(3.3, false);
+  b.addOutline([12, 9, 20]);
+  b.bakeRegionNormals(3.6, false);
 }
 
 function paintHomunculusHeadFrames(b: PixelAtlasBuilder): void {
-  const smokeDark = hexRgb('#18243d');
-  const smokeTeal = hexRgb('#1d5c78');
-  const plasmaCyan = hexRgb('#33d8ff');
-  const flameAmber = hexRgb('#ff7b1c');
-  const eyeGold = hexRgb('#ffe866');
+  const smokeVoid = hexRgb('#11182e');
+  const smokeDark = hexRgb('#1a2b4a');
+  const smokeTeal = hexRgb('#1e6b8a');
+  const plasmaCyan = hexRgb('#3de2ff');
+  const flameAmber = hexRgb('#ff801f');
+  const eyeGold = hexRgb('#fff078');
 
   for (let f = 0; f < 4; f++) {
     b.alloc(`hero:head_flame_${f}`, 16, 18, 0.5, 0.88);
-    const sway = Math.sin((f / 4) * Math.PI * 2) * 1.4;
-    // Smoky dark-indigo gothic flame envelope (crisp Dead Cells homunculus silhouette!)
-    b.ellipse(8 + sway * 0.5, 9.5, 4.6, 5.8, smokeDark, 0.65, 0.25, smokeTeal, 120);
-    // Dancing cyan plasma flame tips
-    b.ellipse(8 + sway * 1.1, 4.5, 2.2, 3.6, plasmaCyan, 0.78, 0.16, plasmaCyan, 200);
-    b.pxRgb(Math.round(6 + sway), 2, plasmaCyan, 0.9, plasmaCyan, 210);
-    // Rich orange-amber inner flame core
-    b.ellipse(8 + sway * 0.3, 11, 3.2, 3.8, flameAmber, 0.86, 0.14, flameAmber, 225);
-    // Piercing fierce golden homunculus eye!
+    const sway = Math.sin((f / 4) * Math.PI * 2) * 1.5;
+    const sway2 = Math.cos((f / 4) * Math.PI * 2) * 1.2;
+    // Tapered smoky dark-indigo gothic flame envelope (crisp Dead Cells homunculus silhouette!)
+    b.polygon(
+      [
+        [8 + sway * 1.3, 1],
+        [12 + sway * 0.6, 7],
+        [12.5, 13],
+        [8, 16],
+        [3.5, 13],
+        [4 + sway * 0.5, 7],
+      ],
+      smokeVoid,
+      0.62,
+      0.24,
+      smokeDark,
+      105
+    );
+    b.ellipse(8 + sway * 0.5, 10, 4.4, 5.4, smokeDark, 0.72, 0.22, smokeTeal, 145);
+    // Swirling cyan plasma flame plume
+    b.polygon(
+      [
+        [8 + sway * 1.2, 2],
+        [10.5 + sway2 * 0.6, 8],
+        [8, 11],
+        [5.5 + sway2 * 0.5, 8],
+      ],
+      plasmaCyan,
+      0.82,
+      0.16,
+      plasmaCyan,
+      215
+    );
+    // Rich amber-orange inner furnace core
+    b.ellipse(8 + sway * 0.25, 11.2, 3.1, 3.6, flameAmber, 0.88, 0.14, flameAmber, 235);
+    // Fierce piercing golden homunculus eye + white glint
     b.rect(9, 10, 3, 2, eyeGold, 0.98, 0, eyeGold, 255);
-    // Floating stray embers
-    b.pxRgb(7 + ((f * 2) % 4), 1, flameAmber, 0.9, flameAmber, 220);
-    b.pxRgb(11 - ((f * 2) % 4), 3 + (f % 2), plasmaCyan, 0.9, plasmaCyan, 210);
-    b.bakeRegionNormals(2.0, false);
+    b.pxRgb(11, 10, [255, 255, 255], 1.0, [255, 255, 255], 255);
+    // Dancing stray plasma embers
+    b.pxRgb(6 + ((f * 2) % 5), 1, flameAmber, 0.92, flameAmber, 230);
+    b.pxRgb(11 - ((f * 2) % 4), 3 + (f % 2), plasmaCyan, 0.92, plasmaCyan, 225);
+    b.bakeRegionNormals(2.2, false);
   }
 }
 
@@ -1582,57 +2054,102 @@ function paintEnemyFrame(b: PixelAtlasBuilder, spec: EnemyVisualSpec, frame: num
 // =============================================================================
 
 function paintBosses(b: PixelAtlasBuilder): void {
-  // 1. Behemoth — The Iron Concierge (64x74) — Hunched dark-forged iron prison juggernaut!
+  // 1. Behemoth — The Iron Concierge (64x74) — Hulking organic dark-forged iron juggernaut!
   for (let f = 0; f < 2; f++) {
     b.alloc(`boss:Behemoth_${f}`, 64, 74, 0.5, 1.0);
     const atk = f === 1;
-    const ironDark = hexRgb('#1a1d28');
-    const iron = hexRgb('#32384a');
-    const ironHi = hexRgb('#5c6682');
-    const cloth = hexRgb('#471824');
-    const molten = hexRgb('#ff4414');
-    const coreYel = hexRgb('#ffba38');
+    const ironVoid = hexRgb('#12151f');
+    const ironDark = hexRgb('#212636');
+    const iron = hexRgb('#3a4259');
+    const ironHi = hexRgb('#6e7b9e');
+    const ironSpec = hexRgb('#a8b7d9');
+    const clothDark = hexRgb('#3d121d');
+    const cloth = hexRgb('#6b1d2e');
+    const molten = hexRgb('#ff4614');
+    const moltenOrg = hexRgb('#ff8824');
+    const coreYel = hexRgb('#ffe066');
 
-    // Heavy armored greaves & iron sabatons (grounded solidly at y=73!)
-    b.rect(17, 50, 11, 23, ironDark, 0.8, 2);
-    b.rect(19, 54, 7, 6, ironHi, 0.88, 1);
-    b.rect(36 + (atk ? 3 : 0), 50, 11, 23, iron, 0.84, 2);
-    b.rect(38 + (atk ? 3 : 0), 54, 7, 6, ironHi, 0.9, 1);
-    // Tattered crimson prison loincloth between legs
-    b.rect(26, 46, 12, 16, cloth, 0.72, 1);
-    b.line(28, 62, 26, 68, cloth, 2, 0.65);
-    b.line(35, 62, 37, 67, cloth, 2, 0.65);
-    // Angular hunched iron breastplate (broad shoulders tapering down — NOT a sphere!)
-    b.rect(15, 21, 34, 26, ironDark, 0.82, 2);
-    b.rect(18, 23, 28, 20, iron, 0.88, 2);
-    b.rect(19, 43, 26, 4, ironHi, 0.92, 1); // iron girdle belt
-    // Jagged spiked shoulder pauldrons!
-    b.rect(9, 17, 14, 13, iron, 0.9, 2);
-    b.line(12, 17, 6, 9, ironHi, 3, 0.94);
-    b.rect(41, 17, 14, 13, ironHi, 0.92, 2);
-    b.line(51, 17, 58, 9, ironHi, 3, 0.94);
-    // Glowing molten furnace ribcage fissures inside chestplate!
-    b.line(23, 27, 40, 27, molten, 2.5, 0.55, molten, 235);
-    b.line(25, 33, 38, 33, molten, 2.0, 0.55, molten, 225);
-    b.line(27, 38, 36, 38, molten, 1.5, 0.55, molten, 210);
-    b.rect(30, 28, 4, 5, coreYel, 0.92, 0, coreYel, 240);
-    // Horned iron warden helm tucked forward
-    b.rect(26, 9, 14, 13, ironHi, 0.92, 2);
-    b.rect(28, 11, 10, 9, ironDark, 0.78);
-    b.line(27, 11, 19, 3, ironHi, 3, 0.94);
-    b.line(39, 11, 47, 3, ironHi, 3, 0.94);
-    // Fierce blazing crimson visor slit
-    b.rect(29, 14, 9, 2, coreYel, 0.98, 0, molten, 255);
-    // Colossal chained iron crusher gauntlet arm
+    // Hanging rusted prison chains sweeping behind hunched back
+    b.line(13, 28, 6, 56 + (atk ? -3 : 2), ironHi, 2.6, 0.82);
+    b.line(16, 31, 11, 60 + (atk ? -2 : 1), iron, 2.2, 0.78);
+    // Heavy sculpted armored greaves & spiked sabatons (grounded solidly at y=73)
+    b.polygon([[15, 48], [26, 48], [25, 72], [13, 72]], ironDark, 0.78, 0.2);
+    b.polygon([[17, 52], [24, 52], [23, 61], [16, 61]], ironHi, 0.88, 0.14);
+    b.line(16, 54, 24, 54, ironSpec, 1, 0.94);
+    const rxOff = atk ? 3 : 0;
+    b.polygon([[36 + rxOff, 48], [47 + rxOff, 48], [49 + rxOff, 72], [37 + rxOff, 72]], iron, 0.82, 0.2);
+    b.polygon([[38 + rxOff, 52], [45 + rxOff, 52], [46 + rxOff, 61], [38 + rxOff, 61]], ironHi, 0.9, 0.14);
+    b.line(38 + rxOff, 54, 46 + rxOff, 54, ironSpec, 1, 0.95);
+    // Tattered crimson warden tabard between legs
+    b.polygon([[25, 45], [38, 45], [40, 63], [35, 68], [32, 61], [28, 69], [23, 62]], clothDark, 0.72, 0.16);
+    b.polygon([[27, 46], [36, 46], [36, 60], [31, 57], [27, 63]], cloth, 0.8, 0.12);
+    // Hunched sculpted broad-shouldered iron cuirass (tapered gothic silhouette)
+    b.polygon(
+      [
+        [11, 20],
+        [52, 20],
+        [46, 46],
+        [18, 46],
+      ],
+      ironVoid,
+      0.8,
+      0.22
+    );
+    b.polygon(
+      [
+        [15, 22],
+        [48, 22],
+        [43, 43],
+        [20, 43],
+      ],
+      iron,
+      0.86,
+      0.18
+    );
+    // Iron girdle belt with spiked buckle
+    b.polygon([[18, 42], [45, 42], [44, 47], [19, 47]], ironHi, 0.92, 0.12);
+    b.rect(29, 41, 6, 6, ironSpec, 0.96, 1);
+    // Massive asymmetrical horned jagged shoulder pauldrons
+    b.polygon([[4, 18], [21, 14], [24, 30], [9, 32]], iron, 0.9, 0.22);
+    b.line(6, 18, 20, 14, ironSpec, 1.4, 0.96);
+    b.polygon([[11, 16], [4, 7], [16, 14]], ironHi, 0.94, 0.14);
+    b.polygon([[42, 14], [59, 18], [55, 32], [40, 30]], ironHi, 0.92, 0.22);
+    b.line(43, 14, 57, 18, ironSpec, 1.4, 0.96);
+    b.polygon([[52, 16], [60, 7], [48, 14]], ironSpec, 0.96, 0.14);
+    // Incandescent molten furnace ribcage grate glowing inside chest!
+    b.polygon([[22, 25], [41, 25], [38, 40], [25, 40]], ironVoid, 0.42, 0.08);
+    b.line(23, 27, 40, 27, molten, 2.8, 0.65, molten, 245);
+    b.line(24, 32, 39, 32, moltenOrg, 2.4, 0.68, moltenOrg, 245);
+    b.line(26, 37, 37, 37, molten, 2.0, 0.65, molten, 230);
+    b.ellipse(31.5, 31.5, 3.6, 4.4, coreYel, 0.95, 0.08, coreYel, 255);
+    // Brutal horned warden executioner helm tucked forward
+    b.polygon([[24, 9], [41, 9], [39, 22], [26, 22]], ironHi, 0.92, 0.18);
+    b.polygon([[27, 11], [38, 11], [37, 20], [28, 20]], ironVoid, 0.75, 0.1);
+    b.polygon([[25, 11], [17, 2], [28, 8]], ironSpec, 0.96, 0.14);
+    b.polygon([[40, 11], [48, 2], [37, 8]], ironSpec, 0.96, 0.14);
+    // Piercing fiery amber-white visor slit
+    b.rect(28, 14, 10, 2, moltenOrg, 0.98, 0, molten, 255);
+    b.rect(30, 14, 6, 2, coreYel, 1.0, 0, coreYel, 255);
+    // Colossal chained molten crusher gauntlet arm (windup vs devastating slam!)
     const gx = atk ? 55 : 51;
-    const gy = atk ? 34 : 45;
-    b.line(47, 25, gx, gy, iron, 7, 0.88);
-    b.rect(gx - 6, gy - 6, 12, 12, ironDark, 0.94, 2);
-    b.rect(gx - 3, gy - 2, 6, 4, molten, 0.96, 0, molten, 230);
-    // Heavy iron shackles hanging off back shoulder
-    b.line(13, 29, 7, 56, ironHi, 2.5, 0.86);
-    b.addOutline();
-    b.bakeRegionNormals(3.6, false);
+    const gy = atk ? 32 : 47;
+    b.line(47, 25, gx, gy, iron, 7.5, 0.88);
+    b.polygon(
+      [
+        [gx - 7, gy - 7],
+        [gx + 7, gy - 6],
+        [gx + 6, gy + 7],
+        [gx - 6, gy + 7],
+      ],
+      ironDark,
+      0.94,
+      0.18
+    );
+    b.line(gx - 6, gy - 6, gx + 6, gy - 6, ironSpec, 1.5, 0.98);
+    b.rect(gx - 4, gy - 2, 8, 4, molten, 0.96, 0, moltenOrg, 245);
+    b.pxRgb(gx, gy, coreYel, 1.0, coreYel, 255);
+    b.addOutline([10, 8, 16]);
+    b.bakeRegionNormals(3.7, false);
   }
   b.alias('boss:Behemoth', 'boss:Behemoth_0');
   b.alias('Behemoth', 'boss:Behemoth_0');
@@ -1641,97 +2158,185 @@ function paintBosses(b: PixelAtlasBuilder): void {
   for (let f = 0; f < 2; f++) {
     b.alloc(`boss:TimeKeeper_${f}`, 52, 58, 0.5, 1.0);
     const atk = f === 1;
-    const cloakDark = hexRgb('#151c36');
-    const cloak = hexRgb('#25315c');
-    const sashRed = hexRgb('#a82038');
-    const gold = hexRgb('#c99a38');
+    const cloakVoid = hexRgb('#0e1326');
+    const cloakDark = hexRgb('#182142');
+    const cloak = hexRgb('#2a3b70');
+    const cloakHi = hexRgb('#4962a8');
+    const sashDark = hexRgb('#731225');
+    const sashRed = hexRgb('#c4213e');
+    const sashHi = hexRgb('#ff4766');
+    const gold = hexRgb('#d9a73e');
+    const goldHi = hexRgb('#ffe885');
     const chrono = hexRgb('#42f2e0');
+    const chronoCore = hexRgb('#d9fffc');
 
-    // Open filigree astronomical clock halo behind shoulders
-    for (let i = 0; i < 16; i++) {
-      const ang = (i / 16) * Math.PI * 2 + f * 0.2;
-      const hx = Math.round(26 + Math.cos(ang) * 14);
-      const hy = Math.round(18 + Math.sin(ang) * 14);
-      b.pxRgb(hx, hy, gold, 0.85, gold, 110);
-      b.pxRgb(hx + 1, hy, gold, 0.85, gold, 90);
+    // Ornate spinning filigree brass astronomical clock halo behind shoulders
+    for (let i = 0; i < 24; i++) {
+      const ang = (i / 24) * Math.PI * 2 + f * 0.25;
+      const hx = Math.round(26 + Math.cos(ang) * 15);
+      const hy = Math.round(18 + Math.sin(ang) * 15);
+      const isCardinal = i % 6 === 0;
+      b.pxRgb(hx, hy, isCardinal ? goldHi : gold, 0.86, isCardinal ? chrono : gold, isCardinal ? 190 : 105);
+      if (isCardinal) {
+        b.line(
+          Math.round(26 + Math.cos(ang) * 11),
+          Math.round(18 + Math.sin(ang) * 11),
+          hx,
+          hy,
+          goldHi,
+          1,
+          0.9,
+          gold,
+          130
+        );
+      }
     }
-    // Sweeping dark ninja cloak & agile boots
-    b.line(23, 37, 16, 56, cloakDark, 4, 0.78);
-    b.line(29, 37, 36 + (atk ? 4 : 0), 56, cloak, 4, 0.82);
-    b.rect(19, 22, 14, 17, cloakDark, 0.82, 2);
-    b.rect(21, 24, 10, 12, cloak, 0.88, 1);
-    b.rect(19, 34, 14, 3, sashRed, 0.92); // crimson waist sash
-    b.line(19, 36, 11, 50, sashRed, 3, 0.84); // trailing sash tail
-    // Pointed assassin hood + piercing glowing teal eyes
-    b.rect(21, 9, 11, 13, cloak, 0.9, 2);
-    b.line(21, 11, 16, 15, cloakDark, 3, 0.84);
-    b.rect(24, 13, 6, 5, cloakDark, 0.72);
-    b.pxRgb(26, 15, chrono, 0.98, chrono, 255);
-    b.pxRgb(29, 15, chrono, 0.98, chrono, 255);
-    // Twin razor-thin curved chronoblades!
-    b.line(31, 26, atk ? 50 : 47, atk ? 22 : 10, chrono, 2.5, 0.96, chrono, 220);
-    b.line(20, 28, 3, atk ? 20 : 41, chrono, 2.5, 0.96, chrono, 210);
-    b.addOutline();
-    b.bakeRegionNormals(3.4, false);
+    // Sweeping tattered nocturnal cloak tails flowing behind
+    b.polygon(
+      [
+        [20, 19],
+        [10, 35],
+        [5, 51],
+        [13, 47],
+        [15, 55],
+        [25, 42],
+        [33, 52],
+        [37, 42],
+        [32, 20],
+      ],
+      cloakVoid,
+      0.66,
+      0.18
+    );
+    b.polygon([[21, 21], [13, 37], [14, 48], [24, 38], [31, 45], [31, 21]], cloakDark, 0.74, 0.16);
+    // Agile shinobi boots planted in swift lunge stance
+    b.line(23, 37, 16, 56, cloakDark, 3.8, 0.8);
+    b.line(29, 37, 36 + (atk ? 4 : 0), 56, cloak, 3.8, 0.84);
+    b.pxRgb(36 + (atk ? 4 : 0), 55, goldHi, 0.92);
+    // Sculpted layered midnight cuirass + gilded shoulder mantle
+    b.polygon([[19, 21], [33, 21], [31, 36], [21, 36]], cloak, 0.84, 0.18);
+    b.polygon([[21, 22], [31, 22], [29, 32], [23, 32]], cloakHi, 0.9, 0.14);
+    b.line(18, 21, 34, 21, goldHi, 1.5, 0.95);
+    // Flowing crimson silk waist sash & billowing ribbon tails
+    b.polygon([[19, 33], [33, 33], [32, 37], [20, 37]], sashRed, 0.92, 0.1);
+    b.line(20, 34, 32, 34, sashHi, 1, 0.95);
+    b.polygon([[20, 36], [10, 48 + (atk ? -3 : 2)], [14, 52], [23, 38]], sashDark, 0.84, 0.12);
+    b.line(20, 36, 12, 49 + (atk ? -3 : 2), sashHi, 1.2, 0.9);
+    // Pointed shadowed assassin cowl + piercing glowing teal chrono-eyes
+    b.polygon([[25, 6], [33, 12], [32, 22], [20, 22], [19, 13]], cloak, 0.9, 0.18);
+    b.polygon([[20, 12], [14, 16], [19, 19]], cloakDark, 0.82, 0.12);
+    b.line(25, 6, 32, 12, cloakHi, 1.2, 0.94);
+    b.polygon([[23, 12], [31, 12], [30, 19], [24, 19]], cloakVoid, 0.7, 0.08);
+    b.rect(25, 14, 2, 2, chrono, 0.98, 0, chrono, 255);
+    b.rect(29, 14, 2, 2, chrono, 0.98, 0, chrono, 255);
+    b.pxRgb(26, 14, chronoCore, 1.0, chronoCore, 255);
+    b.pxRgb(30, 14, chronoCore, 1.0, chronoCore, 255);
+    // Twin sweeping curved glowing chronoblades!
+    if (atk) {
+      b.line(31, 26, 42, 24, chrono, 3, 0.96, chrono, 225);
+      b.line(42, 24, 50, 18, chronoCore, 2.2, 0.98, chrono, 255);
+      b.line(20, 27, 10, 22, chrono, 3, 0.96, chrono, 220);
+      b.line(10, 22, 2, 16, chronoCore, 2.2, 0.98, chrono, 250);
+    } else {
+      b.line(31, 26, 43, 18, chrono, 3, 0.96, chrono, 225);
+      b.line(43, 18, 49, 8, chronoCore, 2, 0.98, chrono, 255);
+      b.line(20, 28, 10, 35, chrono, 3, 0.96, chrono, 215);
+      b.line(10, 35, 3, 44, chronoCore, 2, 0.98, chrono, 245);
+    }
+    b.pxRgb(31, 26, goldHi, 0.96);
+    b.pxRgb(20, 28, goldHi, 0.96);
+    b.addOutline([10, 8, 18]);
+    b.bakeRegionNormals(3.5, false);
   }
   b.alias('boss:TimeKeeper', 'boss:TimeKeeper_0');
   b.alias('TimeKeeper', 'boss:TimeKeeper_0');
 
-  // 3. KingsHand — The Sovereign Hand (76x84) — Towering dark-steel royal executioner!
+  // 3. KingsHand — The Sovereign Hand (76x84) — Towering regal dark-steel executioner!
   for (let f = 0; f < 2; f++) {
     b.alloc(`boss:KingsHand_${f}`, 76, 84, 0.5, 1.0);
     const atk = f === 1;
-    const plateDark = hexRgb('#1c273d');
-    const plate = hexRgb('#32466b');
-    const plateHi = hexRgb('#5c7eb5');
-    const gold = hexRgb('#cfa038');
-    const capeDark = hexRgb('#691220');
-    const cape = hexRgb('#9e1b30');
-    const cyan = hexRgb('#4ed2ff');
+    const plateVoid = hexRgb('#111829');
+    const plateDark = hexRgb('#1d2a45');
+    const plate = hexRgb('#344c78');
+    const plateHi = hexRgb('#648bc7');
+    const plateSpec = hexRgb('#b0cff7');
+    const goldDark = hexRgb('#8c631c');
+    const gold = hexRgb('#d9aa3f');
+    const goldHi = hexRgb('#ffe88a');
+    const capeVoid = hexRgb('#470a15');
+    const capeDark = hexRgb('#751324');
+    const cape = hexRgb('#b01e36');
+    const cyan = hexRgb('#4ed8ff');
+    const cyanCore = hexRgb('#e0fbff');
 
-    // Tattered royal crimson mantle sweeping behind
-    b.rect(14, 24, 26, 50, capeDark, 0.65, 2);
-    b.rect(18, 28, 18, 42, cape, 0.72, 1);
-    b.line(16, 74, 12, 81, capeDark, 3, 0.62);
-    b.line(25, 74, 22, 82, cape, 3, 0.65);
-    // Heavy articulated armored greaves (planted solidly at y=83!)
-    b.rect(25, 54, 11, 29, plateDark, 0.84, 2);
-    b.rect(42, 54, 11, 29, plate, 0.88, 2);
-    b.rect(25, 62, 11, 3, gold, 0.94);
-    b.rect(42, 62, 11, 3, gold, 0.94);
-    // Plated battle-tassets & angular gothic cuirass (NOT a blue ball!)
-    b.rect(24, 45, 30, 12, plateDark, 0.86, 2);
-    b.rect(22, 22, 34, 24, plate, 0.88, 2);
-    b.rect(26, 25, 26, 17, plateHi, 0.92, 2);
-    b.rect(36, 24, 6, 22, gold, 0.94); // vertical gilded chest ridge
-    // Sculpted angular dark-steel pauldrons with fine gold trim (NO blown-out yellow orbs!)
-    b.rect(14, 18, 14, 13, plateDark, 0.92, 2);
-    b.rect(14, 18, 14, 2, gold, 0.96);
-    b.line(17, 18, 12, 11, plateHi, 3, 0.94);
-    b.rect(50, 18, 14, 13, plate, 0.94, 2);
-    b.rect(50, 18, 14, 2, gold, 0.96);
-    b.line(60, 18, 65, 11, plateHi, 3, 0.94);
-    // Crowned Sovereign Iron Helm
-    b.rect(31, 8, 16, 14, plateHi, 0.94, 2);
-    b.rect(33, 11, 12, 9, plateDark, 0.82);
-    b.rect(31, 5, 16, 3, gold, 0.96);
-    b.rect(32, 1, 2, 5, gold, 0.98);
-    b.rect(38, 0, 3, 6, gold, 0.98);
-    b.rect(45, 1, 2, 5, gold, 0.98);
-    // Piercing cyan visor glow (crisp surgical emissive accent!)
-    b.rect(35, 13, 9, 2, cyan, 0.98, 0, cyan, 245);
-    // Colossal Symmetrical Twin-Bladed Lance!
+    // Grand sweeping tattered royal crimson cape behind armor
+    b.polygon(
+      [
+        [18, 21],
+        [44, 21],
+        [40, 74],
+        [33, 81],
+        [27, 75],
+        [20, 82],
+        [14, 75],
+        [8, 80],
+        [11, 52],
+      ],
+      capeVoid,
+      0.62,
+      0.16
+    );
+    b.polygon([[20, 24], [38, 24], [34, 72], [26, 70], [18, 76], [14, 54]], capeDark, 0.7, 0.14);
+    b.polygon([[22, 26], [34, 26], [30, 62], [21, 65]], cape, 0.76, 0.12);
+    // Heavy articulated fluted armored greaves (planted solidly at y=83)
+    b.polygon([[24, 53], [36, 53], [35, 82], [22, 82]], plateDark, 0.84, 0.2);
+    b.polygon([[26, 56], [33, 56], [32, 76], [25, 76]], plate, 0.88, 0.14);
+    b.polygon([[41, 53], [53, 53], [55, 82], [42, 82]], plate, 0.86, 0.2);
+    b.polygon([[43, 56], [50, 56], [51, 76], [44, 76]], plateHi, 0.92, 0.14);
+    // Gilded knee cops
+    b.polygon([[24, 61], [35, 61], [33, 66], [26, 66]], gold, 0.95, 0.1);
+    b.polygon([[42, 61], [53, 61], [51, 66], [44, 66]], goldHi, 0.96, 0.1);
+    // Layered armored battle-tassets & sculpted gothic breastplate
+    b.polygon([[21, 44], [55, 44], [52, 57], [24, 57]], plateVoid, 0.84, 0.18);
+    b.line(23, 48, 53, 48, goldDark, 1.5, 0.9);
+    b.line(24, 53, 52, 53, gold, 1.5, 0.92);
+    b.polygon([[20, 21], [56, 21], [51, 45], [25, 45]], plate, 0.88, 0.22);
+    b.polygon([[25, 24], [51, 24], [47, 41], [29, 41]], plateHi, 0.92, 0.16);
+    // Vertical gilded chest spine & beveled filigree
+    b.polygon([[36, 22], [41, 22], [40, 44], [37, 44]], gold, 0.95, 0.12);
+    b.line(38, 23, 38, 43, goldHi, 1, 0.98);
+    // Towering spiked royal dark-steel pauldrons with crisp gold trim
+    b.polygon([[10, 17], [27, 15], [28, 32], [12, 30]], plateDark, 0.92, 0.22);
+    b.line(11, 17, 26, 15, goldHi, 2, 0.97);
+    b.polygon([[16, 17], [9, 8], [21, 16]], plateSpec, 0.96, 0.14);
+    b.polygon([[49, 15], [66, 17], [64, 30], [48, 32]], plate, 0.94, 0.22);
+    b.line(50, 15, 65, 17, goldHi, 2, 0.97);
+    b.polygon([[60, 17], [67, 8], [55, 16]], plateSpec, 0.96, 0.14);
+    // Crowned Sovereign Iron Executioner Helm
+    b.polygon([[30, 8], [47, 8], [45, 22], [32, 22]], plateHi, 0.94, 0.18);
+    b.polygon([[33, 10], [44, 10], [43, 20], [34, 20]], plateVoid, 0.8, 0.1);
+    // Five-point serrated golden royal crown
+    b.rect(30, 5, 17, 3, gold, 0.96);
+    b.polygon([[30, 5], [31, 0], [34, 5]], goldHi, 0.98, 0.1);
+    b.polygon([[36, 5], [38.5, 0], [41, 5]], goldHi, 0.98, 0.1);
+    b.polygon([[43, 5], [46, 0], [47, 5]], goldHi, 0.98, 0.1);
+    // Piercing cold-cyan visor slit (surgical emissive glow!)
+    b.rect(34, 13, 10, 2, cyan, 0.98, 0, cyan, 250);
+    b.rect(36, 13, 6, 2, cyanCore, 1.0, 0, cyanCore, 255);
+    // Iconic Colossal Symmetrical Twin-Bladed Lance!
     if (atk) {
-      b.line(4, 38, 74, 34, plateHi, 3.5, 0.94);
-      b.line(58, 35, 74, 34, cyan, 4, 0.98, cyan, 215);
-      b.line(4, 38, 17, 37, cyan, 3.5, 0.96, cyan, 195);
+      b.line(3, 38, 74, 34, plateSpec, 3.6, 0.94);
+      b.polygon([[54, 35], [75, 34], [58, 39], [56, 31]], cyan, 0.96, 0.1, cyan, 235);
+      b.line(58, 35, 74, 34, cyanCore, 1.5, 1.0, cyanCore, 255);
+      b.polygon([[20, 37], [2, 38], [16, 34], [18, 41]], cyan, 0.94, 0.1, cyan, 205);
     } else {
-      b.line(18, 68, 66, 8, plateHi, 3.5, 0.94);
-      b.line(54, 22, 68, 6, cyan, 4, 0.98, cyan, 215);
-      b.line(14, 72, 24, 60, cyan, 3.5, 0.96, cyan, 195);
+      b.line(16, 70, 67, 7, plateSpec, 3.6, 0.94);
+      b.polygon([[52, 24], [69, 4], [61, 21], [54, 16]], cyan, 0.96, 0.1, cyan, 235);
+      b.line(56, 20, 68, 6, cyanCore, 1.5, 1.0, cyanCore, 255);
+      b.polygon([[25, 59], [11, 75], [22, 68], [18, 61]], cyan, 0.94, 0.1, cyan, 205);
     }
-    b.addOutline();
-    b.bakeRegionNormals(3.6, false);
+    b.addOutline([10, 8, 16]);
+    b.bakeRegionNormals(3.7, false);
   }
   b.alias('boss:KingsHand', 'boss:KingsHand_0');
   b.alias('KingsHand', 'boss:KingsHand_0');
@@ -2067,6 +2672,98 @@ function paintVfxAndPixelFont(b: PixelAtlasBuilder): void {
   }
   b.bakeRegionNormals(2.6, false);
 
+  // Explosive Skill VFX Sprites: Fireball Burst, Ice Burst, Shockwave Ring
+  // 1. Fireball Burst (48x48) — multi-layered jagged fiery explosion with incandescent core
+  b.alloc('vfx:fireball_burst', 48, 48, 0.5, 0.5);
+  for (let y = 0; y < 48; y++) {
+    for (let x = 0; x < 48; x++) {
+      const dx = x - 23.5;
+      const dy = y - 23.5;
+      const r = Math.hypot(dx, dy);
+      const ang = Math.atan2(dy, dx);
+      const tongues =
+        Math.sin(ang * 7 + 0.4) * 2.8 +
+        Math.cos(ang * 13 - 0.8) * 1.6 +
+        (hash2(x, y, 911) - 0.5) * 1.8;
+      const maxR = 20.5 + tongues;
+      if (r <= maxR) {
+        const frac = r / Math.max(1, maxR);
+        let cr: number;
+        let cg: number;
+        let cb: number;
+        let alpha: number;
+        if (frac < 0.28) {
+          cr = 255;
+          cg = 250;
+          cb = 210;
+          alpha = 255;
+        } else if (frac < 0.58) {
+          const t = (frac - 0.28) / 0.3;
+          cr = 255;
+          cg = clampByte(225 - t * 110);
+          cb = clampByte(115 - t * 90);
+          alpha = 245;
+        } else {
+          const t = (frac - 0.58) / 0.42;
+          cr = clampByte(245 - t * 75);
+          cg = clampByte(95 - t * 70);
+          cb = clampByte(28 - t * 14);
+          alpha = clampByte((1 - t * 0.82) * 235);
+        }
+        b.px(x, y, cr, cg, cb, alpha, 0.9, cr, cg, cb, alpha);
+        b.setNormalDirect(x, y, 0, 0, 1);
+      }
+    }
+  }
+
+  // 2. Ice Burst (48x48) — sharp 8-pointed crystalline glacial starburst + frost halo
+  b.alloc('vfx:ice_burst', 48, 48, 0.5, 0.5);
+  for (let y = 0; y < 48; y++) {
+    for (let x = 0; x < 48; x++) {
+      const dx = x - 23.5;
+      const dy = y - 23.5;
+      const r = Math.hypot(dx, dy);
+      const ang = Math.atan2(dy, dx);
+      const majorSpike = Math.pow(Math.abs(Math.cos(ang * 4)), 5);
+      const minorSpike = Math.pow(Math.abs(Math.cos(ang * 4 + Math.PI * 0.25)), 7);
+      const starR = 11.5 + majorSpike * 11.5 + minorSpike * 6.5;
+      const frostRing = Math.exp(-Math.pow((r - 17.5) / 1.8, 2));
+      if (r <= starR || frostRing > 0.25) {
+        const core = r < 6.5 ? 1.0 : Math.max(0, 1 - r / Math.max(1, starR));
+        const k = Math.min(1, Math.max(core, frostRing * 0.85));
+        const cr = clampByte(120 + k * 135);
+        const cg = clampByte(225 + k * 30);
+        const cb = 255;
+        const alpha = clampByte(Math.min(1, 0.25 + k * 0.85) * 245);
+        b.px(x, y, cr, cg, cb, alpha, 0.92, cr, cg, cb, alpha);
+        b.setNormalDirect(x, y, 0, 0, 1);
+      }
+    }
+  }
+
+  // 3. Shockwave Ring (56x56) — kinetic Wave-of-Denial / Dive-Slam pressure wave ring
+  b.alloc('vfx:shockwave_ring', 56, 56, 0.5, 0.5);
+  for (let y = 0; y < 56; y++) {
+    for (let x = 0; x < 56; x++) {
+      const dx = x - 27.5;
+      const dy = y - 27.5;
+      const r = Math.hypot(dx, dy);
+      const ang = Math.atan2(dy, dx);
+      const outer = Math.exp(-Math.pow((r - 23.5) / 2.4, 2));
+      const inner = Math.exp(-Math.pow((r - 16.5) / 1.7, 2)) * 0.7;
+      const streaks = Math.pow(Math.abs(Math.cos(ang * 8)), 6) * Math.exp(-Math.pow((r - 20.5) / 4.2, 2)) * 0.55;
+      const intensity = Math.min(1, outer + inner + streaks);
+      if (intensity > 0.1) {
+        const cr = clampByte(150 + intensity * 105);
+        const cg = clampByte(228 + intensity * 27);
+        const cb = 255;
+        const alpha = clampByte(intensity * 245);
+        b.px(x, y, cr, cg, cb, alpha, 0.92, cr, cg, cb, alpha);
+        b.setNormalDirect(x, y, 0, 0, 1);
+      }
+    }
+  }
+
   // Crisp 5x7 Pixel Bitmap Font Glyphs for floating world combat numbers & CRIT/PARRY popups!
   const FONT_GLYPHS: Record<string, string[]> = {
     '0': ['01110', '10001', '10011', '10101', '11001', '10001', '01110'],
@@ -2169,6 +2866,15 @@ export function getAtlasKeys(): string[] {
     'prop:npc_collector',
     'prop:npc_guillain',
     'prop:npc_forge',
+    'prop:crate',
+    'prop:barrel',
+    'prop:skull_pile',
+    'prop:lantern_0',
+    'prop:lantern_1',
+    'prop:lantern_2',
+    'prop:moss_cap',
+    'prop:pillar_ornate',
+    'prop:chain_hook',
     'hero:idle_0',
     'hero:idle_1',
     'hero:idle_2',
@@ -2250,7 +2956,10 @@ export function getAtlasKeys(): string[] {
     'vfx:spark',
     'vfx:ember',
     'vfx:drop',
-    'vfx:cog'
+    'vfx:cog',
+    'vfx:fireball_burst',
+    'vfx:ice_burst',
+    'vfx:shockwave_ring'
   );
 
   for (const id of WEAPON_ICON_IDS) keys.push(`weapon:${id}`, id);

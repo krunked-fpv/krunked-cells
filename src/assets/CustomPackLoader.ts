@@ -554,6 +554,8 @@ function buildSyntheticManifest(paths: string[]): AssetManifest {
     } else if (low.includes('gradient') && low.endsWith('.png')) {
       gradients[stem] = p;
       entries.push({ key: stem, kind: 'gradient', relPath: p, sizeBytes: 1 });
+    } else if (low === 'cardicons.png' || low === 'mobicons.png') {
+      entries.push({ key: stem, kind: 'icon', relPath: p, sizeBytes: 1 });
     } else if (low.endsWith('.wav')) {
       audioSfx[stem] = p;
       entries.push({ key: stem, kind: 'sfx', relPath: p, sizeBytes: 1 });
@@ -742,14 +744,49 @@ function applySkinLutToImage(
     const lx = Math.min(lw - 1, Math.floor(r * scaleX));
     const ly = Math.min(lh - 1, Math.floor(g * scaleY));
     const li = (ly * lw + lx) * 4;
-    const lr = lutData[li];
-    const lg = lutData[li + 1];
-    const lb = lutData[li + 2];
+    let lr = lutData[li];
+    let lg = lutData[li + 1];
+    let lb = lutData[li + 2];
     if (lr > 245 && lg < 12 && lb > 245) {
       px[i] = glowR;
       px[i + 1] = glowG;
       px[i + 2] = glowB;
     } else {
+      // Calibrate LUT values for our 64-light WebGL2 cel shader:
+      // - Preserve crisp deep shadows (<54) so dark armor folds stay rich
+      // - Apply subtle 0.88 gamma/contrast preservation on high-luminance LUT pixels (>210)
+      //   so bright tan/cream skin wraps on `beheaded` never blow out under point lights,
+      //   while keeping saturated crimson scarf, teal/navy armor, and glow vibrant.
+      const lum = 0.299 * lr + 0.587 * lg + 0.114 * lb;
+      const maxC = Math.max(lr, lg, lb);
+      const minC = Math.min(lr, lg, lb);
+      const sat = maxC > 0 ? (maxC - minC) / maxC : 0;
+
+      if (lum > 210) {
+        const hiFrac = Math.min(1, (lum - 210) / 45);
+        // Low/moderate saturation (tan/cream wraps) gets full 0.88 highlight rolloff;
+        // vivid saturated highlights stay brighter while still preventing clipping.
+        const satWeight = sat < 0.52 ? 1.0 : 0.45;
+        const preserve = 1.0 - (1.0 - 0.88) * (0.45 + 0.55 * hiFrac) * satWeight;
+        const gamma = 1.0 + 0.08 * hiFrac * satWeight;
+        lr = Math.round(Math.pow(lr / 255, gamma) * 255 * preserve);
+        lg = Math.round(Math.pow(lg / 255, gamma) * 255 * preserve);
+        lb = Math.round(Math.pow(lb / 255, gamma) * 255 * preserve);
+      } else if (lum < 54 && sat < 0.45) {
+        // Keep deep dark shadows anchored and rich
+        const shFrac = 1.0 - lum / 54;
+        const deepen = 1.0 - 0.08 * shFrac;
+        lr = Math.round(lr * deepen);
+        lg = Math.round(lg * deepen);
+        lb = Math.round(lb * deepen);
+      } else if (sat > 0.42 && lum >= 54 && lum <= 200) {
+        // Subtle vibrancy preservation for crimson scarf & teal/navy armor midtones
+        const boost = 1.04;
+        lr = Math.min(255, Math.max(0, Math.round(lum + (lr - lum) * boost)));
+        lg = Math.min(255, Math.max(0, Math.round(lum + (lg - lum) * boost)));
+        lb = Math.min(255, Math.max(0, Math.round(lum + (lb - lum) * boost)));
+      }
+
       px[i] = lr;
       px[i + 1] = lg;
       px[i + 2] = lb;
@@ -768,6 +805,15 @@ export class CustomPackLoader implements CustomPackAssetResolver {
   private atlasCache = new Map<string, LoadedCustomAtlas | null>();
   private atlasPromises = new Map<string, Promise<LoadedCustomAtlas | null>>();
   private scrollerCache = new Map<string, ImageBitmap | HTMLImageElement | null>();
+  private scrollerImagesCache = new Map<
+    string,
+    Array<{ name: string; image: ImageBitmap | HTMLImageElement }>
+  >();
+  private cardIconsImage: ImageBitmap | HTMLImageElement | null = null;
+  private cardIconUrlCache = new Map<string, string | null>();
+  private titleBackdropUrl: string | null = null;
+  private uiPreloadPromise: Promise<boolean> | null = null;
+  private uiPreloaded = false;
 
   getManifest(): AssetManifest | null {
     return this.manifest;
@@ -826,6 +872,7 @@ export class CustomPackLoader implements CustomPackAssetResolver {
       this.devBaseUrl = manifestUrl.slice(0, manifestUrl.lastIndexOf('/')) || DEV_PACK_PREFIX;
       this.manifest = manifest;
       this.source = 'devMiddleware';
+      void this.preloadUiAssets();
       return true;
     } catch {
       return false;
@@ -842,6 +889,7 @@ export class CustomPackLoader implements CustomPackAssetResolver {
           this.resetCaches();
           this.manifest = parsed;
           this.source = 'indexedDb';
+          void this.preloadUiAssets();
           return true;
         }
       }
@@ -850,6 +898,7 @@ export class CustomPackLoader implements CustomPackAssetResolver {
         this.resetCaches();
         this.manifest = buildSyntheticManifest(keys);
         this.source = 'indexedDb';
+        void this.preloadUiAssets();
         return true;
       }
       return false;
@@ -905,6 +954,7 @@ export class CustomPackLoader implements CustomPackAssetResolver {
     this.memoryFiles = files;
     this.manifest = manifest;
     this.source = 'folderPicker';
+    void this.preloadUiAssets();
 
     // Persist asynchronously to IndexedDB for reload survival
     void idbPutAll(files);
@@ -1109,9 +1159,219 @@ export class CustomPackLoader implements CustomPackAssetResolver {
     return img;
   }
 
+  /**
+   * Loads and decodes ALL parallax scroller layer images for a theme group
+   * (e.g. 'prison', 'courtyard', 'sewers', 'cliff', 'dookuCastle', 'ossuary').
+   */
+  async loadScrollerImages(
+    themeKey: string
+  ): Promise<Array<{ name: string; image: ImageBitmap | HTMLImageElement }>> {
+    const cached = this.scrollerImagesCache.get(themeKey);
+    if (cached) return cached;
+
+    const m = this.manifest;
+    if (!m) return [];
+    const list = m.scrollers[themeKey];
+    if (!list || list.length === 0) {
+      this.scrollerImagesCache.set(themeKey, []);
+      return [];
+    }
+
+    const decoded = await Promise.all(
+      list.map(async (relPath) => {
+        const blob = await this.fetchBlob(relPath);
+        if (!blob) return null;
+        const image = await decodeImageBlob(blob);
+        if (!image) return null;
+        const name = relPath.split('/').pop() ?? relPath;
+        return { name, image };
+      })
+    );
+
+    const results: Array<{ name: string; image: ImageBitmap | HTMLImageElement }> = [];
+    for (const item of decoded) {
+      if (item) results.push(item);
+    }
+
+    this.scrollerImagesCache.set(themeKey, results);
+    if (!this.scrollerCache.has(themeKey)) {
+      this.scrollerCache.set(themeKey, results[0]?.image ?? null);
+    }
+    return results;
+  }
+
+  // ---------------------------------------------------------------------------
+  // UI Assets: cardIcons.png HUD Icons & titleScreen Backdrop
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Preloads `cardIcons.png` and `atlas/titleScreen.atlas` + `titleScreen.png`
+   * once in the background so HUD icons and Title Screen backdrop resolve
+   * synchronously with zero stutter in Custom Pack Mode.
+   */
+  async preloadUiAssets(): Promise<boolean> {
+    if (!this.manifest || this.source === 'none') return false;
+    if (this.uiPreloaded) {
+      return Boolean(this.cardIconsImage || this.titleBackdropUrl);
+    }
+    if (this.uiPreloadPromise) return this.uiPreloadPromise;
+
+    const manifestRef = this.manifest;
+    let task: Promise<boolean> | null = null;
+    task = (async (): Promise<boolean> => {
+      try {
+        const loadCardIcons = async (): Promise<void> => {
+          const iconEntry = manifestRef.entries.find(
+            (e) => e.key === 'cardIcons' || e.relPath.toLowerCase() === 'cardicons.png'
+          );
+          const relPath = iconEntry?.relPath ?? 'cardIcons.png';
+          const blob = await this.fetchBlob(relPath);
+          if (!blob || this.manifest !== manifestRef) return;
+          const img = await decodeImageBlob(blob);
+          if (img && this.manifest === manifestRef) {
+            this.cardIconsImage = img;
+            this.cardIconUrlCache.clear();
+          }
+        };
+
+        const loadTitleBackdrop = async (): Promise<void> => {
+          if (typeof document === 'undefined') return;
+          const tsEntry = manifestRef.atlases['titleScreen'];
+          const atlasRel = tsEntry?.atlasFile ?? 'atlas/titleScreen.atlas';
+          const atlasText = await this.fetchText(atlasRel);
+          if (!atlasText || this.manifest !== manifestRef) return;
+
+          const parsed = parseLibGdxAtlas(atlasText);
+          let region =
+            parsed.regions.get('title/titleScreen') ??
+            parsed.regions.get('title/Dlcp/titleScreen_DLCP') ??
+            null;
+          if (!region) {
+            for (const reg of parsed.regions.values()) {
+              if (reg.name.toLowerCase().includes('titlescreen') && reg.w >= 400 && reg.h >= 200) {
+                if (!region || reg.w * reg.h > region.w * region.h) {
+                  region = reg;
+                }
+              }
+            }
+          }
+          if (!region || region.w <= 0 || region.h <= 0) return;
+
+          const dir = atlasRel.includes('/') ? atlasRel.slice(0, atlasRel.lastIndexOf('/') + 1) : '';
+          const pageMeta = parsed.pages[region.pageIndex];
+          const pageRel =
+            tsEntry?.pages[region.pageIndex] ??
+            (pageMeta ? `${dir}${pageMeta.fileName}` : `${dir}titleScreen.png`);
+          const pageBlob = await this.fetchBlob(pageRel);
+          if (!pageBlob || this.manifest !== manifestRef) return;
+          const pageImg = await decodeImageBlob(pageBlob);
+          if (!pageImg || this.manifest !== manifestRef) return;
+
+          const canvas = document.createElement('canvas');
+          canvas.width = region.w;
+          canvas.height = region.h;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) return;
+          ctx.imageSmoothingEnabled = false;
+          ctx.clearRect(0, 0, region.w, region.h);
+          ctx.drawImage(
+            pageImg,
+            region.x,
+            region.y,
+            region.w,
+            region.h,
+            0,
+            0,
+            region.w,
+            region.h
+          );
+          if (this.manifest === manifestRef) {
+            this.titleBackdropUrl = canvas.toDataURL('image/png');
+          }
+        };
+
+        await Promise.all([loadCardIcons(), loadTitleBackdrop()]);
+        if (this.manifest === manifestRef) {
+          this.uiPreloaded = true;
+        }
+        return Boolean(this.cardIconsImage || this.titleBackdropUrl);
+      } catch {
+        return false;
+      } finally {
+        if (this.uiPreloadPromise === task) {
+          this.uiPreloadPromise = null;
+        }
+      }
+    })();
+
+    this.uiPreloadPromise = task;
+    return task;
+  }
+
+  /**
+   * Crops the exact 24x24 icon from `cardIcons.png` using `manifest.cardIcons[itemId]`,
+   * upscales 2x nearest-neighbor to 48x48 on a canvas, and caches the PNG data URL.
+   */
+  getCardIconDataUrl(itemId: string): string | null {
+    if (typeof document === 'undefined') return null;
+    if (!this.cardIconsImage || !this.manifest?.cardIcons) return null;
+
+    if (this.cardIconUrlCache.has(itemId)) {
+      return this.cardIconUrlCache.get(itemId) ?? null;
+    }
+
+    const icons = this.manifest.cardIcons;
+    const normalized = itemId.replace(/^(?:weapon|skill|mut)[:_]/, '');
+    const rect = icons[itemId] ?? icons[normalized];
+    if (!rect || rect.size <= 0) {
+      this.cardIconUrlCache.set(itemId, null);
+      return null;
+    }
+
+    const sx = rect.x * rect.size;
+    const sy = rect.y * rect.size;
+    const sw = rect.size;
+    const sh = rect.size;
+    if (
+      sx < 0 ||
+      sy < 0 ||
+      sx + sw > this.cardIconsImage.width ||
+      sy + sh > this.cardIconsImage.height
+    ) {
+      this.cardIconUrlCache.set(itemId, null);
+      return null;
+    }
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 48;
+    canvas.height = 48;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.imageSmoothingEnabled = false;
+    ctx.clearRect(0, 0, 48, 48);
+    ctx.drawImage(this.cardIconsImage, sx, sy, sw, sh, 0, 0, 48, 48);
+    const dataUrl = canvas.toDataURL('image/png');
+    this.cardIconUrlCache.set(itemId, dataUrl);
+    return dataUrl;
+  }
+
+  /**
+   * Returns the cached PNG data URL cropped from `titleScreen.atlas` (`title/titleScreen`)
+   * once `preloadUiAssets()` has loaded, or `null` if unavailable.
+   */
+  getTitleBackdropDataUrl(): string | null {
+    return this.titleBackdropUrl;
+  }
+
   private resetCaches(): void {
     this.atlasCache.clear();
     this.atlasPromises.clear();
     this.scrollerCache.clear();
+    this.scrollerImagesCache.clear();
+    this.cardIconsImage = null;
+    this.cardIconUrlCache.clear();
+    this.titleBackdropUrl = null;
+    this.uiPreloadPromise = null;
+    this.uiPreloaded = false;
   }
 }
