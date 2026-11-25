@@ -11,6 +11,7 @@ import {
   type BiomeDef,
   type BiomeId,
   type CollisionAPI,
+  type GearInstance,
   type LightSource,
   type RngAPI,
   type RoomNode,
@@ -21,7 +22,7 @@ import {
   type TileKindValue,
   type Vec2,
 } from '../contracts';
-import { getBiome, getBoss, getEnemy } from '../data';
+import { WEAPON_MAP, getBiome, getBoss, getEnemy, getWeapon } from '../data';
 import { spawnBoss } from './bosses';
 import { spawnEnemy } from './enemies';
 import { enterPassageRoom } from './passage';
@@ -92,12 +93,129 @@ function carveRoomBackground(
   }
 }
 
-const CELL_W = 22;
-const CELL_H = 11;
-const GRID_COLS = 6;
-const GRID_ROWS = 4;
 const GRID_PAD_X = 2;
 const GRID_PAD_Y = 2;
+const GRID_PAD_Y_BOTTOM = 6; // Room for 6x3 CRACKED_FLOOR secret cellars even on bottom row
+
+interface BiomeLayoutProfile {
+  gridCols: number;
+  gridRows: number;
+  cellW: number;
+  cellH: number;
+  startGx: number;
+  startGy: number;
+  innerHOverride?: number;
+  dirs: readonly [number, number][];
+}
+
+function getBiomeLayoutProfile(biomeId: BiomeId): BiomeLayoutProfile {
+  switch (biomeId) {
+    case 'PrisonCourtyard':
+      // Wide horizontal Promenade boulevard + towers above + underground crypts below
+      return {
+        gridCols: 7,
+        gridRows: 4,
+        cellW: 22,
+        cellH: 11,
+        startGx: 0,
+        startGy: 1,
+        dirs: [
+          [1, 0],
+          [1, 0],
+          [1, 0],
+          [0, 1],
+          [0, -1],
+          [-1, 0],
+        ],
+      };
+    case 'Sewer':
+      // Cramped flooded subterranean tunnels with abundant acid & secret cellars
+      return {
+        gridCols: 6,
+        gridRows: 4,
+        cellW: 20,
+        cellH: 10,
+        startGx: 0,
+        startGy: 1,
+        innerHOverride: 5,
+        dirs: [
+          [1, 0],
+          [1, 0],
+          [0, 1],
+          [0, 1],
+          [-1, 0],
+          [0, -1],
+        ],
+      };
+    case 'ClockTower':
+      // Tall vertical ascent tower: enter at bottom, climb 6 stories to the Clock Room exit!
+      return {
+        gridCols: 4,
+        gridRows: 6,
+        cellW: 20,
+        cellH: 11,
+        startGx: 1,
+        startGy: 5,
+        dirs: [
+          [0, -1],
+          [0, -1],
+          [1, 0],
+          [-1, 0],
+          [0, 1],
+        ],
+      };
+    case 'Castle':
+      // Grand tall vaulted royal halls (double-wide merged chambers)
+      return {
+        gridCols: 6,
+        gridRows: 4,
+        cellW: 22,
+        cellH: 12,
+        startGx: 0,
+        startGy: 1,
+        dirs: [
+          [1, 0],
+          [1, 0],
+          [0, 1],
+          [0, -1],
+          [-1, 0],
+        ],
+      };
+    case 'PrisonRoof':
+      // High open-sky battlements & rooftop chasms
+      return {
+        gridCols: 6,
+        gridRows: 4,
+        cellW: 22,
+        cellH: 11,
+        startGx: 0,
+        startGy: 1,
+        dirs: [
+          [1, 0],
+          [1, 0],
+          [0, -1],
+          [0, 1],
+          [-1, 0],
+        ],
+      };
+    default:
+      return {
+        gridCols: 6,
+        gridRows: 4,
+        cellW: 22,
+        cellH: 11,
+        startGx: 0,
+        startGy: 1,
+        dirs: [
+          [1, 0],
+          [1, 0],
+          [0, 1],
+          [0, -1],
+          [-1, 0],
+        ],
+      };
+  }
+}
 
 function createEmptyGrid(width: number, height: number): TileGrid {
   const count = width * height;
@@ -180,6 +298,96 @@ function pickDistinctDualStats(rng: RngAPI): ScrollStat[] {
   const firstIdx = rng.rangeInt(0, 2);
   const secondIdx = (firstIdx + rng.rangeInt(1, 2)) % 3;
   return [ALL_SCROLL_STATS[firstIdx]!, ALL_SCROLL_STATS[secondIdx]!];
+}
+
+function createPedestalStarterWeapon(state: SimState, defId: string): GearInstance {
+  const def = getWeapon(defId);
+  return {
+    uid: state.nextUid++,
+    defId: def.id,
+    slotKind: 'weapon',
+    level: 1,
+    quality: 'base',
+    color: def.colors[0] ?? 'brutality',
+    affixes: [],
+    ammo: def.ammoCapacity,
+    maxAmmo: def.ammoCapacity,
+    cooldownTicks: 0,
+  };
+}
+
+function rollRecyclingTubeLoadout(
+  state: SimState,
+  rng: RngAPI,
+  theme: ScrollStat
+): {
+  weapon1: GearInstance;
+  weapon2: GearInstance;
+  skill1: GearInstance;
+  skill2: GearInstance;
+  theme: ScrollStat;
+} {
+  const weapon1 = rollGearInstance(state, rng, 'weapon', 1, theme);
+  let weapon2 = rollGearInstance(state, rng, 'weapon', 1, theme);
+  for (let tries = 0; tries < 5 && weapon2.defId === weapon1.defId; tries++) {
+    weapon2 = rollGearInstance(state, rng, 'weapon', 1, theme);
+  }
+  // Prefer pairing melee with shield/ranged on survival/tactics tubes when rolled identical
+  if (weapon2.defId === weapon1.defId) {
+    const fallbackId =
+      theme === 'survival'
+        ? 'StartShield'
+        : theme === 'tactics'
+          ? 'CloseCombatBow'
+          : 'DualDaggers';
+    if (WEAPON_MAP[fallbackId] && fallbackId !== weapon1.defId) {
+      weapon2 = rollGearInstance(state, rng, 'weapon', 1, theme, false, fallbackId);
+    }
+  }
+
+  const skill1 = rollGearInstance(state, rng, 'skill', 1, theme);
+  let skill2 = rollGearInstance(state, rng, 'skill', 1, theme);
+  for (let tries = 0; tries < 5 && skill2.defId === skill1.defId; tries++) {
+    skill2 = rollGearInstance(state, rng, 'skill', 1, theme);
+  }
+  if (skill2.defId === skill1.defId) {
+    const altId = skill1.defId === 'SinewSlicer' ? 'InfantryGrenade' : 'SinewSlicer';
+    skill2 = rollGearInstance(state, rng, 'skill', 1, theme, false, altId);
+  }
+
+  return { weapon1, weapon2, skill1, skill2, theme };
+}
+
+function findSafeFloorTx(
+  grid: TileGrid,
+  col: CollisionAPI,
+  r: RoomNode,
+  preferredTx: number
+): number {
+  const floorTy = r.ty + r.th - 1;
+  const minTx = r.tx + 2;
+  const maxTx = r.tx + r.tw - 3;
+  const clamped = Math.max(minTx, Math.min(maxTx, preferredTx));
+
+  for (let offset = 0; offset <= maxTx - minTx; offset++) {
+    for (const sign of offset === 0 ? [0] : [1, -1]) {
+      const tx = clamped + offset * sign;
+      if (tx < minTx || tx > maxTx) continue;
+      const floorTile = col.getTile(grid, tx, floorTy);
+      const above1 = col.getTile(grid, tx, floorTy - 1);
+      const above2 = col.getTile(grid, tx, floorTy - 2);
+      if (
+        floorTile === TileKind.SOLID &&
+        above1 !== TileKind.SOLID &&
+        above1 !== TileKind.SPIKES &&
+        above1 !== TileKind.ACID &&
+        above2 !== TileKind.SOLID
+      ) {
+        return tx;
+      }
+    }
+  }
+  return clamped;
 }
 
 // =============================================================================
@@ -309,6 +517,18 @@ function computeReachableTileMask(
     if (belowTile === TileKind.ONE_WAY) {
       for (let fy = cy + 1; fy < h - 1; fy++) {
         if (!isTilePassableForBfs(tileGrid, cx, fy)) break;
+        if (isTileSupportedForBfs(tileGrid, cx, fy)) {
+          push(cx, fy);
+          break;
+        }
+      }
+    }
+
+    // 3b. Ram Rune Dive-Slam through CRACKED_FLOOR into secret sub-chambers
+    if (belowTile === TileKind.CRACKED_FLOOR) {
+      for (let fy = cy + 2; fy < h - 1; fy++) {
+        const k = tileGrid.tiles[fy * w + cx] as TileKindValue;
+        if (k === TileKind.SOLID || k === TileKind.SECRET_WALL) break;
         if (isTileSupportedForBfs(tileGrid, cx, fy)) {
           push(cx, fy);
           break;
@@ -469,13 +689,13 @@ function generateBossArena(
   fillTileRect(grid, col, 2, 2, width - 4, floorTy - 2, TileKind.EMPTY);
   carveRoomBackground(grid, biome.id, 2, 2, width - 4, floorTy - 2, floorTy);
 
-  // Side elevated one-way balconies for dodging shockwaves & aerial combat
-  fillTileRect(grid, col, 7, 10, 6, 1, TileKind.ONE_WAY);
-  fillTileRect(grid, col, 28, 10, 6, 1, TileKind.ONE_WAY);
-
-  // Throne Room special: iconic left & right recessed spike pits cleanly clear of the entrance gate!
+  // Authentic Dead Cells Arenas:
+  // - Black Bridge (Concierge) & Clock Room (Time Keeper): NO floating cheese balconies!
+  // - Throne Room (Hand of the King): side temporary destructible Ice Platforms (tx: 6..10 & 33..37, ty: 10)
+  //   plus recessed left & right spike pits (tx: 2..4 & 39..41).
   if (biome.id === 'Throne') {
-    // Left spike pit (tx: 2..4) & Right spike pit (tx: 39..41)
+    fillTileRect(grid, col, 6, 10, 5, 1, TileKind.ONE_WAY);
+    fillTileRect(grid, col, 33, 10, 5, 1, TileKind.ONE_WAY);
     fillTileRect(grid, col, 2, floorTy, 3, 1, TileKind.SPIKES);
     fillTileRect(grid, col, 39, floorTy, 3, 1, TileKind.SPIKES);
   }
@@ -523,7 +743,7 @@ function generateBossArena(
     width: 22,
     height: 48,
     kind: 'bossGate',
-    opened: false,
+    opened: true, // Slams shut upon crossing the boss engagement threshold!
     broken: false,
     label: 'Boss Arena Gate',
   });
@@ -565,6 +785,8 @@ function generateBossArena(
   state.player.grounded = true;
   state.player.onOneWay = false;
   state.player.diveSlamState = 'none';
+  state.player.fallStartY = state.player.pos.y;
+  state.player.fallStunTicks = 0;
   state.player.airJumpsLeft = state.player.maxAirJumps;
 
   // Spawn the biome's Boss on-screen in dramatic standoff framing!
@@ -572,7 +794,8 @@ function generateBossArena(
   const bossDef = getBoss(bossId);
   const bossX = 22 * TILE_SIZE;
   const bossY = floorSurfaceY - bossDef.height * 0.5;
-  spawnBoss(state, bossId, bossX, bossY);
+  const boss = spawnBoss(state, bossId, bossX, bossY);
+  boss.state = 'idle';
 
   // Add subtle boss aura light (balanced so boss steel/armor shading never blows out!)
   addWorldLight(state, bossX, bossY - 12, 145, primaryLight, 0.82, 'boss', 6.0, 0.16);
@@ -580,6 +803,13 @@ function generateBossArena(
   // Keep lockedLeftX/lockedRightX inside spike pit margins on Throne or walls elsewhere
   state.bossArenaState.lockedLeftX = 2 * TILE_SIZE + 8;
   state.bossArenaState.lockedRightX = (width - 2) * TILE_SIZE - 8;
+  // Boss remains poised until player crosses x >= 14 * TILE_SIZE or deals damage!
+  state.bossArenaState.engaged = false;
+  state.bossArenaState.playerTookHit = false;
+  state.bossArenaState.bannerTicks = 0;
+  if (biome.id === 'Throne') {
+    state.bossArenaState.icePlatformTimers = [0, 0];
+  }
 
   // Ensure homunculus flame light is present
   ensureHomunculusLight(state);
@@ -648,6 +878,8 @@ function generatePassageSafeRoom(
   state.player.grounded = true;
   state.player.onOneWay = false;
   state.player.diveSlamState = 'none';
+  state.player.fallStartY = state.player.pos.y;
+  state.player.fallStunTicks = 0;
 
   // Cozy Passage lighting (warm amber torches + cyan Collector + emerald Fountain)
   state.lights = [];
@@ -680,6 +912,110 @@ function generatePassageSafeRoom(
 }
 
 // =============================================================================
+// Secret CRACKED_FLOOR 6x3 Sub-Chamber Carvers
+// =============================================================================
+
+function carveSecretCellar(
+  state: SimState,
+  grid: TileGrid,
+  col: CollisionAPI,
+  biome: BiomeDef,
+  r: RoomNode,
+  innerTx: number,
+  floorTy: number,
+  rng: RngAPI,
+  reachTargets: { label: string; pos: Vec2 }[]
+): boolean {
+  // Need solid bedrock at floorTy + 4 and margin inside grid bounds
+  if (floorTy + 5 >= grid.height) return false;
+
+  const cellarTx = innerTx + 2;
+  const cellarW = 6;
+  const cellarH = 3;
+  const cellarFloorTy = floorTy + cellarH + 1;
+
+  // Carve 6x3 sub-chamber beneath floorTy (floorTy + 1 .. floorTy + 3)
+  fillTileRect(grid, col, cellarTx, floorTy + 1, cellarW, cellarH, TileKind.EMPTY);
+  // Ensure solid enclosing walls and floor around the cellar
+  for (let y = floorTy + 1; y <= cellarFloorTy; y++) {
+    col.setTile(grid, cellarTx - 1, y, TileKind.SOLID);
+    col.setTile(grid, cellarTx + cellarW, y, TileKind.SOLID);
+  }
+  for (let x = cellarTx - 1; x <= cellarTx + cellarW; x++) {
+    col.setTile(grid, x, cellarFloorTy, TileKind.SOLID);
+  }
+
+  // Place 2-tile breakable CRACKED_FLOOR entry roof (Ram Rune target!)
+  col.setTile(grid, cellarTx + 1, floorTy, TileKind.CRACKED_FLOOR);
+  col.setTile(grid, cellarTx + 2, floorTy, TileKind.CRACKED_FLOOR);
+
+  // Escape chain directly beneath the left cracked tile + helper ledge so player climbs cleanly out!
+  for (let y = floorTy + 1; y <= floorTy + cellarH; y++) {
+    col.setTile(grid, cellarTx + 1, y, TileKind.CHAIN);
+  }
+  col.setTile(grid, cellarTx + 3, floorTy + 2, TileKind.ONE_WAY);
+
+  // Warm subterranean torch lighting
+  const cellarFloorY = cellarFloorTy * TILE_SIZE;
+  addWorldLight(
+    state,
+    (cellarTx + 3) * TILE_SIZE,
+    (floorTy + 2) * TILE_SIZE,
+    94,
+    [1.0, 0.72, 0.34],
+    0.98,
+    'torch',
+    5.0,
+    0.16
+  );
+
+  const lootX = (cellarTx + 4.5) * TILE_SIZE;
+  const lootY = cellarFloorY - 12;
+
+  if (rng.chance(0.5)) {
+    state.chests.push({
+      uid: state.nextUid++,
+      pos: { x: lootX, y: lootY },
+      kind: 'treasure',
+      opened: false,
+      roomId: r.id,
+    });
+    addWorldLight(state, lootX, lootY - 8, 80, [1.0, 0.85, 0.35], 0.95, 'scroll');
+    reachTargets.push({ label: `cellar:chest_${r.id}`, pos: { x: lootX, y: lootY } });
+  } else {
+    state.pickups.push(
+      {
+        uid: state.nextUid++,
+        kind: 'gold',
+        pos: { x: lootX - 10, y: lootY },
+        prevPos: { x: lootX - 10, y: lootY },
+        vel: { x: 0, y: 0 },
+        value: 250 + biome.depthTier * 60,
+        label: 'Cellar Gold Gem',
+        magnetTicks: 0,
+        collected: false,
+        bobPhase: 0.4,
+      },
+      {
+        uid: state.nextUid++,
+        kind: 'food',
+        pos: { x: lootX + 10, y: lootY },
+        prevPos: { x: lootX + 10, y: lootY },
+        vel: { x: 0, y: 0 },
+        value: 50,
+        label: 'Cellar Roast (+50% HP)',
+        magnetTicks: 0,
+        collected: false,
+        bobPhase: 1.5,
+      }
+    );
+    reachTargets.push({ label: `cellar:loot_${r.id}`, pos: { x: lootX, y: lootY } });
+  }
+
+  return true;
+}
+
+// =============================================================================
 // Regular Metroidvania Biome Generator (10–17 Interconnected Rooms)
 // =============================================================================
 
@@ -697,15 +1033,18 @@ function generateRegularBiome(
   rng: RngAPI,
   col: CollisionAPI
 ): void {
+  const profile = getBiomeLayoutProfile(biome.id);
+  const { gridCols, gridRows, cellW, cellH, startGx, startGy, dirs } = profile;
+
   const minRooms = Math.max(10, biome.roomCountRange[0]);
-  const maxRooms = Math.min(GRID_COLS * GRID_ROWS - 2, Math.max(minRooms, biome.roomCountRange[1]));
+  const maxRooms = Math.min(gridCols * gridRows - 2, Math.max(minRooms, biome.roomCountRange[1]));
   const targetRooms = rng.rangeInt(minRooms, maxRooms);
 
-  const worldW = GRID_COLS * CELL_W + GRID_PAD_X * 2;
-  const worldH = GRID_ROWS * CELL_H + GRID_PAD_Y * 2;
+  const worldW = gridCols * cellW + GRID_PAD_X * 2;
+  const worldH = gridRows * cellH + GRID_PAD_Y + GRID_PAD_Y_BOTTOM;
   const grid = createEmptyGrid(worldW, worldH);
 
-  // 1. Build connected branching Metroidvania cell graph starting at (0, 1)
+  // 1. Build connected branching Metroidvania cell graph
   const cellMap = new Map<string, PlacedCell>();
   const cells: PlacedCell[] = [];
   const keyOf = (gx: number, gy: number) => `${gx},${gy}`;
@@ -717,18 +1056,42 @@ function generateRegularBiome(
     return cell;
   };
 
-  addCell(0, 1, 0);
+  const connectCells = (a: PlacedCell, b: PlacedCell): void => {
+    if (!a.neighbors.includes(b.id)) a.neighbors.push(b.id);
+    if (!b.neighbors.includes(a.id)) b.neighbors.push(a.id);
+  };
 
-  const dirs: readonly [number, number][] = [
-    [1, 0],
-    [1, 0], // Slight rightward bias for classic Dead Cells momentum
-    [0, 1],
-    [0, -1],
-    [-1, 0],
-  ];
+  addCell(startGx, startGy, 0);
+
+  // Biome-specific signature macro spines before branching!
+  if (biome.id === 'PrisonCourtyard') {
+    // Promenade surface open-sky boulevard spine along gy = 1
+    let prev = cells[0]!;
+    for (let gx = 1; gx <= Math.min(4, gridCols - 1) && cells.length < targetRooms; gx++) {
+      const next = addCell(gx, startGy, prev.depth + 1);
+      connectCells(prev, next);
+      prev = next;
+    }
+  } else if (biome.id === 'ClockTower') {
+    // Vertical ascent spine climbing UP from (1, 5) toward top of the tower
+    let prev = cells[0]!;
+    for (let gy = startGy - 1; gy >= 0 && cells.length < targetRooms; gy--) {
+      const shiftX = rng.chance(0.4) ? (prev.gx === 1 ? 2 : 1) : prev.gx;
+      if (shiftX !== prev.gx && !cellMap.has(keyOf(shiftX, prev.gy))) {
+        const horiz = addCell(shiftX, prev.gy, prev.depth + 1);
+        connectCells(prev, horiz);
+        prev = horiz;
+      }
+      if (!cellMap.has(keyOf(prev.gx, gy)) && cells.length < targetRooms) {
+        const up = addCell(prev.gx, gy, prev.depth + 1);
+        connectCells(prev, up);
+        prev = up;
+      }
+    }
+  }
 
   let attempts = 0;
-  while (cells.length < targetRooms && attempts < 400) {
+  while (cells.length < targetRooms && attempts < 500) {
     attempts += 1;
     // Prefer expanding from recent or frontier nodes
     const pickIdx = rng.chance(0.65)
@@ -738,12 +1101,11 @@ function generateRegularBiome(
     const [dx, dy] = rng.pick(dirs);
     const nx = base.gx + dx;
     const ny = base.gy + dy;
-    if (nx < 0 || ny < 0 || nx >= GRID_COLS || ny >= GRID_ROWS) continue;
+    if (nx < 0 || ny < 0 || nx >= gridCols || ny >= gridRows) continue;
     if (cellMap.has(keyOf(nx, ny))) continue;
 
     const child = addCell(nx, ny, base.depth + 1);
-    base.neighbors.push(child.id);
-    child.neighbors.push(base.id);
+    connectCells(base, child);
   }
 
   // Add 2–3 Metroidvania loop edges between adjacent placed cells
@@ -756,8 +1118,7 @@ function generateRegularBiome(
     ] as const) {
       const b = cellMap.get(keyOf(a.gx + dx, a.gy + dy));
       if (b && !a.neighbors.includes(b.id) && rng.chance(0.45)) {
-        a.neighbors.push(b.id);
-        b.neighbors.push(a.id);
+        connectCells(a, b);
         loopsAdded += 1;
         break;
       }
@@ -769,10 +1130,14 @@ function generateRegularBiome(
   const exitBiomeMap = new Map<number, BiomeId>();
   roomTypes[0] = 'entrance';
 
-  // Sort non-entrance rooms by descending depth (farthest first for exits)
+  // Sort non-entrance rooms by biome exit bias (ClockTower prioritizes top-most rooms!)
   const nonStartIds = cells
     .slice(1)
-    .sort((a, b) => b.depth - a.depth || b.gx - a.gx)
+    .sort((a, b) =>
+      biome.id === 'ClockTower'
+        ? a.gy - b.gy || b.depth - a.depth
+        : b.depth - a.depth || b.gx - a.gx
+    )
     .map((c) => c.id);
 
   const usedSpecial = new Set<number>([0]);
@@ -786,28 +1151,36 @@ function generateRegularBiome(
     usedSpecial.add(rid);
   }
 
-  const pickFreeRoom = (preferMid = false): number | null => {
-    const pool = nonStartIds.filter((id) => !usedSpecial.has(id));
-    if (pool.length === 0) return null;
-    const chosen = preferMid ? pool[Math.floor(pool.length * 0.5)]! : rng.pick(pool);
+  const pickFreeRoom = (preferMid = false, filterFn?: (id: number) => boolean): number | null => {
+    const basePool = nonStartIds.filter((id) => !usedSpecial.has(id));
+    const pool = filterFn ? basePool.filter(filterFn) : basePool;
+    const finalPool = pool.length > 0 ? pool : basePool;
+    if (finalPool.length === 0) return null;
+    const chosen = preferMid ? finalPool[Math.floor(finalPool.length * 0.5)]! : rng.pick(finalPool);
     usedSpecial.add(chosen);
     return chosen;
   };
 
-  // Treasure Room
-  const treasureId = pickFreeRoom(false);
+  // Treasure Room (prefer rooms with no cell below so CRACKED_FLOOR cellar can carve underneath!)
+  const treasureId = pickFreeRoom(false, (id) => {
+    const c = cells[id]!;
+    return !cellMap.has(keyOf(c.gx, c.gy + 1));
+  });
   if (treasureId !== null) roomTypes[treasureId] = 'treasure';
 
   // Weapon or Skill Merchant Shop
-  const shopId = pickFreeRoom(true);
-  if (shopId !== null) roomTypes[shopId] = rng.chance(0.55) ? 'weaponShop' : 'skillShop';
+  const shopRoomId = pickFreeRoom(true);
+  if (shopRoomId !== null) roomTypes[shopRoomId] = rng.chance(0.55) ? 'weaponShop' : 'skillShop';
 
   // Cursed Chest Room
   const cursedId = pickFreeRoom(false);
   if (cursedId !== null) roomTypes[cursedId] = 'cursedChest';
 
-  // Challenge Rift Room
-  const riftId = pickFreeRoom(false);
+  // Challenge Rift Room (prefer a leaf/side room without vertical bottom shaft for clean obstacle corridor!)
+  const riftId = pickFreeRoom(false, (id) => {
+    const c = cells[id]!;
+    return !c.neighbors.some((nid) => cells[nid]!.gy > c.gy);
+  });
   if (riftId !== null) roomTypes[riftId] = 'challengeRift';
 
   // Food Shop (when >= 11 rooms)
@@ -829,7 +1202,7 @@ function generateRegularBiome(
     if (usedSpecial.has(i)) continue;
     const c = cells[i]!;
     const hasVertical = c.neighbors.some((nid) => cells[nid]!.gy !== c.gy);
-    if (hasVertical && rng.chance(0.65)) {
+    if (hasVertical && rng.chance(biome.id === 'ClockTower' ? 0.8 : 0.65)) {
       roomTypes[i] = 'verticalShaft';
     } else if (rng.chance(0.55)) {
       roomTypes[i] = 'combatArena';
@@ -840,10 +1213,10 @@ function generateRegularBiome(
 
   // 3. Create RoomNode structs & carve room interiors
   const rooms: RoomNode[] = cells.map((c) => {
-    const tx = GRID_PAD_X + c.gx * CELL_W + 1;
-    const ty = GRID_PAD_Y + c.gy * CELL_H + 1;
-    const tw = CELL_W - 2; // 20 tiles
-    const th = CELL_H - 2; // 9 tiles
+    const tx = GRID_PAD_X + c.gx * cellW + 1;
+    const ty = GRID_PAD_Y + c.gy * cellH + 1;
+    const tw = cellW - 2;
+    const th = cellH - 2;
     const type = roomTypes[c.id]!;
     const shopKind =
       type === 'weaponShop'
@@ -862,48 +1235,125 @@ function generateRegularBiome(
       th,
       neighbors: [...c.neighbors],
       discovered: c.id === 0,
-      cleared: type === 'entrance' || type === 'exit' || type === 'treasure' || type === 'teleporter' || Boolean(shopKind),
+      cleared:
+        type === 'entrance' ||
+        type === 'exit' ||
+        type === 'treasure' ||
+        type === 'teleporter' ||
+        type === 'challengeRift' ||
+        Boolean(shopKind),
       exitBiomeId: exitBiomeMap.get(c.id),
       shopKind,
     };
   });
 
-  // Carve each room interior + one-way platform tiers + optional hazards/secrets
+  // Track mandatory reachable targets for BFS verification
+  const reachTargets: { label: string; pos: Vec2 }[] = [];
+
+  // Carve each room interior + biome-distinct architecture + secret cellars
   const primaryLight = hexToRgb01(biome.lightColors[0] ?? '#ff9d42');
   const secondaryLight = hexToRgb01(biome.lightColors[1] ?? '#ffd27d');
   const accentLight = hexToRgb01(biome.lightColors[2] ?? '#5fd6ff');
 
+  let sewerBonusCellars = 0;
+
   for (let i = 0; i < rooms.length; i++) {
     const r = rooms[i]!;
+    const cell = cells[r.id]!;
     const innerTx = r.tx + 1;
-    const innerTy = r.ty + 1;
-    const innerTw = r.tw - 2; // 18 tiles
-    const innerTh = r.th - 2; // 7 tiles (floor is at r.ty + r.th - 1)
+    const innerTw = r.tw - 2;
     const floorTy = r.ty + r.th - 1;
+    const baseInnerTh = r.th - 2;
+    const innerTh =
+      profile.innerHOverride !== undefined && r.type !== 'challengeRift'
+        ? Math.min(baseInnerTh, profile.innerHOverride)
+        : baseInnerTh;
+    const innerTy = floorTy - innerTh;
 
     fillTileRect(grid, col, innerTx, innerTy, innerTw, innerTh, TileKind.EMPTY);
     carveRoomBackground(grid, biome.id, innerTx, innerTy, innerTw, innerTh, floorTy);
 
-    // One-way platform tiers (3 tiles above floor -> trivially single-jumpable!)
+    const hasBottomNeighbor = r.neighbors.some((nid) => cells[nid]!.gy > cell.gy);
+    const hasTopNeighbor = r.neighbors.some((nid) => cells[nid]!.gy < cell.gy);
+    const hasCellDirectlyBelow = cellMap.has(keyOf(cell.gx, cell.gy + 1));
+
+    // Special room: Challenge Rift Trap Gauntlet (alternating spikes + elevated one-way stepping stones!)
+    if (r.type === 'challengeRift') {
+      const shaftTx = r.tx + Math.floor(r.tw * 0.5);
+      const nearShaft = (tx: number): boolean =>
+        (hasBottomNeighbor || hasTopNeighbor) && Math.abs(tx - shaftTx) <= 2;
+
+      // Carve 3 spike pit zones across the central corridor, leaving safe solid pads at both ends
+      const segs: readonly [number, number, number][] = [
+        [innerTx + 3, innerTx + 5, floorTy - 2],
+        [innerTx + 7, innerTx + 9, floorTy - 3],
+        [innerTx + 11, innerTx + Math.min(innerTw - 4, 13), floorTy - 2],
+      ];
+      for (const [sStart, sEnd, platTy] of segs) {
+        if (sEnd <= sStart) continue;
+        for (let sx = sStart; sx <= sEnd; sx++) {
+          if (!nearShaft(sx)) {
+            col.setTile(grid, sx, floorTy, TileKind.SPIKES);
+          }
+          col.setTile(grid, sx, platTy, TileKind.ONE_WAY);
+        }
+        // Extend stepping stone 1 tile onto safe pillar for generous footing
+        if (sStart - 1 > innerTx + 1) {
+          col.setTile(grid, sStart - 1, platTy, TileKind.ONE_WAY);
+        }
+      }
+      // Subtle crimson rift glow along gauntlet floor
+      addWorldLight(
+        state,
+        (innerTx + Math.floor(innerTw * 0.5)) * TILE_SIZE,
+        (floorTy - 2) * TILE_SIZE,
+        135,
+        [0.95, 0.25, 0.42],
+        1.1,
+        'portal',
+        5.5,
+        0.18
+      );
+      continue;
+    }
+
+    // One-way platform tiers (customized per biome silhouette!)
     if (r.type === 'combatArena' || r.type === 'corridor' || r.type === 'verticalShaft') {
-      fillTileRect(grid, col, innerTx + 2, floorTy - 3, 5, 1, TileKind.ONE_WAY);
-      fillTileRect(grid, col, innerTx + innerTw - 7, floorTy - 3, 5, 1, TileKind.ONE_WAY);
-      if (r.type === 'combatArena' || r.type === 'verticalShaft') {
-        fillTileRect(grid, col, innerTx + 6, floorTy - 6, 6, 1, TileKind.ONE_WAY);
+      if (biome.id === 'Sewer') {
+        // Cramped low catwalk shelf in flooded tunnels
+        fillTileRect(grid, col, innerTx + 3, floorTy - 2, 4, 1, TileKind.ONE_WAY);
+        fillTileRect(grid, col, innerTx + innerTw - 7, floorTy - 2, 4, 1, TileKind.ONE_WAY);
+      } else if (biome.id === 'ClockTower') {
+        // Staggered clockwork stepping gears for vertical momentum
+        fillTileRect(grid, col, innerTx + 2, floorTy - 3, 5, 1, TileKind.ONE_WAY);
+        fillTileRect(grid, col, innerTx + innerTw - 7, floorTy - 3, 5, 1, TileKind.ONE_WAY);
+        fillTileRect(grid, col, innerTx + 5, floorTy - 5, Math.max(4, innerTw - 10), 1, TileKind.ONE_WAY);
+      } else if (biome.id === 'Castle') {
+        // Grand elevated royal galleries
+        fillTileRect(grid, col, innerTx + 2, floorTy - 3, 5, 1, TileKind.ONE_WAY);
+        fillTileRect(grid, col, innerTx + innerTw - 7, floorTy - 3, 5, 1, TileKind.ONE_WAY);
+        fillTileRect(grid, col, innerTx + 5, floorTy - 6, Math.max(5, innerTw - 10), 1, TileKind.ONE_WAY);
+      } else {
+        fillTileRect(grid, col, innerTx + 2, floorTy - 3, 5, 1, TileKind.ONE_WAY);
+        fillTileRect(grid, col, innerTx + innerTw - 7, floorTy - 3, 5, 1, TileKind.ONE_WAY);
+        if (r.type === 'combatArena' || r.type === 'verticalShaft') {
+          fillTileRect(grid, col, innerTx + 6, floorTy - 6, Math.max(4, innerTw - 12), 1, TileKind.ONE_WAY);
+        }
       }
     } else if (r.type === 'entrance' || r.type === 'treasure' || r.type === 'cursedChest') {
-      fillTileRect(grid, col, innerTx + 3, floorTy - 3, 4, 1, TileKind.ONE_WAY);
-      fillTileRect(grid, col, innerTx + innerTw - 7, floorTy - 3, 4, 1, TileKind.ONE_WAY);
+      if (biome.id !== 'Sewer') {
+        fillTileRect(grid, col, innerTx + 3, floorTy - 3, 4, 1, TileKind.ONE_WAY);
+        fillTileRect(grid, col, innerTx + innerTw - 7, floorTy - 3, 4, 1, TileKind.ONE_WAY);
+      }
     }
 
     // Optional jumpable hazard pit (2 tiles wide) in combat rooms ONLY (never near doorways/shafts)
-    const hasBottomNeighbor = r.neighbors.some((nid) => cells[nid]!.gy > cells[r.id]!.gy);
     if (
       !hasBottomNeighbor &&
       (r.type === 'combatArena' || r.type === 'corridor') &&
       (biome.hasAcid || (biome.depthTier >= 2 && rng.chance(0.45)))
     ) {
-      const pitTx = innerTx + 8;
+      const pitTx = innerTx + Math.max(6, Math.floor(innerTw * 0.45));
       const hazardKind = biome.hasAcid ? TileKind.ACID : TileKind.SPIKES;
       col.setTile(grid, pitTx, floorTy, hazardKind);
       col.setTile(grid, pitTx + 1, floorTy, hazardKind);
@@ -928,21 +1378,46 @@ function generateRegularBiome(
       }
     }
 
+    // Shallow water puddles in Sewer & StiltVillage (enables Electric Whip water conductivity!)
+    if (
+      !hasBottomNeighbor &&
+      (biome.id === 'Sewer' || biome.id === 'StiltVillage' || biome.id === 'PrisonCourtyard') &&
+      (r.type === 'corridor' || r.type === 'combatArena') &&
+      rng.chance(biome.id === 'Sewer' ? 0.5 : 0.25)
+    ) {
+      const waterTx = innerTx + 2;
+      if (col.getTile(grid, waterTx, floorTy) === TileKind.SOLID) {
+        col.setTile(grid, waterTx, floorTy - 1, TileKind.WATER);
+        col.setTile(grid, waterTx + 1, floorTy - 1, TileKind.WATER);
+      }
+    }
+
     // Occasional breakable secret wall alcove on solid side edge (when no neighbor on that side)
-    const hasRightNeighbor = r.neighbors.some((nid) => cells[nid]!.gx > cells[r.id]!.gx);
+    const hasRightNeighbor = r.neighbors.some((nid) => cells[nid]!.gx > cell.gx);
     if (!hasRightNeighbor && (r.type === 'corridor' || r.type === 'combatArena') && rng.chance(0.3)) {
       col.setTile(grid, r.tx + r.tw - 1, floorTy - 1, TileKind.SECRET_WALL);
       col.setTile(grid, r.tx + r.tw - 1, floorTy - 2, TileKind.SECRET_WALL);
     }
 
-    // Occasional cracked floor secret pocket in treasure/corridor rooms with no bottom neighbor
-    if (!hasBottomNeighbor && r.type === 'treasure' && rng.chance(0.7)) {
-      col.setTile(grid, innerTx + 3, floorTy, TileKind.CRACKED_FLOOR);
-      col.setTile(grid, innerTx + 4, floorTy, TileKind.CRACKED_FLOOR);
+    // Authentic CRACKED_FLOOR secret 6x3 sub-chamber beneath treasure rooms (and Sewer tunnels!)
+    const wantsCellar =
+      !hasBottomNeighbor &&
+      !hasCellDirectlyBelow &&
+      ((r.type === 'treasure' && rng.chance(0.85)) ||
+        (biome.id === 'Sewer' &&
+          sewerBonusCellars < 2 &&
+          (r.type === 'corridor' || r.type === 'combatArena') &&
+          rng.chance(0.45)));
+    if (wantsCellar) {
+      if (carveSecretCellar(state, grid, col, biome, r, innerTx, floorTy, rng, reachTargets)) {
+        if (biome.id === 'Sewer' && r.type !== 'treasure') {
+          sewerBonusCellars += 1;
+        }
+      }
     }
 
     // Atmospheric wall torches + grounded floor braziers!
-    const torchY = (floorTy - 3) * TILE_SIZE;
+    const torchY = (floorTy - Math.min(3, Math.max(2, innerTh - 1))) * TILE_SIZE;
     const brazierY = floorTy * TILE_SIZE - 18;
     const lColor = i % 3 === 0 ? primaryLight : i % 3 === 1 ? secondaryLight : accentLight;
     addWorldLight(state, (innerTx + 3) * TILE_SIZE, torchY, 132, lColor, 1.0, 'torch', 4.6, 0.14);
@@ -959,10 +1434,11 @@ function generateRegularBiome(
     );
   }
 
-  // 4. Carve doorways & vertical chain/ladder shafts between connected rooms
+  // 4. Carve doorways, biome-distinct merged wide halls & vertical chain/ladder shafts
   const carvedEdges = new Set<string>();
   const climbKind: TileKindValue =
     biome.id === 'PrisonCourtyard' || biome.id === 'StiltVillage' ? TileKind.LADDER : TileKind.CHAIN;
+  const mergedCastlePairs = new Set<number>();
 
   for (let i = 0; i < cells.length; i++) {
     const a = cells[i]!;
@@ -977,41 +1453,77 @@ function generateRegularBiome(
       const roomB = rooms[b.id]!;
 
       if (a.gy === b.gy) {
-        // Horizontal doorway (4 tiles tall, completely flush with room floors)
         const leftRoom = a.gx < b.gx ? roomA : roomB;
         const rightRoom = a.gx < b.gx ? roomB : roomA;
         const floorTy = leftRoom.ty + leftRoom.th - 1;
         const xFrom = leftRoom.tx + leftRoom.tw - 1;
         const xTo = rightRoom.tx;
 
-        fillTileRect(grid, col, xFrom, floorTy - 4, xTo - xFrom + 1, 4, TileKind.EMPTY);
-        // Guarantee solid floor across the doorway span
-        for (let x = xFrom; x <= xTo; x++) {
-          col.setTile(grid, x, floorTy, TileKind.SOLID);
-        }
+        // Biome-distinct merged grand spaces:
+        // - PrisonCourtyard (Promenade): open-sky surface boulevard along gy === 1!
+        // - Castle: grand double-wide royal halls (2x1 merged combat/corridor pairs)!
+        const isPromenadeBoulevard =
+          biome.id === 'PrisonCourtyard' &&
+          a.gy === 1 &&
+          leftRoom.type !== 'challengeRift' &&
+          rightRoom.type !== 'challengeRift' &&
+          leftRoom.type !== 'exit' &&
+          rightRoom.type !== 'exit';
 
-        // Destructible wooden door in ~65% of doorways
-        if (rng.chance(0.65)) {
-          const doorX = ((xFrom + xTo + 1) * 0.5) * TILE_SIZE;
-          state.doors.push({
-            uid: state.nextUid++,
-            pos: { x: doorX, y: floorTy * TILE_SIZE - 22 },
-            width: 12,
-            height: 44,
-            kind: 'wood',
-            opened: false,
-            broken: false,
-          });
+        const isCastleRoyalHall =
+          biome.id === 'Castle' &&
+          !mergedCastlePairs.has(leftRoom.id) &&
+          !mergedCastlePairs.has(rightRoom.id) &&
+          (leftRoom.type === 'combatArena' || leftRoom.type === 'corridor') &&
+          (rightRoom.type === 'combatArena' || rightRoom.type === 'corridor');
+
+        const isRampartBridge =
+          biome.id === 'PrisonRoof' &&
+          a.gy <= 1 &&
+          leftRoom.type !== 'challengeRift' &&
+          rightRoom.type !== 'challengeRift';
+
+        if (isPromenadeBoulevard || isCastleRoyalHall || isRampartBridge) {
+          const openH = leftRoom.th - 2;
+          const openTopTy = floorTy - openH;
+          fillTileRect(grid, col, xFrom, openTopTy, xTo - xFrom + 1, openH, TileKind.EMPTY);
+          if (OUTDOOR_BIOMES.has(biome.id)) {
+            carveRoomBackground(grid, biome.id, xFrom, openTopTy, xTo - xFrom + 1, openH, floorTy);
+          }
+          for (let x = xFrom; x <= xTo; x++) {
+            col.setTile(grid, x, floorTy, TileKind.SOLID);
+          }
+          if (isCastleRoyalHall) {
+            mergedCastlePairs.add(leftRoom.id);
+            mergedCastlePairs.add(rightRoom.id);
+          }
+        } else {
+          // Standard horizontal doorway (4 tiles tall, completely flush with room floors)
+          fillTileRect(grid, col, xFrom, floorTy - 4, xTo - xFrom + 1, 4, TileKind.EMPTY);
+          for (let x = xFrom; x <= xTo; x++) {
+            col.setTile(grid, x, floorTy, TileKind.SOLID);
+          }
+
+          // Destructible wooden door in ~65% of doorways
+          if (rng.chance(0.65)) {
+            const doorX = (xFrom + xTo + 1) * 0.5 * TILE_SIZE;
+            state.doors.push({
+              uid: state.nextUid++,
+              pos: { x: doorX, y: floorTy * TILE_SIZE - 22 },
+              width: 12,
+              height: 44,
+              kind: 'wood',
+              opened: false,
+              broken: false,
+            });
+          }
         }
       } else {
         // Vertical chain/ladder shaft (3 tiles wide with continuous climbable core + one-way steps)
         const topRoom = a.gy < b.gy ? roomA : roomB;
         const bottomRoom = a.gy < b.gy ? roomB : roomA;
-        // Keep vertical shafts well clear of the entrance room's left spawn pad (tx+4)!
-        const shaftTx =
-          topRoom.id === 0
-            ? topRoom.tx + Math.min(topRoom.tw - 3, Math.max(11, Math.floor(topRoom.tw * 0.65)))
-            : topRoom.tx + Math.floor(topRoom.tw * 0.5);
+        // Align shaft cleanly with room midpoint (matching room-graph navigation!)
+        const shaftTx = topRoom.tx + Math.floor(topRoom.tw * 0.5);
         const topFloorTy = topRoom.ty + topRoom.th - 1;
         const bottomFloorTy = bottomRoom.ty + bottomRoom.th - 1;
 
@@ -1042,7 +1554,7 @@ function generateRegularBiome(
   const entrance = rooms[0]!;
   const entranceFloorTy = entrance.ty + entrance.th - 1;
   const entranceFloorY = entranceFloorTy * TILE_SIZE;
-  const spawnTx = entrance.tx + 4;
+  const spawnTx = entrance.tx + 3;
   for (let dx = -1; dx <= 1; dx++) {
     col.setTile(grid, spawnTx + dx, entranceFloorTy, TileKind.SOLID);
     col.setTile(grid, spawnTx + dx, entranceFloorTy - 1, TileKind.EMPTY);
@@ -1057,13 +1569,65 @@ function generateRegularBiome(
   state.player.grounded = true;
   state.player.onOneWay = false;
   state.player.diveSlamState = 'none';
+  state.player.fallStartY = spawnY;
+  state.player.fallStunTicks = 0;
   state.player.airJumpsLeft = state.player.maxAirJumps;
 
-  // Track mandatory reachable targets for BFS verification
-  const reachTargets: { label: string; pos: Vec2 }[] = [];
+  // Starting Chamber in Prisoner's Quarters: 3 free Starter Pedestals OR 3 Recycling Tubes!
+  if (biome.id === 'PrisonStart') {
+    if (state.metaSnapshot.randomStarterUnlocked) {
+      const themes: readonly { stat: ScrollStat; title: string; color: [number, number, number] }[] = [
+        { stat: 'brutality', title: 'Brutality Recycling Tube', color: [1.0, 0.32, 0.32] },
+        { stat: 'tactics', title: 'Tactics Recycling Tube', color: [0.74, 0.44, 1.0] },
+        { stat: 'survival', title: 'Survival Recycling Tube', color: [0.34, 0.96, 0.54] },
+      ];
+      const tubeOffsets = [5, 7, 13];
+      for (let t = 0; t < themes.length; t++) {
+        const theme = themes[t]!;
+        const tx = findSafeFloorTx(grid, col, entrance, entrance.tx + tubeOffsets[t]!);
+        const tubePos = { x: tx * TILE_SIZE, y: entranceFloorY };
+        state.shrines.push({
+          uid: state.nextUid++,
+          pos: tubePos,
+          kind: 'recyclingTube',
+          used: false,
+          label: theme.title,
+          colorFilter: theme.stat,
+          tubeLoadout: rollRecyclingTubeLoadout(state, rng, theme.stat),
+        });
+        addWorldLight(state, tubePos.x, tubePos.y - 22, 85, theme.color, 0.92, 'scroll', 3.5, 0.1);
+        reachTargets.push({ label: `tube:${theme.stat}`, pos: { x: tubePos.x, y: entranceFloorY - 12 } });
+      }
+    } else {
+      const starterIds = ['StartSword', 'StartShield', 'CloseCombatBow'] as const;
+      const pedOffsets = [5, 7, 13];
+      for (let s = 0; s < starterIds.length; s++) {
+        const defId = starterIds[s]!;
+        const tx = findSafeFloorTx(grid, col, entrance, entrance.tx + pedOffsets[s]!);
+        const px = tx * TILE_SIZE;
+        const py = entranceFloorY - 12;
+        const gear = createPedestalStarterWeapon(state, defId);
+        state.pickups.push({
+          uid: state.nextUid++,
+          kind: 'gear',
+          pos: { x: px, y: py },
+          prevPos: { x: px, y: py },
+          vel: { x: 0, y: 0 },
+          value: 0,
+          gear,
+          priceGold: 0,
+          label: defId,
+          magnetTicks: 0,
+          collected: false,
+          bobPhase: s * 0.9,
+        });
+      }
+    }
+  }
 
   // Entrance Teleporter Rune + Lore Skeleton
-  const entranceTpPos = { x: (entrance.tx + 9) * TILE_SIZE, y: entranceFloorY - 12 };
+  const entranceTpTx = findSafeFloorTx(grid, col, entrance, entrance.tx + (biome.id === 'PrisonStart' ? 15 : 9));
+  const entranceTpPos = { x: entranceTpTx * TILE_SIZE, y: entranceFloorY - 12 };
   state.teleporters.push({
     uid: state.nextUid++,
     pos: entranceTpPos,
@@ -1072,9 +1636,11 @@ function generateRegularBiome(
     activated: true,
   });
   addWorldLight(state, entranceTpPos.x, entranceTpPos.y - 8, 95, [0.22, 0.91, 1.0], 0.95, 'portal');
+
+  const loreTx = findSafeFloorTx(grid, col, entrance, entrance.tx + entrance.tw - 3);
   state.shrines.push({
     uid: state.nextUid++,
-    pos: { x: (entrance.tx + 14) * TILE_SIZE, y: entranceFloorY },
+    pos: { x: loreTx * TILE_SIZE, y: entranceFloorY },
     kind: 'loreSkeleton',
     used: false,
     label: 'Inspect Fallen Prisoner',
@@ -1088,11 +1654,12 @@ function generateRegularBiome(
     const r = rooms[i]!;
     const floorTy = r.ty + r.th - 1;
     const floorY = floorTy * TILE_SIZE;
-    const midX = (r.tx + Math.floor(r.tw * 0.5)) * TILE_SIZE;
+    const midTx = findSafeFloorTx(grid, col, r, r.tx + Math.floor(r.tw * 0.5));
+    const midX = midTx * TILE_SIZE;
 
     if (r.type === 'exit' && r.exitBiomeId) {
       const destDef = getBiome(r.exitBiomeId);
-      const gateTx = r.tx + r.tw - 4;
+      const gateTx = findSafeFloorTx(grid, col, r, r.tx + r.tw - 4);
       col.setTile(grid, gateTx, floorTy - 1, TileKind.EXIT_GATE);
       col.setTile(grid, gateTx, floorTy - 2, TileKind.EXIT_GATE);
 
@@ -1112,7 +1679,8 @@ function generateRegularBiome(
       reachTargets.push({ label: `exit:${r.exitBiomeId}`, pos: { x: exitPos.x, y: floorY - 12 } });
 
       // Place a convenience Teleporter Rune in every exit room
-      const tpPos = { x: (r.tx + 5) * TILE_SIZE, y: floorY - 12 };
+      const tpTx = findSafeFloorTx(grid, col, r, r.tx + 4);
+      const tpPos = { x: tpTx * TILE_SIZE, y: floorY - 12 };
       state.teleporters.push({
         uid: state.nextUid++,
         pos: tpPos,
@@ -1145,16 +1713,98 @@ function generateRegularBiome(
       addWorldLight(state, chestPos.x, chestPos.y - 10, 110, [0.88, 0.2, 0.96], 1.15, 'scroll');
       reachTargets.push({ label: `chest:cursed_${r.id}`, pos: chestPos });
     } else if (r.type === 'challengeRift') {
-      const shrinePos = { x: midX, y: floorY };
+      // Trap Gauntlet: entry rune shrine on left/entry pad, rewards + return teleporter on far end!
+      const cell = cells[r.id]!;
+      const hasLeftConn = r.neighbors.some((nid) => cells[nid]!.gx < cell.gx);
+      const hasRightConn = r.neighbors.some((nid) => cells[nid]!.gx > cell.gx);
+      const rewardsOnLeft = hasRightConn && !hasLeftConn;
+
+      const entryTx = rewardsOnLeft ? r.tx + r.tw - 3 : r.tx + 2;
+      const rewardBaseTx = rewardsOnLeft ? r.tx + 2 : r.tx + r.tw - 4;
+
+      // Ensure solid safe landing tiles under entry shrine & reward altar
+      for (let dx = -1; dx <= 1; dx++) {
+        col.setTile(grid, Math.max(r.tx + 1, Math.min(r.tx + r.tw - 2, entryTx + dx)), floorTy, TileKind.SOLID);
+        col.setTile(grid, Math.max(r.tx + 1, Math.min(r.tx + r.tw - 2, rewardBaseTx + dx)), floorTy, TileKind.SOLID);
+      }
+
+      const shrinePos = { x: entryTx * TILE_SIZE, y: floorY };
       state.shrines.push({
         uid: state.nextUid++,
         pos: shrinePos,
         kind: 'challengeRift',
         used: false,
-        label: 'Activate Challenge Rift',
+        label: 'Challenge Rift Gauntlet',
       });
       addWorldLight(state, shrinePos.x, shrinePos.y - 18, 115, [0.96, 0.32, 0.45], 1.15, 'portal');
       reachTargets.push({ label: `shrine:rift_${r.id}`, pos: { x: shrinePos.x, y: floorY - 12 } });
+
+      // Far-end Rift Rewards: Scroll of Power + High-Tier Colorless Gear + 15 Cells + Return Teleporter
+      const rewardX = rewardBaseTx * TILE_SIZE;
+      const scrollPos = { x: rewardX, y: floorY - 14 };
+      state.pickups.push({
+        uid: state.nextUid++,
+        kind: 'scroll',
+        pos: scrollPos,
+        prevPos: { ...scrollPos },
+        vel: { x: 0, y: 0 },
+        value: 1,
+        scrollChoices: ['brutality', 'tactics', 'survival'],
+        label: 'Rift Scroll of Power',
+        magnetTicks: 0,
+        collected: false,
+        bobPhase: 0,
+      });
+
+      const riftGear = rollGearInstance(
+        state,
+        rng,
+        rng.chance(0.6) ? 'weapon' : 'skill',
+        Math.max(2, biome.depthTier + 2)
+      );
+      riftGear.color = 'colorless';
+      const gearX = rewardX + (rewardsOnLeft ? 18 : -18);
+      state.pickups.push({
+        uid: state.nextUid++,
+        kind: 'gear',
+        pos: { x: gearX, y: floorY - 12 },
+        prevPos: { x: gearX, y: floorY - 12 },
+        vel: { x: 0, y: 0 },
+        value: 0,
+        gear: riftGear,
+        label: `Rift ${riftGear.defId}`,
+        magnetTicks: 0,
+        collected: false,
+        bobPhase: 1.1,
+      });
+
+      state.pickups.push({
+        uid: state.nextUid++,
+        kind: 'cell',
+        pos: { x: rewardX + (rewardsOnLeft ? 30 : -30), y: floorY - 12 },
+        prevPos: { x: rewardX + (rewardsOnLeft ? 30 : -30), y: floorY - 12 },
+        vel: { x: 0, y: 0 },
+        value: 15,
+        label: '+15 Rift Cells',
+        magnetTicks: 0,
+        collected: false,
+        bobPhase: 2.2,
+      });
+
+      const riftTpTx = rewardsOnLeft ? r.tx + 3 : r.tx + r.tw - 3;
+      const riftTpPos = { x: riftTpTx * TILE_SIZE, y: floorY - 12 };
+      state.teleporters.push({
+        uid: state.nextUid++,
+        pos: riftTpPos,
+        roomId: r.id,
+        label: 'Challenge Rift Exit',
+        activated: false,
+      });
+      addWorldLight(state, rewardX, floorY - 22, 110, [1.0, 0.78, 0.35], 1.1, 'scroll');
+      reachTargets.push(
+        { label: `rift:scroll_${r.id}`, pos: scrollPos },
+        { label: `rift:tp_${r.id}`, pos: riftTpPos }
+      );
     } else if (r.type === 'teleporter') {
       const tpPos = { x: midX, y: floorY - 12 };
       state.teleporters.push({
@@ -1168,10 +1818,38 @@ function generateRegularBiome(
       reachTargets.push({ label: `tp:room_${r.id}`, pos: tpPos });
       combatRoomIds.push(r.id);
     } else if (r.type === 'weaponShop' || r.type === 'skillShop' || r.type === 'foodShop') {
+      const shopId = state.nextUid++;
+      const shopKind: 'weapon' | 'skill' | 'food' =
+        r.type === 'weaponShop' ? 'weapon' : r.type === 'skillShop' ? 'skill' : 'food';
+
+      // Merchant NPC shrine standing beside the 3 shop wares
+      const merchantTx = findSafeFloorTx(grid, col, r, r.tx + 3);
+      const merchantPos = { x: merchantTx * TILE_SIZE, y: floorY };
+      state.shrines.push({
+        uid: state.nextUid++,
+        pos: merchantPos,
+        kind: 'merchant',
+        used: false,
+        label:
+          shopKind === 'weapon'
+            ? 'Weapon Merchant'
+            : shopKind === 'skill'
+              ? 'Skill Merchant'
+              : 'Food Merchant',
+        shopId,
+        shopKind,
+        rerollCount: 0,
+      });
+      addWorldLight(state, merchantPos.x, merchantPos.y - 26, 105, [1.0, 0.78, 0.38], 1.05, 'torch');
+      reachTargets.push({ label: `merchant:${r.id}`, pos: { x: merchantPos.x, y: floorY - 12 } });
+
       const basePrice = 420 + biome.depthTier * 200;
+      const seenDefIds = new Set<string>();
       for (let slot = 0; slot < 3; slot++) {
-        const sx = (r.tx + 5 + slot * 5) * TILE_SIZE;
+        const wareTx = findSafeFloorTx(grid, col, r, r.tx + 7 + slot * 4);
+        const sx = wareTx * TILE_SIZE;
         const sy = floorY - 12;
+
         if (r.type === 'foodShop' && slot === 0) {
           state.pickups.push({
             uid: state.nextUid++,
@@ -1179,14 +1857,30 @@ function generateRegularBiome(
             pos: { x: sx, y: sy },
             prevPos: { x: sx, y: sy },
             vel: { x: 0, y: 0 },
-            value: 50,
-            priceGold: 220 + biome.depthTier * 85,
-            label: 'Merchant Feast (+50% HP)',
+            value: 15,
+            priceGold: 130 + biome.depthTier * 45,
+            label: 'Small Food (+15% HP)',
             magnetTicks: 0,
             collected: false,
             bobPhase: slot * 1.1,
+            shopId,
           });
         } else if (r.type === 'foodShop' && slot === 1) {
+          state.pickups.push({
+            uid: state.nextUid++,
+            kind: 'food',
+            pos: { x: sx, y: sy },
+            prevPos: { x: sx, y: sy },
+            vel: { x: 0, y: 0 },
+            value: 50,
+            priceGold: 260 + biome.depthTier * 95,
+            label: 'Large Food (+50% HP)',
+            magnetTicks: 0,
+            collected: false,
+            bobPhase: slot * 1.1,
+            shopId,
+          });
+        } else if (r.type === 'foodShop' && slot === 2) {
           state.pickups.push({
             uid: state.nextUid++,
             kind: 'flaskRefill',
@@ -1195,19 +1889,19 @@ function generateRegularBiome(
             vel: { x: 0, y: 0 },
             value: 1,
             priceGold: 750 + biome.depthTier * 220,
-            label: 'Health Flask Charge',
+            label: 'Health Flask Refill',
             magnetTicks: 0,
             collected: false,
             bobPhase: slot * 1.1,
+            shopId,
           });
         } else {
-          const slotKind =
-            r.type === 'weaponShop'
-              ? 'weapon'
-              : r.type === 'skillShop'
-                ? 'skill'
-                : 'amulet';
-          const gear = rollGearInstance(state, rng, slotKind, Math.max(1, biome.depthTier + 1));
+          const slotKind = r.type === 'weaponShop' ? 'weapon' : 'skill';
+          let gear = rollGearInstance(state, rng, slotKind, Math.max(1, biome.depthTier + 2));
+          for (let tries = 0; tries < 4 && seenDefIds.has(gear.defId); tries++) {
+            gear = rollGearInstance(state, rng, slotKind, Math.max(1, biome.depthTier + 2));
+          }
+          seenDefIds.add(gear.defId);
           state.pickups.push({
             uid: state.nextUid++,
             kind: 'gear',
@@ -1221,6 +1915,7 @@ function generateRegularBiome(
             magnetTicks: 0,
             collected: false,
             bobPhase: slot * 1.1,
+            shopId,
           });
         }
       }
@@ -1237,7 +1932,9 @@ function generateRegularBiome(
     const rid = scrollRoomPool[idx % scrollRoomPool.length]!;
     const r = rooms[rid]!;
     const floorTy = r.ty + r.th - 1;
-    const sx = (r.tx + 4 + ((idx * 5) % Math.max(4, r.tw - 8))) * TILE_SIZE;
+    const preferredTx = r.tx + 4 + ((idx * 5) % Math.max(4, r.tw - 8));
+    const safeTx = findSafeFloorTx(grid, col, r, preferredTx);
+    const sx = safeTx * TILE_SIZE;
     const sy = floorTy * TILE_SIZE - 14;
     const choices: ScrollStat[] =
       kind === 'scroll' ? ['brutality', 'tactics', 'survival'] : pickDistinctDualStats(rng);
@@ -1280,9 +1977,11 @@ function generateRegularBiome(
       for (let eIdx = 0; eIdx < count; eIdx++) {
         const defId = rng.pick(biome.enemyPool);
         const enemyDef = getEnemy(defId);
-        const ex = (r.tx + 4 + ((eIdx * 4 + rng.rangeInt(0, 2)) % Math.max(4, r.tw - 7))) * TILE_SIZE;
+        const prefTx = r.tx + 4 + ((eIdx * 4 + rng.rangeInt(0, 2)) % Math.max(4, r.tw - 7));
+        const safeTx = enemyDef.flying ? prefTx : findSafeFloorTx(grid, col, r, prefTx);
+        const ex = safeTx * TILE_SIZE;
         const ey = enemyDef.flying
-          ? floorY - rng.rangeInt(56, 86)
+          ? floorY - rng.rangeInt(56, Math.min(86, (r.th - 3) * TILE_SIZE))
           : floorY - enemyDef.height * 0.5;
 
         const makeElite =
@@ -1349,6 +2048,8 @@ export function generateBiomeWorld(
     lockedRightX: 0,
     defeated: false,
     bannerTicks: 0,
+    engaged: false,
+    playerTookHit: false,
   };
 
   if (biomeId === 'Passage' || biome.isSafeRoom) {
