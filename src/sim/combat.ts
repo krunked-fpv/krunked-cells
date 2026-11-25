@@ -1855,23 +1855,34 @@ export function stepPlayerCombat(
   }
 
   // Start new attack if idle or queued during end of recovery
-  const canStartNew =
-    player.attackPhase === 'none' ||
-    (player.attackPhase === 'recovery' && player.attackPhaseTicks <= 2);
+  const isRecoveryCancel =
+    player.attackPhase === 'recovery' && player.attackPhaseTicks <= 2;
+  const canStartNew = player.attackPhase === 'none' || isRecoveryCancel;
 
   if (canStartNew) {
-    if (
+    const wantSlot: 1 | 2 | null =
       (input.weapon1Pressed || input.weapon1Held || player.queuedInput === 'attack1') &&
       w1Def &&
       w1Def.kind !== 'shield'
-    ) {
-      startWeaponAttack(state, 1, input);
-    } else if (
-      (input.weapon2Pressed || input.weapon2Held || player.queuedInput === 'attack2') &&
-      w2Def &&
-      w2Def.kind !== 'shield'
-    ) {
-      startWeaponAttack(state, 2, input);
+        ? 1
+        : (input.weapon2Pressed || input.weapon2Held || player.queuedInput === 'attack2') &&
+            w2Def &&
+            w2Def.kind !== 'shield'
+          ? 2
+          : null;
+
+    if (wantSlot !== null) {
+      if (isRecoveryCancel && player.activeWeaponSlot === wantSlot) {
+        const prevDef = wantSlot === 1 ? w1Def : w2Def;
+        if (prevDef) {
+          player.comboStep =
+            prevDef.strikeChain.length > 1
+              ? (player.comboStep + 1) % prevDef.strikeChain.length
+              : Math.min(99, player.comboStep + 1);
+          player.comboResetTicks = 34;
+        }
+      }
+      startWeaponAttack(state, wantSlot, input);
     }
   }
 

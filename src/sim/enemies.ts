@@ -43,12 +43,28 @@ function createEnemyEntity(
     Math.round(def.baseDamage * tierDmgMult * diff.mobDmgMult * eliteDmgMult)
   );
 
+  // Guarantee grounded enemies never spawn with feet clipped into a solid floor tile
+  let safeY = y;
+  if (!def.flying && state.tileGrid.width > 1 && state.tileGrid.height > 1) {
+    const tx = Math.max(0, Math.min(state.tileGrid.width - 1, Math.floor(x / TILE_SIZE)));
+    const footTy = Math.max(0, Math.min(state.tileGrid.height - 1, Math.floor((safeY + def.height * 0.5 - 0.01) / TILE_SIZE)));
+    const tileKind = state.tileGrid.tiles[footTy * state.tileGrid.width + tx];
+    const isSolid = tileKind === 1 || tileKind === 8 || tileKind === 9;
+    if (isSolid && footTy > 0) {
+      const aboveKind = state.tileGrid.tiles[(footTy - 1) * state.tileGrid.width + tx];
+      const aboveSolid = aboveKind === 1 || aboveKind === 8 || aboveKind === 9;
+      if (!aboveSolid) {
+        safeY = footTy * TILE_SIZE - def.height * 0.5;
+      }
+    }
+  }
+
   const entity: EnemyState = {
     uid: state.nextUid++,
     defId: def.id,
     name: isElite ? `Elite ${def.name}` : def.name,
-    pos: { x, y },
-    prevPos: { x, y },
+    pos: { x, y: safeY },
+    prevPos: { x, y: safeY },
     vel: { x: 0, y: 0 },
     width: def.width,
     height: def.height,
@@ -805,7 +821,10 @@ export function stepEnemies(state: SimState, rng: RngAPI, col: CollisionAPI): vo
             enemy.defId === 'ClusterGrenader' ||
             enemy.defId === 'Scorpio';
 
-          if (def.flying) {
+          if (enemy.hitFlashTicks > 2 || Math.abs(enemy.vel.x) > def.speed * speedMult * 1.15) {
+            // Preserve heavy knockback impulses (Wave of Denial, Broadsword, wall-slam launches)
+            enemy.vel.x *= 0.88;
+          } else if (def.flying) {
             const len = Math.max(1, dist);
             enemy.vel.x = (dx / len) * def.speed * speedMult;
             enemy.vel.y = (dy / len) * def.speed * speedMult;

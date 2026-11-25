@@ -1024,7 +1024,11 @@ function generateRegularBiome(
         // Vertical chain/ladder shaft (3 tiles wide with continuous climbable core + one-way steps)
         const topRoom = a.gy < b.gy ? roomA : roomB;
         const bottomRoom = a.gy < b.gy ? roomB : roomA;
-        const shaftTx = topRoom.tx + Math.floor(topRoom.tw * 0.5);
+        // Keep vertical shafts well clear of the entrance room's left spawn pad (tx+4)!
+        const shaftTx =
+          topRoom.id === 0
+            ? topRoom.tx + Math.min(topRoom.tw - 3, Math.max(11, Math.floor(topRoom.tw * 0.65)))
+            : topRoom.tx + Math.floor(topRoom.tw * 0.5);
         const topFloorTy = topRoom.ty + topRoom.th - 1;
         const bottomFloorTy = bottomRoom.ty + bottomRoom.th - 1;
 
@@ -1051,10 +1055,17 @@ function generateRegularBiome(
   state.tileGrid = grid;
   state.rooms = rooms;
 
-  // 5. Place Player Spawn in Entrance Room
+  // 5. Place Player Spawn in Entrance Room (guarantee solid ground pad directly underfoot!)
   const entrance = rooms[0]!;
-  const entranceFloorY = (entrance.ty + entrance.th - 1) * TILE_SIZE;
-  const spawnX = (entrance.tx + 4) * TILE_SIZE;
+  const entranceFloorTy = entrance.ty + entrance.th - 1;
+  const entranceFloorY = entranceFloorTy * TILE_SIZE;
+  const spawnTx = entrance.tx + 4;
+  for (let dx = -1; dx <= 1; dx++) {
+    col.setTile(grid, spawnTx + dx, entranceFloorTy, TileKind.SOLID);
+    col.setTile(grid, spawnTx + dx, entranceFloorTy - 1, TileKind.EMPTY);
+    col.setTile(grid, spawnTx + dx, entranceFloorTy - 2, TileKind.EMPTY);
+  }
+  const spawnX = spawnTx * TILE_SIZE;
   const spawnY = entranceFloorY - PLAYER_HEIGHT * 0.5;
   state.player.pos = { x: spawnX, y: spawnY };
   state.player.prevPos = { x: spawnX, y: spawnY };

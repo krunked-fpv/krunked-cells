@@ -109,6 +109,26 @@ export function sweepAabb(
   let wallSlamSpeed = 0;
   let crackedFloorHit = false;
 
+  // Floor depenetration safety: if feet are slightly embedded in a solid floor row
+  // whose tile directly above is open, lift out cleanly before horizontal sweep.
+  {
+    const footTy = Math.floor((curY + h - EPS) / TILE_SIZE);
+    const txL = Math.floor((curX + EPS) / TILE_SIZE);
+    const txR = Math.floor((curX + w - EPS) / TILE_SIZE);
+    let floorEmbedded = false;
+    for (let tx = txL; tx <= txR; tx++) {
+      if (isSolidAt(grid, tx, footTy) && !isSolidAt(grid, tx, footTy - 1)) {
+        floorEmbedded = true;
+        break;
+      }
+    }
+    const penDepth = curY + h - footTy * TILE_SIZE;
+    if (floorEmbedded && penDepth > 0 && penDepth <= 10) {
+      curY = footTy * TILE_SIZE - h;
+      hitFloor = true;
+    }
+  }
+
   const totalDx = curVx * safeDt;
   const totalDy = curVy * safeDt;
   const maxMove = Math.max(Math.abs(totalDx), Math.abs(totalDy));
