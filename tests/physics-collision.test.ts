@@ -534,16 +534,22 @@ describe('Physics & Swept AABB Collision', () => {
 
       // Cracked floor shattered to EMPTY
       expect(collisionApi.getTile(state.tileGrid, 8, 11)).toBe(TileKind.EMPTY);
-      // Player landed on lower floor and triggered shockwave
+      // Player landed on lower floor, entered 10t impact recovery stance, and triggered shockwave
       expect(impactEventSeen).toBe(true);
       expect(state.player.grounded).toBe(true);
-      expect(state.player.diveSlamState).toBe('none');
+      expect(state.player.diveSlamState).toBe('impact');
       expect(state.player.pos.y + PLAYER_HEIGHT * 0.5).toBeCloseTo(lowerFloorY, 1);
 
-      // Enemy within shockwave radius took damage & was stunned (~45 ticks)
+      // Enemy within shockwave radius took damage & was stunned (Tier 2 Ram Crater: 55t)
       expect(victim.hp).toBeLessThan(victimInitialHp);
       expect(victim.state).toBe('stunned');
       expect(victim.stunTicks).toBeGreaterThanOrEqual(40);
+
+      // Impact stance clears cleanly after hitstop + 10 recovery ticks
+      for (let t = 0; t < 18 && state.player.diveSlamState === 'impact'; t++) {
+        stepSim(state, inputOf());
+      }
+      expect(state.player.diveSlamState).toBe('none');
     });
   });
 });

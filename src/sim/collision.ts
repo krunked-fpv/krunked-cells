@@ -8,6 +8,7 @@ import {
   TILE_SIZE,
   TileKind,
   type CollisionAPI,
+  type DoorState,
   type SweepResult,
   type TileGrid,
   type TileKindValue,
@@ -344,6 +345,82 @@ export function hasLineOfSight(
   }
 
   return true;
+}
+
+/**
+ * Returns true iff the line segment `(x0, y0) -> (x1, y1)` intersects any
+ * closed, unbroken wooden door (`kind === 'wood' && !opened && !broken`).
+ * Used for enemy LOS, patrol/chase movement, and standard projectile checks.
+ */
+export function isBlockedByClosedWoodDoor(
+  doors: readonly DoorState[],
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number
+): boolean {
+  if (
+    !Number.isFinite(x0) ||
+    !Number.isFinite(y0) ||
+    !Number.isFinite(x1) ||
+    !Number.isFinite(y1)
+  ) {
+    return false;
+  }
+
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+
+  for (let i = 0; i < doors.length; i++) {
+    const door = doors[i]!;
+    if (door.kind !== 'wood' || door.opened || door.broken) continue;
+
+    const halfW = Math.max(4, door.width * 0.5);
+    const halfH = Math.max(12, door.height * 0.5);
+    const minX = door.pos.x - halfW;
+    const maxX = door.pos.x + halfW;
+    const minY = door.pos.y - halfH;
+    const maxY = door.pos.y + halfH;
+
+    let tMin = 0;
+    let tMax = 1;
+
+    if (Math.abs(dx) < 1e-6) {
+      if (x0 < minX || x0 > maxX) continue;
+    } else {
+      const invDx = 1 / dx;
+      let t1 = (minX - x0) * invDx;
+      let t2 = (maxX - x0) * invDx;
+      if (t1 > t2) {
+        const tmp = t1;
+        t1 = t2;
+        t2 = tmp;
+      }
+      if (t1 > tMin) tMin = t1;
+      if (t2 < tMax) tMax = t2;
+      if (tMin > tMax) continue;
+    }
+
+    if (Math.abs(dy) < 1e-6) {
+      if (y0 < minY || y0 > maxY) continue;
+    } else {
+      const invDy = 1 / dy;
+      let t1 = (minY - y0) * invDy;
+      let t2 = (maxY - y0) * invDy;
+      if (t1 > t2) {
+        const tmp = t1;
+        t1 = t2;
+        t2 = tmp;
+      }
+      if (t1 > tMin) tMin = t1;
+      if (t2 < tMax) tMax = t2;
+      if (tMin > tMax) continue;
+    }
+
+    return true;
+  }
+
+  return false;
 }
 
 export const collisionApi: CollisionAPI = {
