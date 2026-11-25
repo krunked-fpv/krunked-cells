@@ -494,6 +494,84 @@ describe('Physics & Swept AABB Collision', () => {
       expect(enemy.state).toBe('stunned');
       expect(enemy.stunTicks).toBeGreaterThanOrEqual(89);
     });
+
+    it('enforces roll_cooldown_blocks_spam: rejects second roll within 30 ticks while rollCooldownTicks > 0', () => {
+      const state = createSandboxState();
+      stepSim(state, inputOf({ rollPressed: true }));
+      expect(state.player.actionState).toBe('roll');
+      expect(state.player.rollCooldownTicks).toBeGreaterThan(30);
+
+      // Step 26 ticks so the 24-tick roll ends, but cooldown is still active (< 30 ticks total)
+      for (let t = 0; t < 26; t++) stepSim(state, inputOf());
+      expect(state.player.actionState).not.toBe('roll');
+      expect(state.player.rollCooldownTicks).toBeGreaterThan(0);
+
+      // Spamming rollPressed while rollCooldownTicks > 0 MUST be rejected
+      stepSim(state, inputOf({ rollPressed: true }));
+      expect(state.player.actionState).not.toBe('roll');
+      expect(state.events.some((e) => e.type === 'dodgeRoll')).toBe(false);
+
+      // Wait out remaining cooldown -> next roll succeeds
+      for (let t = 0; t < 20 && state.player.rollCooldownTicks > 0; t++) {
+        stepSim(state, inputOf());
+      }
+      expect(state.player.rollCooldownTicks).toBe(0);
+      stepSim(state, inputOf({ rollPressed: true }));
+      expect(state.player.actionState).toBe('roll');
+      expect(state.events.some((e) => e.type === 'dodgeRoll')).toBe(true);
+    });
+  });
+
+  describe('High-Fall Dizzy Stun & Roll/Dive Cancel (fall_stun_and_roll_cancel)', () => {
+    it('triggers fallStunTicks > 0 after a 7-tile unbuffered fall, and cancels it cleanly via roll buffer or dive-slam', () => {
+      // 1. Unbuffered 7-tile fall -> triggers fallStunTicks > 0 & fallStun event
+      const sStun = createSandboxState(18);
+      sStun.player.pos = { x: 8 * TILE_SIZE, y: (18 - 7) * TILE_SIZE - PLAYER_HEIGHT * 0.5 };
+      sStun.player.fallStartY = sStun.player.pos.y;
+      sStun.player.vel = { x: 0, y: 0 };
+      sStun.player.grounded = false;
+
+      let sawFallStun = false;
+      for (let t = 0; t < 45 && !sStun.player.grounded; t++) {
+        stepSim(sStun, inputOf());
+        if (sStun.events.some((e) => e.type === 'fallStun')) sawFallStun = true;
+      }
+      expect(sStun.player.grounded).toBe(true);
+      expect(sawFallStun).toBe(true);
+      expect(sStun.player.fallStunTicks).toBeGreaterThan(0);
+
+      // 2. Buffered roll just before landing (within 4-tick buffer) cancels fall stun into roll!
+      const sRollCancel = createSandboxState(18);
+      sRollCancel.player.pos = { x: 8 * TILE_SIZE, y: (18 - 7) * TILE_SIZE - PLAYER_HEIGHT * 0.5 };
+      sRollCancel.player.fallStartY = sRollCancel.player.pos.y;
+      sRollCancel.player.vel = { x: 0, y: 0 };
+      sRollCancel.player.grounded = false;
+
+      let rolledOnLand = false;
+      for (let t = 0; t < 80 && !sRollCancel.player.grounded; t++) {
+        // Trigger roll 1-2 ticks before touchdown (when within ~22px of floor)
+        const distToFloor = 18 * TILE_SIZE - (sRollCancel.player.pos.y + PLAYER_HEIGHT * 0.5);
+        stepSim(sRollCancel, inputOf({ rollPressed: distToFloor <= 22 && distToFloor > 0 }));
+        if (sRollCancel.player.actionState === 'roll') rolledOnLand = true;
+      }
+      expect(sRollCancel.player.grounded).toBe(true);
+      expect(sRollCancel.player.fallStunTicks).toBe(0);
+      expect(rolledOnLand || sRollCancel.player.actionState === 'roll').toBe(true);
+
+      // 3. Dive-slam from 7 tiles high -> zero fallStunTicks
+      const sDiveCancel = createSandboxState(18);
+      sDiveCancel.player.pos = { x: 8 * TILE_SIZE, y: (18 - 7) * TILE_SIZE - PLAYER_HEIGHT * 0.5 };
+      sDiveCancel.player.fallStartY = sDiveCancel.player.pos.y;
+      sDiveCancel.player.vel = { x: 0, y: 0 };
+      sDiveCancel.player.grounded = false;
+      stepSim(sDiveCancel, inputOf({ moveDown: true, jumpPressed: true }));
+      for (let t = 0; t < 30 && !sDiveCancel.player.grounded; t++) {
+        stepSim(sDiveCancel, inputOf({ moveDown: true }));
+      }
+      expect(sDiveCancel.player.grounded).toBe(true);
+      expect(sDiveCancel.player.fallStunTicks).toBe(0);
+      expect(sDiveCancel.player.diveSlamState).toBe('impact');
+    });
   });
 
   describe('Downward Dive-Slam Shockwave & Cracked Floor Shattering', () => {

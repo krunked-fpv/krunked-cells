@@ -362,31 +362,50 @@ function findSafeFloorTx(
   grid: TileGrid,
   col: CollisionAPI,
   r: RoomNode,
-  preferredTx: number
+  preferredTx: number,
+  allowOneWayFallback = false
 ): number {
   const floorTy = r.ty + r.th - 1;
   const minTx = r.tx + 2;
   const maxTx = r.tx + r.tw - 3;
   const clamped = Math.max(minTx, Math.min(maxTx, preferredTx));
 
+  const isSupported = (tx: number, allowOneWay: boolean): boolean => {
+    const floorTile = col.getTile(grid, tx, floorTy);
+    const above1 = col.getTile(grid, tx, floorTy - 1);
+    const above2 = col.getTile(grid, tx, floorTy - 2);
+    const floorOk =
+      floorTile === TileKind.SOLID || (allowOneWay && floorTile === TileKind.ONE_WAY);
+    return (
+      floorOk &&
+      above1 !== TileKind.SOLID &&
+      above1 !== TileKind.SPIKES &&
+      above1 !== TileKind.ACID &&
+      above2 !== TileKind.SOLID
+    );
+  };
+
   for (let offset = 0; offset <= maxTx - minTx; offset++) {
     for (const sign of offset === 0 ? [0] : [1, -1]) {
       const tx = clamped + offset * sign;
       if (tx < minTx || tx > maxTx) continue;
-      const floorTile = col.getTile(grid, tx, floorTy);
-      const above1 = col.getTile(grid, tx, floorTy - 1);
-      const above2 = col.getTile(grid, tx, floorTy - 2);
-      if (
-        floorTile === TileKind.SOLID &&
-        above1 !== TileKind.SOLID &&
-        above1 !== TileKind.SPIKES &&
-        above1 !== TileKind.ACID &&
-        above2 !== TileKind.SOLID
-      ) {
-        return tx;
+      if (isSupported(tx, false)) return tx;
+    }
+  }
+
+  if (allowOneWayFallback) {
+    const wideMin = r.tx + 1;
+    const wideMax = r.tx + r.tw - 2;
+    const wideClamped = Math.max(wideMin, Math.min(wideMax, preferredTx));
+    for (let offset = 0; offset <= wideMax - wideMin; offset++) {
+      for (const sign of offset === 0 ? [0] : [1, -1]) {
+        const tx = wideClamped + offset * sign;
+        if (tx < wideMin || tx > wideMax) continue;
+        if (isSupported(tx, true)) return tx;
       }
     }
   }
+
   return clamped;
 }
 
@@ -1963,7 +1982,21 @@ function generateRegularBiome(
     placeScroll('dualScroll', biome.scrollCount + d);
   }
 
-  // 8. Spawn Biome Enemies (with 1–2 Elites in deeper biomes!)
+  // 8. Verify 100% Tile-Space BFS Reachability & Self-Repair BEFORE spawning ground enemies
+  //    (so emergency vertical shafts never carve holes directly under spawned enemies)
+  let check = verifyWorldReachability(grid, rooms, state.player.pos, reachTargets);
+  if (!check.reachable) {
+    const visited = computeReachableTileMask(grid, state.player.pos);
+    for (let i = 0; i < reachTargets.length; i++) {
+      const t = reachTargets[i]!;
+      if (check.missing.includes(t.label)) {
+        carveEmergencyBridgeToTarget(grid, col, visited, t.pos);
+      }
+    }
+    check = verifyWorldReachability(grid, rooms, state.player.pos, reachTargets);
+  }
+
+  // 9. Spawn Biome Enemies (with 1–2 Elites in deeper biomes!)
   if (biome.enemyPool.length > 0) {
     let elitesRemaining = biome.depthTier >= 4 ? 2 : biome.depthTier >= 2 ? 1 : 0;
 
@@ -1978,8 +2011,18 @@ function generateRegularBiome(
         const defId = rng.pick(biome.enemyPool);
         const enemyDef = getEnemy(defId);
         const prefTx = r.tx + 4 + ((eIdx * 4 + rng.rangeInt(0, 2)) % Math.max(4, r.tw - 7));
-        const safeTx = enemyDef.flying ? prefTx : findSafeFloorTx(grid, col, r, prefTx);
-        const ex = safeTx * TILE_SIZE;
+        const safeTx = enemyDef.flying
+          ? prefTx
+          : findSafeFloorTx(grid, col, r, prefTx, true);
+
+        if (!enemyDef.flying) {
+          const supportTile = col.getTile(grid, safeTx, floorTy);
+          if (supportTile !== TileKind.SOLID && supportTile !== TileKind.ONE_WAY) {
+            continue;
+          }
+        }
+
+        const ex = enemyDef.flying ? safeTx * TILE_SIZE : safeTx * TILE_SIZE + TILE_SIZE * 0.5;
         const ey = enemyDef.flying
           ? floorY - rng.rangeInt(56, Math.min(86, (r.th - 3) * TILE_SIZE))
           : floorY - enemyDef.height * 0.5;
@@ -1995,19 +2038,6 @@ function generateRegularBiome(
         spawned.patrolMaxX = (r.tx + r.tw - 2) * TILE_SIZE;
       }
     }
-  }
-
-  // 9. Verify 100% Tile-Space BFS Reachability & Self-Repair if any target blocked
-  let check = verifyWorldReachability(grid, rooms, state.player.pos, reachTargets);
-  if (!check.reachable) {
-    const visited = computeReachableTileMask(grid, state.player.pos);
-    for (let i = 0; i < reachTargets.length; i++) {
-      const t = reachTargets[i]!;
-      if (check.missing.includes(t.label)) {
-        carveEmergencyBridgeToTarget(grid, col, visited, t.pos);
-      }
-    }
-    check = verifyWorldReachability(grid, rooms, state.player.pos, reachTargets);
   }
 
   // Guarantee homunculus player light exists
