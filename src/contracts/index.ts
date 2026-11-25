@@ -209,6 +209,7 @@ export type CritCondition =
   | 'bleeding'
   | 'poisoned'
   | 'burning'
+  | 'oiled'
   | 'frozenOrRooted'
   | 'speedBuff'
   | 'afterRoll'
@@ -216,6 +217,7 @@ export type CritCondition =
   | 'isolated'
   | 'wallSlam'
   | 'highCombo'
+  | 'stuckArrows3'
   | 'closeRange'
   | 'midRange'
   | 'always';
@@ -252,6 +254,7 @@ export interface WeaponDef {
   critCondition: CritCondition;
   strikeChain: StrikeStep[];
   parryPassive?: 'none' | 'stun' | 'bleed' | 'forcefield' | 'damageBuff';
+  blockDrPct?: number;
   ammoCapacity?: number;
   unlockCost: number;
   autoUnlocked: boolean;
@@ -407,6 +410,9 @@ export interface DifficultyDef {
   cellDropMult: number;
   fountainRefills: number;
   singleFlaskRefills: number;
+  enemyTeleport?: boolean;
+  malaiseEnabled?: boolean;
+  scrollFragmentsPerBiome?: number;
 }
 
 export interface MetaBlueprintDef {
@@ -513,6 +519,23 @@ export interface PlayerState {
   disengagementCooldownTicks: number;
   statusEffects: StatusEffect[];
   godMode: boolean;
+  fallStartY?: number;
+  fallStunTicks?: number;
+  wallJumpLockTicks?: number;
+  rallyLostAnchor?: number;
+  onHitShieldTicks?: number;
+  shieldHoldTicks?: number;
+  balancedStacks?: number;
+  balancedDecayTicks?: number;
+  phaserBonusDamage?: number;
+  phaserBuffTicks?: number;
+  tempShieldHp?: number;
+  tempShieldTicks?: number;
+  vengeanceTicks?: number;
+  stealthTicks?: number;
+  wdlmCooldownTicks?: number;
+  speedComboDecayTicks?: number;
+  malaise?: number;
 }
 
 export interface EnemyState {
@@ -554,6 +577,15 @@ export interface EnemyState {
   statusEffects: StatusEffect[];
   hitPlayerThisSwing: boolean;
   protectedByUid: number | null;
+  turnDelayTicks?: number;
+  buried?: boolean;
+  teleportCooldownTicks?: number;
+  stuckArrows?: Array<{ slot: 1 | 2; ttlTicks: number }>;
+  ccResistStacks?: number;
+  ccResistResetTicks?: number;
+  bossFloatingSummon?: boolean;
+  bossSubPhaseCount?: number;
+  telegraphUnparriable?: boolean;
 }
 
 export interface ProjectileState {
@@ -577,6 +609,12 @@ export interface ProjectileState {
   parriable: boolean;
   hitIds: number[];
   affixes?: string[];
+  piercesWalls?: boolean;
+  bouncesLeft?: number;
+  rollsOnFloor?: boolean;
+  floorFuseTicks?: number;
+  unrollable?: boolean;
+  sourceWeaponSlot?: 1 | 2;
 }
 
 export interface TurretState {
@@ -612,6 +650,8 @@ export interface PickupState {
   magnetTicks: number;
   collected: boolean;
   bobPhase: number;
+  shopId?: number;
+  choiceGroupId?: number;
 }
 
 export interface ChestState {
@@ -645,9 +685,29 @@ export interface TeleporterState {
 export interface ShrineState {
   uid: number;
   pos: Vec2;
-  kind: 'scrollAltar' | 'challengeRift' | 'fountain' | 'collector' | 'guillain' | 'forge' | 'loreSkeleton';
+  kind:
+    | 'scrollAltar'
+    | 'challengeRift'
+    | 'fountain'
+    | 'collector'
+    | 'guillain'
+    | 'forge'
+    | 'loreSkeleton'
+    | 'merchant'
+    | 'recyclingTube';
   used: boolean;
   label: string;
+  shopId?: number;
+  shopKind?: 'weapon' | 'skill' | 'food';
+  rerollCount?: number;
+  colorFilter?: ScrollStat;
+  tubeLoadout?: {
+    weapon1: GearInstance;
+    weapon2: GearInstance;
+    skill1: GearInstance;
+    skill2: GearInstance;
+    theme: ScrollStat;
+  };
 }
 
 export interface HazardState {
@@ -736,6 +796,8 @@ export interface PassageState {
   fountainUsed: boolean;
   activeNpc: 'none' | 'collector' | 'guillain' | 'forge';
   reforgeCount: number;
+  flawlessBossDoorOpen?: boolean;
+  flawlessBossDoorClaimed?: boolean;
 }
 
 export interface BossArenaState {
@@ -746,6 +808,9 @@ export interface BossArenaState {
   lockedRightX: number;
   defeated: boolean;
   bannerTicks: number;
+  engaged?: boolean;
+  playerTookHit?: boolean;
+  icePlatformTimers?: [number, number];
 }
 
 export interface MetaSnapshot {
@@ -765,6 +830,9 @@ export interface MetaSnapshot {
   totalRuns: number;
   totalKills: number;
   bestClearTicks: number | null;
+  bankedGold?: number;
+  legendaryForgePlus?: number;
+  legendaryForgePlusPlus?: number;
 }
 
 export interface PendingScrollPrompt {
@@ -793,7 +861,16 @@ export interface RunSummary {
 
 export type SimEvent =
   | { type: 'attackSwing'; x: number; y: number; facing: 1 | -1; weaponId: string; stepIndex: number; color: string }
-  | { type: 'hitImpact'; x: number; y: number; damage: number; breach: boolean; color: string }
+  | {
+      type: 'hitImpact';
+      x: number;
+      y: number;
+      damage: number;
+      breach: boolean;
+      color: string;
+      weaponId?: string;
+      damageType?: 'blade' | 'blood' | 'fire' | 'hammer' | 'poison';
+    }
   | { type: 'critImpact'; x: number; y: number; damage: number; weaponId: string }
   | { type: 'parrySuccess'; x: number; y: number; reflected: boolean }
   | { type: 'parryFail'; x: number; y: number }
@@ -804,7 +881,7 @@ export type SimEvent =
   | { type: 'dodgeRoll'; x: number; y: number; facing: 1 | -1 }
   | { type: 'diveSlamImpact'; x: number; y: number; radius: number; power: number }
   | { type: 'doorSmash'; x: number; y: number }
-  | { type: 'enemyTelegraph'; x: number; y: number; enemyUid: number }
+  | { type: 'enemyTelegraph'; x: number; y: number; enemyUid: number; unparriable?: boolean }
   | { type: 'enemyDeath'; x: number; y: number; defId: string; isElite: boolean; isBoss: boolean }
   | { type: 'bossPhaseShift'; x: number; y: number; bossId: BossId; phase: number }
   | { type: 'cellSpawn'; x: number; y: number; count: number }
@@ -824,7 +901,15 @@ export type SimEvent =
   | { type: 'jump'; x: number; y: number; isAirJump: boolean }
   | { type: 'land'; x: number; y: number; impactSpeed: number }
   | { type: 'teleport'; fromX: number; fromY: number; toX: number; toY: number }
-  | { type: 'skillCast'; x: number; y: number; skillId: string };
+  | { type: 'skillCast'; x: number; y: number; skillId: string }
+  | { type: 'fallStun'; x: number; y: number }
+  | { type: 'freezeShatter'; x: number; y: number }
+  | { type: 'bleedBurst'; x: number; y: number; damage: number }
+  | { type: 'lightningArc'; points: Vec2[] }
+  | { type: 'bossEngage'; bossId: BossId }
+  | { type: 'shopReroll'; x: number; y: number }
+  | { type: 'perfectKillStreak'; count: number }
+  | { type: 'perfectDodge'; x: number; y: number };
 
 // -----------------------------------------------------------------------------
 // Commands & InputFrame
@@ -842,7 +927,10 @@ export type SimCommand =
   | { type: 'forgeUpgrade'; slot: 'weapon1' | 'weapon2' | 'skill1' | 'skill2' }
   | { type: 'forgeReforge'; slot: 'weapon1' | 'weapon2' | 'skill1' | 'skill2' }
   | { type: 'useFountain' }
-  | { type: 'enterBiome'; biomeId: BiomeId };
+  | { type: 'enterBiome'; biomeId: BiomeId }
+  | { type: 'shopReroll'; shrineUid: number; preferredColor?: ScrollStat }
+  | { type: 'pickRecyclingTube'; shrineUid: number }
+  | { type: 'legendaryForgeInvest'; tier: 'plus' | 'plusPlus'; amount: number };
 
 export interface InputFrame {
   moveLeft: boolean;
@@ -863,6 +951,7 @@ export interface InputFrame {
   mapTogglePressed: boolean;
   aimX?: number;
   aimY?: number;
+  cameraPeekY?: number;
   commands?: SimCommand[];
 }
 
@@ -931,6 +1020,8 @@ export interface SimState {
   runSummary: RunSummary | null;
   metaSnapshot: MetaSnapshot;
   events: SimEvent[];
+  fountainRefillsLeft?: number;
+  singleFlaskRefillsLeft?: number;
 }
 
 // -----------------------------------------------------------------------------
@@ -1044,6 +1135,9 @@ export function createDefaultMetaSnapshot(): MetaSnapshot {
     totalRuns: 0,
     totalKills: 0,
     bestClearTicks: null,
+    bankedGold: 0,
+    legendaryForgePlus: 0,
+    legendaryForgePlusPlus: 0,
   };
 }
 
@@ -1130,14 +1224,17 @@ export interface CustomPackAssetResolver {
   preloadUiAssets?(): Promise<boolean>;
 }
 
+export type UiClickKind = 'select' | 'confirm' | 'cancel' | 'error' | 'ui_start' | 'ui_unlock';
+
 export interface AudioEngineAPI {
   init(settings: AudioSettings): void;
   unlock(): Promise<void>;
   updateSettings(settings: AudioSettings): void;
   setCustomPackResolver(resolver: CustomPackAssetResolver | null, active: boolean): void;
   setBiomeMusic(biomeId: BiomeId, isBoss: boolean): void;
+  setTitleMusic?(): void;
   ingestEvents(events: readonly SimEvent[], listenerX: number, listenerY: number): void;
-  playUiClick(kind?: 'select' | 'confirm' | 'cancel' | 'error'): void;
+  playUiClick(kind?: UiClickKind): void;
   dispose(): void;
 }
 

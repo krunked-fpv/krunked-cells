@@ -325,6 +325,9 @@ function evaluateCritCondition(
       const dist = Math.hypot(enemy.pos.x - player.pos.x, enemy.pos.y - player.pos.y);
       return dist >= 64 && dist <= 160;
     }
+    case 'stuckArrows3':
+    case 'oiled':
+      return false;
   }
 }
 
