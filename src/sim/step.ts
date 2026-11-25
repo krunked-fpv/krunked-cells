@@ -819,7 +819,7 @@ export function createInitialSimState(
         weapon1: createStarterGear(allocUid, 'StartSword', 'weapon'),
         weapon2: createStarterGear(allocUid, 'StartShield', 'weapon'),
         skill1: createStarterGear(allocUid, 'InfantryGrenade', 'skill'),
-        skill2: null,
+        skill2: createStarterGear(allocUid, 'SinewSlicer', 'skill'),
         amulet: null,
       },
       mutations: [],
@@ -840,6 +840,7 @@ export function createInitialSimState(
       parryWindowTicks: 0,
       parryCooldownTicks: 0,
       afterParryCritTicks: 0,
+      shieldBlocking: false,
       coyoteTicks: 0,
       jumpBufferTicks: 0,
       airJumpsLeft: 1,
@@ -924,7 +925,14 @@ export function createInitialSimState(
   if (metaSnap.randomStarterUnlocked) {
     const rng = createRng(state.rngState);
     state.player.loadout.weapon1 = rollGearInstance(state, rng, 'weapon', 1, 'brutality');
-    state.player.loadout.skill1 = rollGearInstance(state, rng, 'skill', 1);
+    const s1 = rollGearInstance(state, rng, 'skill', 1);
+    let s2 = rollGearInstance(state, rng, 'skill', 1);
+    if (s2.defId === s1.defId) {
+      const altId = s1.defId === 'SinewSlicer' ? 'InfantryGrenade' : 'SinewSlicer';
+      s2 = rollGearInstance(state, rng, 'skill', 1, undefined, false, altId);
+    }
+    state.player.loadout.skill1 = s1;
+    state.player.loadout.skill2 = s2;
     state.rngState = rng.getState();
   }
 

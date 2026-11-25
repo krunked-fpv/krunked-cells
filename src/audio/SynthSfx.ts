@@ -239,6 +239,10 @@ export class SynthSfx {
         return `attack_${event.weaponId}`;
       case 'skillCast':
         return `skill_${event.skillId}`;
+      case 'explosion':
+        return `explosion_${event.element}`;
+      case 'flaskEmpty':
+        return `flaskEmpty_${event.reason}`;
       case 'footstep':
         return `footstep_${event.surface}`;
       case 'statusProc':
@@ -258,27 +262,113 @@ export class SynthSfx {
 
     switch (event.type) {
       case 'attackSwing': {
-        // Metallic blade whoosh: filtered noise pitch glide + triangle metallic swoosh
+        const w = event.weaponId;
+        if (w === 'CloseCombatBow' || w === 'FastBow' || w === 'FrostBow') {
+          // Crisp bowstring twang + arrow release zip
+          const twang = ctx.createOscillator();
+          twang.type = 'triangle';
+          twang.frequency.setValueAtTime((w === 'FrostBow' ? 680 : 520) * jitter, t);
+          twang.frequency.exponentialRampToValueAtTime(210 * jitter, t + 0.09);
+          const twangGain = ctx.createGain();
+          twangGain.gain.setValueAtTime(0.28, t);
+          twangGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.11);
+          twang.connect(twangGain);
+          twangGain.connect(out);
+          twang.start(t);
+          twang.stop(t + 0.12);
+
+          const zip = ctx.createBufferSource();
+          zip.buffer = getNoiseBuffer(ctx);
+          const zipF = ctx.createBiquadFilter();
+          zipF.type = 'highpass';
+          zipF.frequency.setValueAtTime(w === 'FrostBow' ? 3600 : 2400, t);
+          const zipG = ctx.createGain();
+          zipG.gain.setValueAtTime(0.18, t);
+          zipG.gain.exponentialRampToValueAtTime(0.0001, t + 0.07);
+          zip.connect(zipF);
+          zipF.connect(zipG);
+          zipG.connect(out);
+          zip.start(t);
+          zip.stop(t + 0.08);
+          break;
+        }
+        if (w === 'Whip') {
+          // Electric whip crack + zap
+          const zap = ctx.createBufferSource();
+          zap.buffer = getNoiseBuffer(ctx);
+          const zf = ctx.createBiquadFilter();
+          zf.type = 'highpass';
+          zf.frequency.setValueAtTime(3400, t);
+          const zg = ctx.createGain();
+          zg.gain.setValueAtTime(0.32, t);
+          zg.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
+          zap.connect(zf);
+          zf.connect(zg);
+          zg.connect(out);
+          zap.start(t);
+          zap.stop(t + 0.1);
+
+          const crack = ctx.createOscillator();
+          crack.type = 'sawtooth';
+          crack.frequency.setValueAtTime(1600 * jitter, t);
+          crack.frequency.exponentialRampToValueAtTime(320 * jitter, t + 0.08);
+          const cg = ctx.createGain();
+          cg.gain.setValueAtTime(0.22, t);
+          cg.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
+          crack.connect(cg);
+          cg.connect(out);
+          crack.start(t);
+          crack.stop(t + 0.1);
+          break;
+        }
+        if (w === 'Fireball') {
+          // Warm flame launch whoosh
+          const whoosh = ctx.createBufferSource();
+          whoosh.buffer = getNoiseBuffer(ctx);
+          const wf = ctx.createBiquadFilter();
+          wf.type = 'bandpass';
+          wf.Q.value = 2.0;
+          wf.frequency.setValueAtTime(1400 * jitter, t);
+          wf.frequency.exponentialRampToValueAtTime(360 * jitter, t + 0.14);
+          const wg = ctx.createGain();
+          wg.gain.setValueAtTime(0.34, t);
+          wg.gain.exponentialRampToValueAtTime(0.0001, t + 0.16);
+          whoosh.connect(wf);
+          wf.connect(wg);
+          wg.connect(out);
+          whoosh.start(t);
+          whoosh.stop(t + 0.17);
+          break;
+        }
+
+        // Metallic blade whoosh scaled for heavy / light / standard weapons
+        const isHeavy = w === 'BroadSword' || w === 'StunMace';
+        const isFast =
+          w === 'DualDaggers' || w === 'BackStabber' || w === 'QuickSword' || w === 'Rapier' || w === 'ThrowingKnife';
+        const dur = isHeavy ? 0.22 : isFast ? 0.1 : 0.14;
+        const startFilter = isHeavy ? 1300 : isFast ? 3400 : 2600;
+        const endFilter = isHeavy ? 280 : isFast ? 1200 : 700;
+
         const noise = ctx.createBufferSource();
         noise.buffer = getNoiseBuffer(ctx);
         const filter = ctx.createBiquadFilter();
         filter.type = 'bandpass';
-        filter.Q.value = 3.5;
-        filter.frequency.setValueAtTime(2600 * jitter, t);
-        filter.frequency.exponentialRampToValueAtTime(700 * jitter, t + 0.14);
+        filter.Q.value = isHeavy ? 2.2 : 3.5;
+        filter.frequency.setValueAtTime(startFilter * jitter, t);
+        filter.frequency.exponentialRampToValueAtTime(endFilter * jitter, t + dur);
 
         const gain = ctx.createGain();
-        gain.gain.setValueAtTime(0.28, t);
-        gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.16);
+        gain.gain.setValueAtTime(isHeavy ? 0.36 : 0.28, t);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t + dur + 0.02);
 
         // Blade slice tone
         const slice = ctx.createOscillator();
-        slice.type = 'sawtooth';
-        slice.frequency.setValueAtTime(440 * jitter, t);
-        slice.frequency.exponentialRampToValueAtTime(180 * jitter, t + 0.12);
+        slice.type = isHeavy ? 'triangle' : 'sawtooth';
+        slice.frequency.setValueAtTime((isHeavy ? 240 : isFast ? 620 : 440) * jitter, t);
+        slice.frequency.exponentialRampToValueAtTime((isHeavy ? 85 : isFast ? 280 : 180) * jitter, t + dur * 0.85);
         const sliceGain = ctx.createGain();
-        sliceGain.gain.setValueAtTime(0.15, t);
-        sliceGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.12);
+        sliceGain.gain.setValueAtTime(isHeavy ? 0.24 : 0.15, t);
+        sliceGain.gain.exponentialRampToValueAtTime(0.0001, t + dur * 0.9);
 
         noise.connect(filter);
         filter.connect(gain);
@@ -288,9 +378,9 @@ export class SynthSfx {
         sliceGain.connect(out);
 
         noise.start(t);
-        noise.stop(t + 0.18);
+        noise.stop(t + dur + 0.04);
         slice.start(t);
-        slice.stop(t + 0.14);
+        slice.stop(t + dur);
         break;
       }
 
@@ -1027,21 +1117,375 @@ export class SynthSfx {
         break;
       }
 
+      case 'parryStart': {
+        // Crisp metallic shield-raise shing + air flick
+        const ping = ctx.createOscillator();
+        ping.type = 'triangle';
+        ping.frequency.setValueAtTime(580 * jitter, t);
+        ping.frequency.exponentialRampToValueAtTime(1320 * jitter, t + 0.065);
+        const pingGain = ctx.createGain();
+        pingGain.gain.setValueAtTime(0.24, t);
+        pingGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.085);
+
+        const flick = ctx.createBufferSource();
+        flick.buffer = getNoiseBuffer(ctx);
+        const flickFilter = ctx.createBiquadFilter();
+        flickFilter.type = 'bandpass';
+        flickFilter.Q.value = 7.0;
+        flickFilter.frequency.setValueAtTime(2800 * jitter, t);
+        const flickGain = ctx.createGain();
+        flickGain.gain.setValueAtTime(0.22, t);
+        flickGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.06);
+
+        ping.connect(pingGain);
+        pingGain.connect(out);
+        flick.connect(flickFilter);
+        flickFilter.connect(flickGain);
+        flickGain.connect(out);
+
+        ping.start(t);
+        ping.stop(t + 0.09);
+        flick.start(t);
+        flick.stop(t + 0.07);
+        break;
+      }
+
+      case 'shieldBlock': {
+        // Heavy iron guard impact thump + bright silver-steel ring
+        const thump = ctx.createOscillator();
+        thump.type = 'triangle';
+        thump.frequency.setValueAtTime(240 * jitter, t);
+        thump.frequency.exponentialRampToValueAtTime(75, t + 0.13);
+        const thumpGain = ctx.createGain();
+        thumpGain.gain.setValueAtTime(0.45, t);
+        thumpGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.15);
+
+        const ring1 = ctx.createOscillator();
+        const ring2 = ctx.createOscillator();
+        ring1.type = 'sine';
+        ring2.type = 'sine';
+        ring1.frequency.setValueAtTime(980 * jitter, t);
+        ring2.frequency.setValueAtTime(1480 * jitter, t);
+        const ringGain = ctx.createGain();
+        ringGain.gain.setValueAtTime(0.22, t);
+        ringGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.2);
+
+        const crunch = ctx.createBufferSource();
+        crunch.buffer = getNoiseBuffer(ctx);
+        const crunchFilter = ctx.createBiquadFilter();
+        crunchFilter.type = 'bandpass';
+        crunchFilter.Q.value = 3.0;
+        crunchFilter.frequency.setValueAtTime(1650 * jitter, t);
+        const crunchGain = ctx.createGain();
+        crunchGain.gain.setValueAtTime(0.32, t);
+        crunchGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
+
+        thump.connect(thumpGain);
+        thumpGain.connect(out);
+        ring1.connect(ringGain);
+        ring2.connect(ringGain);
+        ringGain.connect(out);
+        crunch.connect(crunchFilter);
+        crunchFilter.connect(crunchGain);
+        crunchGain.connect(out);
+
+        thump.start(t);
+        thump.stop(t + 0.16);
+        ring1.start(t);
+        ring2.start(t);
+        ring1.stop(t + 0.22);
+        ring2.stop(t + 0.22);
+        crunch.start(t);
+        crunch.stop(t + 0.1);
+        break;
+      }
+
+      case 'explosion': {
+        // Punchy layered explosion tailored by element (fire / ice / cluster / physical)
+        const el = event.element;
+        const sub = ctx.createOscillator();
+        sub.type = el === 'ice' ? 'triangle' : 'sine';
+        sub.frequency.setValueAtTime((el === 'ice' ? 160 : el === 'cluster' ? 145 : 130) * jitter, t);
+        sub.frequency.exponentialRampToValueAtTime(el === 'ice' ? 44 : 28, t + (el === 'ice' ? 0.26 : 0.42));
+        const subGain = ctx.createGain();
+        subGain.gain.setValueAtTime(el === 'ice' ? 0.5 : 0.68, t);
+        subGain.gain.exponentialRampToValueAtTime(0.0001, t + (el === 'ice' ? 0.28 : 0.45));
+        sub.connect(subGain);
+        subGain.connect(out);
+        sub.start(t);
+        sub.stop(t + 0.48);
+
+        const blast = ctx.createBufferSource();
+        blast.buffer = getNoiseBuffer(ctx);
+        const blastFilter = ctx.createBiquadFilter();
+        blastFilter.type = el === 'ice' ? 'highpass' : 'lowpass';
+        blastFilter.frequency.setValueAtTime(el === 'ice' ? 2800 : 2600, t);
+        if (el !== 'ice') {
+          blastFilter.frequency.exponentialRampToValueAtTime(160, t + 0.36);
+        }
+        const blastGain = ctx.createGain();
+        blastGain.gain.setValueAtTime(el === 'ice' ? 0.38 : 0.58, t);
+        blastGain.gain.exponentialRampToValueAtTime(0.0001, t + (el === 'ice' ? 0.26 : 0.4));
+        blast.connect(blastFilter);
+        blastFilter.connect(blastGain);
+        blastGain.connect(out);
+        blast.start(t);
+        blast.stop(t + 0.42);
+
+        if (el === 'ice') {
+          // Crystalline shatter chimes
+          const shards = [2200, 3136, 4186];
+          shards.forEach((freq, idx) => {
+            const sOsc = ctx.createOscillator();
+            sOsc.type = 'sine';
+            sOsc.frequency.setValueAtTime(freq * jitter, t + idx * 0.018);
+            sOsc.frequency.exponentialRampToValueAtTime(freq * 0.72 * jitter, t + 0.24);
+            const sGain = ctx.createGain();
+            sGain.gain.setValueAtTime(0.0, t);
+            sGain.gain.setValueAtTime(0.24, t + idx * 0.018);
+            sGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.26 + idx * 0.02);
+            sOsc.connect(sGain);
+            sGain.connect(out);
+            sOsc.start(t + idx * 0.018);
+            sOsc.stop(t + 0.3);
+          });
+        } else if (el === 'fire') {
+          // Flame sizzle & crackle layer
+          const sizzle = ctx.createBufferSource();
+          sizzle.buffer = getNoiseBuffer(ctx);
+          const sFilter = ctx.createBiquadFilter();
+          sFilter.type = 'bandpass';
+          sFilter.Q.value = 2.4;
+          sFilter.frequency.setValueAtTime(3200 * jitter, t);
+          sFilter.frequency.exponentialRampToValueAtTime(900, t + 0.38);
+          const sGain = ctx.createGain();
+          sGain.gain.setValueAtTime(0.32, t);
+          sGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.42);
+          sizzle.connect(sFilter);
+          sFilter.connect(sGain);
+          sGain.connect(out);
+          sizzle.start(t);
+          sizzle.stop(t + 0.44);
+        } else {
+          // Gritty mid crunch transient for physical & cluster blasts
+          const crunchOsc = ctx.createOscillator();
+          crunchOsc.type = 'sawtooth';
+          crunchOsc.frequency.setValueAtTime(215 * jitter, t);
+          crunchOsc.frequency.exponentialRampToValueAtTime(48, t + 0.18);
+          const crunchGain = ctx.createGain();
+          crunchGain.gain.setValueAtTime(0.35, t);
+          crunchGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.2);
+          crunchOsc.connect(crunchGain);
+          crunchGain.connect(out);
+          crunchOsc.start(t);
+          crunchOsc.stop(t + 0.22);
+        }
+        break;
+      }
+
+      case 'flaskEmpty': {
+        if (event.reason === 'fullHp') {
+          // Gentle double glass chime indicating HP is already full
+          const chime = ctx.createOscillator();
+          chime.type = 'sine';
+          chime.frequency.setValueAtTime(820 * jitter, t);
+          chime.frequency.setValueAtTime(980 * jitter, t + 0.04);
+          const g = ctx.createGain();
+          g.gain.setValueAtTime(0.18, t);
+          g.gain.exponentialRampToValueAtTime(0.0001, t + 0.11);
+          chime.connect(g);
+          g.connect(out);
+          chime.start(t);
+          chime.stop(t + 0.12);
+        } else {
+          // Hollow glass clink + dry empty buzz
+          const clink = ctx.createOscillator();
+          clink.type = 'triangle';
+          clink.frequency.setValueAtTime(680 * jitter, t);
+          clink.frequency.exponentialRampToValueAtTime(420, t + 0.045);
+          const clinkG = ctx.createGain();
+          clinkG.gain.setValueAtTime(0.22, t);
+          clinkG.gain.exponentialRampToValueAtTime(0.0001, t + 0.055);
+          clink.connect(clinkG);
+          clinkG.connect(out);
+          clink.start(t);
+          clink.stop(t + 0.06);
+
+          const buzz = ctx.createOscillator();
+          buzz.type = 'sawtooth';
+          buzz.frequency.setValueAtTime(155 * jitter, t + 0.02);
+          buzz.frequency.linearRampToValueAtTime(115, t + 0.13);
+          const buzzG = ctx.createGain();
+          buzzG.gain.setValueAtTime(0.0, t);
+          buzzG.gain.setValueAtTime(0.18, t + 0.02);
+          buzzG.gain.exponentialRampToValueAtTime(0.0001, t + 0.14);
+          buzz.connect(buzzG);
+          buzzG.connect(out);
+          buzz.start(t + 0.02);
+          buzz.stop(t + 0.15);
+        }
+        break;
+      }
+
       case 'skillCast': {
-        // Tactical / magical activation burst
-        const osc = ctx.createOscillator();
-        osc.type = 'triangle';
-        osc.frequency.setValueAtTime(320 * jitter, t);
-        osc.frequency.exponentialRampToValueAtTime(880 * jitter, t + 0.12);
+        const sid = event.skillId;
+        if (sid === 'SinewSlicer' || sid === 'HeavyTurret' || sid === 'WolfTrap') {
+          // Mechanical deploy clank + crisp clockwork clicks
+          const clank = ctx.createOscillator();
+          clank.type = 'triangle';
+          clank.frequency.setValueAtTime(320 * jitter, t);
+          clank.frequency.exponentialRampToValueAtTime(125, t + 0.11);
+          const clankG = ctx.createGain();
+          clankG.gain.setValueAtTime(0.38, t);
+          clankG.gain.exponentialRampToValueAtTime(0.0001, t + 0.12);
+          clank.connect(clankG);
+          clankG.connect(out);
+          clank.start(t);
+          clank.stop(t + 0.13);
 
-        const gain = ctx.createGain();
-        gain.gain.setValueAtTime(0.3, t);
-        gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.15);
+          [1400, 1880].forEach((freq, idx) => {
+            const click = ctx.createOscillator();
+            click.type = 'square';
+            click.frequency.setValueAtTime(freq * jitter, t + 0.03 + idx * 0.045);
+            const cg = ctx.createGain();
+            cg.gain.setValueAtTime(0.0, t);
+            cg.gain.setValueAtTime(0.14, t + 0.03 + idx * 0.045);
+            cg.gain.exponentialRampToValueAtTime(0.0001, t + 0.065 + idx * 0.045);
+            click.connect(cg);
+            cg.connect(out);
+            click.start(t + 0.03 + idx * 0.045);
+            click.stop(t + 0.075 + idx * 0.045);
+          });
+        } else if (sid === 'WaveOfDenial') {
+          // Explosive pneumatic kinetic wind shockwave
+          const wind = ctx.createBufferSource();
+          wind.buffer = getNoiseBuffer(ctx);
+          const wf = ctx.createBiquadFilter();
+          wf.type = 'bandpass';
+          wf.Q.value = 1.8;
+          wf.frequency.setValueAtTime(360, t);
+          wf.frequency.exponentialRampToValueAtTime(2800 * jitter, t + 0.08);
+          wf.frequency.exponentialRampToValueAtTime(380, t + 0.26);
+          const wg = ctx.createGain();
+          wg.gain.setValueAtTime(0.55, t);
+          wg.gain.exponentialRampToValueAtTime(0.0001, t + 0.28);
+          wind.connect(wf);
+          wf.connect(wg);
+          wg.connect(out);
+          wind.start(t);
+          wind.stop(t + 0.3);
 
-        osc.connect(gain);
-        gain.connect(out);
-        osc.start(t);
-        osc.stop(t + 0.16);
+          const push = ctx.createOscillator();
+          push.type = 'sine';
+          push.frequency.setValueAtTime(260 * jitter, t);
+          push.frequency.exponentialRampToValueAtTime(62, t + 0.22);
+          const pg = ctx.createGain();
+          pg.gain.setValueAtTime(0.42, t);
+          pg.gain.exponentialRampToValueAtTime(0.0001, t + 0.24);
+          push.connect(pg);
+          pg.connect(out);
+          push.start(t);
+          push.stop(t + 0.25);
+        } else if (sid === 'CorruptedPower') {
+          // Dark violet power surge chord + electric crackle
+          const osc1 = ctx.createOscillator();
+          const osc2 = ctx.createOscillator();
+          osc1.type = 'sawtooth';
+          osc2.type = 'sawtooth';
+          osc1.frequency.setValueAtTime(140 * jitter, t);
+          osc1.frequency.exponentialRampToValueAtTime(420 * jitter, t + 0.28);
+          osc2.frequency.setValueAtTime(211 * jitter, t);
+          osc2.frequency.exponentialRampToValueAtTime(632 * jitter, t + 0.28);
+          const flt = ctx.createBiquadFilter();
+          flt.type = 'lowpass';
+          flt.frequency.setValueAtTime(500, t);
+          flt.frequency.exponentialRampToValueAtTime(3200, t + 0.22);
+          const cg = ctx.createGain();
+          cg.gain.setValueAtTime(0.32, t);
+          cg.gain.exponentialRampToValueAtTime(0.0001, t + 0.36);
+          osc1.connect(flt);
+          osc2.connect(flt);
+          flt.connect(cg);
+          cg.connect(out);
+          osc1.start(t);
+          osc2.start(t);
+          osc1.stop(t + 0.38);
+          osc2.stop(t + 0.38);
+        } else if (sid === 'KnifeDance') {
+          // Rapid radial steel knife fan zip
+          [0, 0.03, 0.06].forEach((off, idx) => {
+            const kOsc = ctx.createOscillator();
+            kOsc.type = 'sawtooth';
+            kOsc.frequency.setValueAtTime((2400 + idx * 350) * jitter, t + off);
+            kOsc.frequency.exponentialRampToValueAtTime(980 * jitter, t + off + 0.065);
+            const kg = ctx.createGain();
+            kg.gain.setValueAtTime(0.0, t);
+            kg.gain.setValueAtTime(0.18, t + off);
+            kg.gain.exponentialRampToValueAtTime(0.0001, t + off + 0.075);
+            kOsc.connect(kg);
+            kg.connect(out);
+            kOsc.start(t + off);
+            kOsc.stop(t + off + 0.08);
+          });
+        } else if (sid === 'Phaser') {
+          // Sharp electric blink zap
+          const zOsc = ctx.createOscillator();
+          zOsc.type = 'sawtooth';
+          zOsc.frequency.setValueAtTime(300 * jitter, t);
+          zOsc.frequency.exponentialRampToValueAtTime(1650 * jitter, t + 0.09);
+          const zg = ctx.createGain();
+          zg.gain.setValueAtTime(0.24, t);
+          zg.gain.exponentialRampToValueAtTime(0.0001, t + 0.12);
+          zOsc.connect(zg);
+          zg.connect(out);
+          zOsc.start(t);
+          zOsc.stop(t + 0.13);
+        } else if (sid === 'Tonic') {
+          // Refreshing emerald healing shimmer
+          const notes = [523.25, 659.25, 783.99, 1046.5];
+          notes.forEach((freq, idx) => {
+            const o = ctx.createOscillator();
+            o.type = 'sine';
+            o.frequency.setValueAtTime(freq * jitter, t + idx * 0.035);
+            const g = ctx.createGain();
+            g.gain.setValueAtTime(0.0, t);
+            g.gain.setValueAtTime(0.22, t + idx * 0.035);
+            g.gain.exponentialRampToValueAtTime(0.0001, t + 0.36 + idx * 0.04);
+            o.connect(g);
+            g.connect(out);
+            o.start(t + idx * 0.035);
+            o.stop(t + 0.44);
+          });
+        } else {
+          // Grenade pin & throw whoosh
+          const toss = ctx.createBufferSource();
+          toss.buffer = getNoiseBuffer(ctx);
+          const tf = ctx.createBiquadFilter();
+          tf.type = 'bandpass';
+          tf.Q.value = 2.5;
+          tf.frequency.setValueAtTime(1100 * jitter, t);
+          tf.frequency.exponentialRampToValueAtTime(320 * jitter, t + 0.12);
+          const tg = ctx.createGain();
+          tg.gain.setValueAtTime(0.32, t);
+          tg.gain.exponentialRampToValueAtTime(0.0001, t + 0.14);
+          toss.connect(tf);
+          tf.connect(tg);
+          tg.connect(out);
+          toss.start(t);
+          toss.stop(t + 0.15);
+
+          const pin = ctx.createOscillator();
+          pin.type = 'triangle';
+          pin.frequency.setValueAtTime(1900 * jitter, t);
+          pin.frequency.exponentialRampToValueAtTime(1200 * jitter, t + 0.045);
+          const pg = ctx.createGain();
+          pg.gain.setValueAtTime(0.18, t);
+          pg.gain.exponentialRampToValueAtTime(0.0001, t + 0.055);
+          pin.connect(pg);
+          pg.connect(out);
+          pin.start(t);
+          pin.stop(t + 0.06);
+        }
         break;
       }
 
