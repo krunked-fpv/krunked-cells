@@ -1,6 +1,7 @@
 // =============================================================================
 // KRUNKED CELLS — Unified Keyboard + Mouse + Gamepad Input Manager
 // Edge-triggered Pressed latches guarantee zero dropped inputs at 30/60/120 FPS.
+// Accurate 16:9 letterbox world-space aim + direct canvas contextmenu guard.
 // =============================================================================
 
 import {
@@ -44,6 +45,23 @@ const ARROW_FALLBACKS: Partial<Record<KeyAction, string[]>> = {
   moveDown: ['ArrowDown'],
   roll: ['ShiftRight'],
 };
+
+const INTERACTIVE_UI_SELECTOR = [
+  'button',
+  'a',
+  'input',
+  'select',
+  'textarea',
+  'label',
+  '.kc-modal-backdrop',
+  '.kc-title-backdrop',
+  '.kc-dev-drawer',
+  '.kc-loot-card',
+  '.kc-minimap-shell',
+  '.kc-interact-prompt',
+  '.kc-flask-widget',
+  '.kc-passage-quickbar',
+].join(', ');
 
 /**
  * Computes the fitted 16:9 (480x270) content rectangle inside a canvas element
@@ -90,8 +108,6 @@ export function resolveCameraTopLeft(
 
   let isCenter = mode === 'center';
   if (mode === 'auto' && playerPos) {
-    // Disjoint invariant: under center-origin camera, camera stays >= half-viewport
-    // and closely tracks player center; under top-left camera, camera sits ~half-viewport left of player.
     const halfW = VIEWPORT_W / (2 * zoom);
     const halfH = VIEWPORT_H / (2 * zoom);
     const dx = Math.abs(playerPos.x - cx);
@@ -169,7 +185,13 @@ export class InputManager {
   }
 
   public setCanvas(canvas: HTMLCanvasElement | null): void {
+    if (this.canvas && this.attached) {
+      this.canvas.removeEventListener('contextmenu', this.handleCanvasContextMenu);
+    }
     this.canvas = canvas;
+    if (this.canvas && this.attached) {
+      this.canvas.addEventListener('contextmenu', this.handleCanvasContextMenu);
+    }
   }
 
   public setHotkeys(hotkeys: InputHotkeys): void {
@@ -222,6 +244,13 @@ export class InputManager {
     this.commandQueue.push(cmd);
   }
 
+  /** Programmatic Health Flask trigger (used by clicking the HUD Flask vessel). */
+  public triggerHeal(): void {
+    const allowed = this.hotkeys.isGameplayKeysAllowed ? this.hotkeys.isGameplayKeysAllowed() : true;
+    if (!allowed || this.isCapturingRebind()) return;
+    this.latchedHeal = true;
+  }
+
   public clearTransient(): void {
     this.heldKeys.clear();
     this.mouseLeftHeld = false;
@@ -259,6 +288,9 @@ export class InputManager {
         x: playerPos.x + this.gamepadAimOffset.x * 120,
         y: playerPos.y + this.gamepadAimOffset.y * 120,
       };
+    }
+    if (!this.mouseHasMoved) {
+      return null;
     }
     const logical = this.getMouseLogicalPos();
     return {
@@ -332,6 +364,7 @@ export class InputManager {
     window.addEventListener('mouseup', this.handleMouseUp);
     window.addEventListener('contextmenu', this.handleContextMenu);
     window.addEventListener('blur', this.handleWindowBlur);
+    this.canvas?.addEventListener('contextmenu', this.handleCanvasContextMenu);
   }
 
   public dispose(): void {
@@ -344,6 +377,7 @@ export class InputManager {
     window.removeEventListener('mouseup', this.handleMouseUp);
     window.removeEventListener('contextmenu', this.handleContextMenu);
     window.removeEventListener('blur', this.handleWindowBlur);
+    this.canvas?.removeEventListener('contextmenu', this.handleCanvasContextMenu);
     this.clearTransient();
   }
 
@@ -384,14 +418,16 @@ export class InputManager {
   private isUiInteractiveTarget(target: EventTarget | null): boolean {
     if (!target || typeof HTMLElement === 'undefined') return false;
     if (!(target instanceof HTMLElement)) return false;
-    if (target.id === 'game-canvas' || target.id === 'viewport-stage' || target.id === 'app') {
+    if (
+      target.id === 'game-canvas' ||
+      target.id === 'viewport-stage' ||
+      target.id === 'app' ||
+      target.id === 'hud-root' ||
+      target.id === 'ui-root'
+    ) {
       return false;
     }
-    return Boolean(
-      target.closest(
-        'button, a, input, select, textarea, label, .kc-modal-backdrop, .kc-dev-drawer, .kc-loot-card, .kc-minimap-shell, .kc-interact-prompt, .kc-flask-widget'
-      )
-    );
+    return Boolean(target.closest(INTERACTIVE_UI_SELECTOR));
   }
 
   private handleKeyDown = (e: KeyboardEvent): void => {
@@ -520,10 +556,18 @@ export class InputManager {
     this.mouseClientX = e.clientX;
     this.mouseClientY = e.clientY;
     this.mouseHasMoved = true;
+    this.gamepadAimOffset = null;
 
     if (this.isCapturingRebind()) return;
     if (this.isUiInteractiveTarget(e.target)) return;
     if (this.hotkeys.isGameplayMouseAllowed && !this.hotkeys.isGameplayMouseAllowed()) return;
+
+    // Release stray button focus when clicking onto the game viewport
+    if (typeof document !== 'undefined' && document.activeElement instanceof HTMLElement) {
+      if (!this.isEditableTarget(document.activeElement)) {
+        document.activeElement.blur();
+      }
+    }
 
     if (e.button === 0) {
       this.mouseLeftHeld = true;
@@ -537,6 +581,10 @@ export class InputManager {
   private handleMouseUp = (e: MouseEvent): void => {
     if (e.button === 0) this.mouseLeftHeld = false;
     if (e.button === 2) this.mouseRightHeld = false;
+  };
+
+  private handleCanvasContextMenu = (e: MouseEvent): void => {
+    e.preventDefault();
   };
 
   private handleContextMenu = (e: MouseEvent): void => {

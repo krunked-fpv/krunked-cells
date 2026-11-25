@@ -2,17 +2,21 @@
 // KRUNKED CELLS — Master GameApp Shell
 // Orchestrates fixed-60Hz SimState, 30/60/120 FPS WebGL2Renderer, AudioEngine,
 // InputManager, UIManager, CustomPackLoader, SaveManager, and DebugBridge.
+// Includes smooth cinematic Title Screen camera drift & async UI icon preload.
 // =============================================================================
 
 import {
   FIXED_DT,
   MAX_BOSS_CELLS,
   SIM_HZ,
+  TILE_SIZE,
+  VIEWPORT_W,
   createEmptyInputFrame,
   type ArtPackMode,
   type AudioSettings,
   type BiomeId,
   type BossId,
+  type CustomPackAssetResolver,
   type CustomPackStatus,
   type DebugBridge,
   type KeyBindings,
@@ -42,10 +46,21 @@ import {
 import { InputManager } from '../input';
 import { WebGL2Renderer } from '../render';
 import { hashSimState } from '../sim/hash';
+import { createRng } from '../sim/prng';
+import { rollGearInstance } from '../sim/roguelite';
 import { createInitialSimState, stepSim } from '../sim/step';
 import { UIManager, type CatalogLookup } from '../ui';
 import { createDebugBridge } from './DebugBridge';
 import { SaveManager } from './SaveManager';
+
+const DEV_TEST_SKILL_PAIRS: ReadonlyArray<readonly [string, string, string, string]> = [
+  ['FireGrenade', 'HeavyTurret', 'IceGrenade', 'Phaser'],
+  ['Phaser', 'WaveOfDenial', 'CorruptedPower', 'WolfTrap'],
+  ['IceGrenade', 'WolfTrap', 'ClusterGrenade', 'KnifeDance'],
+  ['ClusterGrenade', 'CorruptedPower', 'Tonic', 'SinewSlicer'],
+  ['KnifeDance', 'Tonic', 'FireGrenade', 'HeavyTurret'],
+  ['InfantryGrenade', 'SinewSlicer', 'WaveOfDenial', 'Phaser'],
+];
 
 function buildCatalogLookup(): CatalogLookup {
   return {
@@ -125,6 +140,11 @@ export class GameApp {
   private cachedHash = '00000000';
   private hashDirty = true;
 
+  // Cinematic Title Screen camera anchor (restored cleanly on continueRun)
+  private titleBaseCamX: number | null = null;
+  private titleBaseCamY: number | null = null;
+  private devSkillPairIndex = 0;
+
   // Rolling FPS telemetry
   private fpsSamples: number[] = [];
   private currentFps = 60;
@@ -146,6 +166,8 @@ export class GameApp {
     );
     this.state.runStatus = 'title';
     this.prevRunStatus = 'title';
+    this.titleBaseCamX = this.state.camera.x;
+    this.titleBaseCamY = this.state.camera.y;
     this.cachedHash = hashSimState(this.state);
     this.hashDirty = false;
 
@@ -173,6 +195,7 @@ export class GameApp {
         onReturnToTitle: () => this.returnToTitle(),
         onRestartRun: () => this.startNewRun(this.nextRandomishSeed(), this.state.bossStemCells),
         onDispatchCommand: (cmd) => this.dispatchCommand(cmd),
+        onTriggerHeal: () => this.input.triggerHeal(),
         onUpdateRenderSettings: (patch) => this.updateRenderSettings(patch),
         onUpdateAudioSettings: (patch) => this.updateAudioSettings(patch),
         onUpdateKeyBindings: (bindings) => this.updateKeyBindings(bindings),
@@ -184,6 +207,7 @@ export class GameApp {
         onDevSpawnBoss: (bossId) => this.debugBridge.spawnBoss(bossId),
         onDevGrantScrolls: (b, t, s) => this.debugBridge.grantScrolls(b, t, s),
         onDevGiveItem: (id) => this.debugBridge.giveItem(id),
+        onDevGiveTestSkills: () => this.devGiveTestSkills(),
         onDevSetGodMode: (enabled) => this.debugBridge.setGodMode(enabled),
         onDevSetBossCells: (bc) => this.debugBridge.setBossCells(bc),
         onDevTriggerCurse: (k) => this.debugBridge.triggerCurse(k),
@@ -224,6 +248,7 @@ export class GameApp {
     this.input.setCameraOriginMode('topLeft');
     this.ui.setCameraOriginMode('topLeft');
     this.ui.setInputManager(this.input);
+    this.ui.setArtPackContext('builtin', this.customPackLoader);
   }
 
   public getDebugBridge(): DebugBridge {
@@ -260,15 +285,26 @@ export class GameApp {
   }
 
   private applyCustomPackStatus(status: CustomPackStatus): void {
-    this.renderer.setCustomPackAvailable(status, this.customPackLoader);
+    const resolver: CustomPackAssetResolver = this.customPackLoader;
+    this.renderer.setCustomPackAvailable(status, resolver);
     const useCustom = status.available && this.saveData.renderSettings.artPackMode === 'custom';
-    this.audio.setCustomPackResolver(status.available ? this.customPackLoader : null, useCustom);
-    // If saved preference was custom but no pack exists right now, fall back visually to builtin without losing preference
+    const effectiveMode: ArtPackMode = useCustom ? 'custom' : 'builtin';
+
+    this.audio.setCustomPackResolver(status.available ? resolver : null, useCustom);
     this.renderer.updateSettings({
       ...this.saveData.renderSettings,
-      artPackMode: useCustom ? 'custom' : 'builtin',
+      artPackMode: effectiveMode,
     });
+    this.ui.setArtPackContext(effectiveMode, status.available ? resolver : null);
     this.syncUiSettings();
+
+    if (status.available && resolver.preloadUiAssets) {
+      void resolver.preloadUiAssets().then(() => {
+        this.ui.forceRefreshIcons();
+      });
+    } else {
+      this.ui.forceRefreshIcons();
+    }
   }
 
   private syncUiSettings(): void {
@@ -291,9 +327,47 @@ export class GameApp {
   }
 
   private nextRandomishSeed(): number {
-    // Derived cleanly from previous seed & tick (never affects intra-run determinism)
     const mixed = ((this.saveData.lastSeed * 1664525 + 1013904223 + this.state.tick * 7919) >>> 0) % 899999 + 100000;
     return mixed;
+  }
+
+  private devGiveTestSkills(): void {
+    if (this.state.runStatus === 'title' || this.state.runStatus === 'dead' || this.state.runStatus === 'victory') {
+      this.startNewRun(this.state.runSeed, this.state.bossStemCells);
+    }
+    const pair = DEV_TEST_SKILL_PAIRS[this.devSkillPairIndex % DEV_TEST_SKILL_PAIRS.length]!;
+    this.devSkillPairIndex++;
+
+    const [s1Id, s2Id, drop1Id, drop2Id] = pair;
+    const rng = createRng(this.state.rngState);
+    const gearLevel = Math.max(2, 2 + this.state.bossStemCells + this.state.biomesVisited.length);
+
+    this.state.player.loadout.skill1 = rollGearInstance(this.state, rng, 'skill', gearLevel, undefined, false, s1Id);
+    this.state.player.loadout.skill2 = rollGearInstance(this.state, rng, 'skill', gearLevel, undefined, false, s2Id);
+
+    // Also drop 2 extra test skills right beside the player so Loot Comparison Card can be audited live!
+    const dropIds = [drop1Id, drop2Id];
+    for (let i = 0; i < dropIds.length; i++) {
+      const gear = rollGearInstance(this.state, rng, 'skill', gearLevel + 1, undefined, false, dropIds[i]);
+      const px = this.state.player.pos.x + (i === 0 ? 18 : -18);
+      const py = this.state.player.pos.y - 4;
+      this.state.pickups.push({
+        uid: this.state.nextUid++,
+        kind: 'gear',
+        pos: { x: px, y: py },
+        prevPos: { x: px, y: py },
+        vel: { x: 0, y: 0 },
+        value: 1,
+        gear,
+        magnetTicks: 0,
+        collected: false,
+        bobPhase: i * 1.4,
+      });
+    }
+
+    this.state.rngState = rng.getState();
+    this.onExternalStateMutated();
+    this.ui.showToast(`EQUIPPED ${s1Id} + ${s2Id}`, 1.8);
   }
 
   public startNewRun(seed: number, bossCells: number): void {
@@ -310,6 +384,8 @@ export class GameApp {
     this.state = createInitialSimState(cleanSeed, cleanBc, this.saveData.meta);
     this.state.runStatus = 'playing';
     this.prevRunStatus = 'playing';
+    this.titleBaseCamX = null;
+    this.titleBaseCamY = null;
     this.accumulatorSec = 0;
     this.hashDirty = true;
 
@@ -324,6 +400,18 @@ export class GameApp {
 
   public continueRun(): void {
     if (this.state.runStatus === 'title' && this.saveData.hasActiveRun) {
+      if (this.titleBaseCamX !== null) {
+        this.state.camera.x = this.titleBaseCamX;
+        this.state.camera.prevX = this.titleBaseCamX;
+        this.state.camera.targetX = this.titleBaseCamX;
+      }
+      if (this.titleBaseCamY !== null) {
+        this.state.camera.y = this.titleBaseCamY;
+        this.state.camera.prevY = this.titleBaseCamY;
+        this.state.camera.targetY = this.titleBaseCamY;
+      }
+      this.titleBaseCamX = null;
+      this.titleBaseCamY = null;
       this.state.runStatus = this.state.activeBiomeId === 'Passage' ? 'passage' : 'playing';
       this.prevRunStatus = this.state.runStatus;
       this.input.clearTransient();
@@ -349,6 +437,8 @@ export class GameApp {
     this.persistMetaFromState();
     this.state.runStatus = 'title';
     this.prevRunStatus = 'title';
+    this.titleBaseCamX = this.state.camera.x;
+    this.titleBaseCamY = this.state.camera.y;
     this.ui.toggleOptions(false);
     this.ui.toggleMinimapExpanded(false);
     this.input.clearTransient();
@@ -371,11 +461,9 @@ export class GameApp {
 
   private dispatchCommand(cmd: SimCommand): void {
     this.input.queueCommand(cmd);
-    // Execute immediately if paused on a modal (Scroll Picker / Passage NPC) so UI feels instant
     if (this.state.runStatus === 'playing' || this.state.runStatus === 'passage') {
       const frame = createEmptyInputFrame();
       frame.commands = [cmd];
-      // Avoid double execution if we dispatch immediately — pop from queue
       this.input.consumeInputFrame(this.state.camera, this.state.player.pos);
       stepSim(this.state, frame);
       this.processPostTickSideEffects();
@@ -391,11 +479,13 @@ export class GameApp {
     };
     const status = this.customPackLoader.getStatus();
     const useCustom = status.available && this.saveData.renderSettings.artPackMode === 'custom';
+    const effectiveMode: ArtPackMode = useCustom ? 'custom' : 'builtin';
     this.renderer.updateSettings({
       ...this.saveData.renderSettings,
-      artPackMode: useCustom ? 'custom' : 'builtin',
+      artPackMode: effectiveMode,
     });
     this.audio.setCustomPackResolver(status.available ? this.customPackLoader : null, useCustom);
+    this.ui.setArtPackContext(effectiveMode, status.available ? this.customPackLoader : null);
     this.persistSave();
     this.syncUiSettings();
   }
@@ -449,7 +539,7 @@ export class GameApp {
     } else {
       this.saveData.renderSettings.artPackMode = desired;
       this.ui.showToast(
-        desired === 'custom' ? 'ART MODE: OWNED CUSTOM PACK' : 'ART MODE: BUILT-IN KRUNKED ART',
+        desired === 'custom' ? 'ART MODE: OWNED DEAD CELLS PACK' : 'ART MODE: BUILT-IN KRUNKED ART',
         2.0
       );
     }
@@ -481,6 +571,8 @@ export class GameApp {
     );
     this.state.runStatus = 'title';
     this.prevRunStatus = 'title';
+    this.titleBaseCamX = this.state.camera.x;
+    this.titleBaseCamY = this.state.camera.y;
     this.input.setKeyBindings(this.saveData.keyBindings);
     this.audio.updateSettings(this.saveData.audioSettings);
     this.applyCustomPackStatus(this.customPackLoader.getStatus());
@@ -574,6 +666,8 @@ export class GameApp {
 
       // 1. Fixed 60 Hz deterministic simulation ticks
       if (this.state.runStatus === 'playing' || this.state.runStatus === 'passage') {
+        this.titleBaseCamX = null;
+        this.titleBaseCamY = null;
         this.accumulatorSec += rawDtSec;
         let steps = 0;
         const maxSteps = 5;
@@ -592,6 +686,20 @@ export class GameApp {
         // Still drain any pending UI commands safely when not advancing combat
         this.input.consumeInputFrame(this.state.camera, this.state.player.pos);
         this.accumulatorSec = 0;
+
+        // Smooth cinematic Title Screen camera drift across Prisoner's Quarters
+        if (this.state.runStatus === 'title') {
+          if (this.titleBaseCamX === null) {
+            this.titleBaseCamX = this.state.camera.x;
+            this.titleBaseCamY = this.state.camera.y;
+          }
+          const maxCamX = Math.max(0, this.state.tileGrid.width * TILE_SIZE - VIEWPORT_W);
+          const anchorX = Math.max(96, Math.min(Math.max(96, maxCamX - 96), this.titleBaseCamX));
+          const driftX = Math.max(0, Math.min(maxCamX, anchorX + Math.sin(this.elapsedSec * 0.18) * 90));
+          this.state.camera.prevX = this.state.camera.x;
+          this.state.camera.x = driftX;
+          this.state.camera.targetX = driftX;
+        }
       }
 
       // 2. Decoupled Render Pacing (30 / 60 / 120 FPS, default 120)
