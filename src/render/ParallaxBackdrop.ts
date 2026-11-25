@@ -14,6 +14,7 @@ export interface BiomeVisualTheme {
   tilesetTheme: TilesetTheme;
   scrollerKey: string;
   themeId: number;
+  biomeStyle: number;
   weather: BiomeWeather;
   ambientHex: string;
   fogHex: string;
@@ -44,6 +45,7 @@ function makeTheme(cfg: {
   tilesetTheme: TilesetTheme;
   scrollerKey: string;
   themeId: number;
+  biomeStyle: number;
   weather: BiomeWeather;
   ambientHex: string;
   fogHex: string;
@@ -62,6 +64,7 @@ function makeTheme(cfg: {
     tilesetTheme: cfg.tilesetTheme,
     scrollerKey: cfg.scrollerKey,
     themeId: cfg.themeId,
+    biomeStyle: cfg.biomeStyle,
     weather: cfg.weather,
     ambientHex: cfg.ambientHex,
     fogHex: cfg.fogHex,
@@ -87,6 +90,7 @@ export const BIOME_VISUAL_THEMES: Record<BiomeId, BiomeVisualTheme> = {
     tilesetTheme: 'prison',
     scrollerKey: 'prison',
     themeId: 0,
+    biomeStyle: 0,
     weather: 'dust',
     ambientHex: '#c5c1ee',
     fogHex: '#062654',
@@ -105,6 +109,7 @@ export const BIOME_VISUAL_THEMES: Record<BiomeId, BiomeVisualTheme> = {
     tilesetTheme: 'promenade',
     scrollerKey: 'courtyard',
     themeId: 1,
+    biomeStyle: 1,
     weather: 'rain',
     ambientHex: '#b6b6b6',
     fogHex: '#211727',
@@ -123,6 +128,7 @@ export const BIOME_VISUAL_THEMES: Record<BiomeId, BiomeVisualTheme> = {
     tilesetTheme: 'sewer',
     scrollerKey: 'sewers',
     themeId: 2,
+    biomeStyle: 2,
     weather: 'acidDrip',
     ambientHex: '#f67d47',
     fogHex: '#15290a',
@@ -141,6 +147,7 @@ export const BIOME_VISUAL_THEMES: Record<BiomeId, BiomeVisualTheme> = {
     tilesetTheme: 'ramparts',
     scrollerKey: 'cliff',
     themeId: 3,
+    biomeStyle: 3,
     weather: 'wind',
     ambientHex: '#d4a18b',
     fogHex: '#0e1629',
@@ -159,6 +166,7 @@ export const BIOME_VISUAL_THEMES: Record<BiomeId, BiomeVisualTheme> = {
     tilesetTheme: 'bridge',
     scrollerKey: 'cliff',
     themeId: 4,
+    biomeStyle: 4,
     weather: 'rain',
     ambientHex: '#383f9a',
     fogHex: '#16172f',
@@ -177,6 +185,7 @@ export const BIOME_VISUAL_THEMES: Record<BiomeId, BiomeVisualTheme> = {
     tilesetTheme: 'stilt',
     scrollerKey: 'courtyard',
     themeId: 5,
+    biomeStyle: 5,
     weather: 'rain',
     ambientHex: '#e5e5e5',
     fogHex: '#0e332c',
@@ -193,8 +202,9 @@ export const BIOME_VISUAL_THEMES: Record<BiomeId, BiomeVisualTheme> = {
   ClockTower: makeTheme({
     biomeId: 'ClockTower',
     tilesetTheme: 'clock',
-    scrollerKey: 'cliff',
+    scrollerKey: 'ossuary',
     themeId: 6,
+    biomeStyle: 6,
     weather: 'cogs',
     ambientHex: '#ae3f57',
     fogHex: '#540715',
@@ -211,8 +221,9 @@ export const BIOME_VISUAL_THEMES: Record<BiomeId, BiomeVisualTheme> = {
   TopClockTower: makeTheme({
     biomeId: 'TopClockTower',
     tilesetTheme: 'clock',
-    scrollerKey: 'cliff',
+    scrollerKey: 'ossuary',
     themeId: 6,
+    biomeStyle: 6,
     weather: 'cogs',
     ambientHex: '#09718e',
     fogHex: '#002f40',
@@ -229,8 +240,9 @@ export const BIOME_VISUAL_THEMES: Record<BiomeId, BiomeVisualTheme> = {
   Castle: makeTheme({
     biomeId: 'Castle',
     tilesetTheme: 'castle',
-    scrollerKey: 'castle',
+    scrollerKey: 'dookuCastle',
     themeId: 7,
+    biomeStyle: 7,
     weather: 'embers',
     ambientHex: '#fbd4a8',
     fogHex: '#1d619f',
@@ -247,8 +259,9 @@ export const BIOME_VISUAL_THEMES: Record<BiomeId, BiomeVisualTheme> = {
   Throne: makeTheme({
     biomeId: 'Throne',
     tilesetTheme: 'throne',
-    scrollerKey: 'cliff',
+    scrollerKey: 'dookuCastle',
     themeId: 8,
+    biomeStyle: 7,
     weather: 'embers',
     ambientHex: '#3b96ec',
     fogHex: '#062654',
@@ -267,6 +280,7 @@ export const BIOME_VISUAL_THEMES: Record<BiomeId, BiomeVisualTheme> = {
     tilesetTheme: 'passage',
     scrollerKey: 'prison',
     themeId: 9,
+    biomeStyle: 0,
     weather: 'dust',
     ambientHex: '#984264',
     fogHex: '#33151b',
@@ -286,6 +300,8 @@ export function getBiomeVisualTheme(biomeId: BiomeId): BiomeVisualTheme {
   return BIOME_VISUAL_THEMES[biomeId] ?? BIOME_VISUAL_THEMES.PrisonStart;
 }
 
+export type ScrollerLayerKind = 'far' | 'mid' | 'near' | 'overlay';
+
 // =============================================================================
 // Pass 1 WebGL2 Parallax Backdrop Renderer
 // =============================================================================
@@ -302,14 +318,24 @@ export class ParallaxBackdropPass {
   private readonly uCelShadow: WebGLUniformLocation | null;
   private readonly uAccentColor: WebGLUniformLocation | null;
   private readonly uThemeId: WebGLUniformLocation | null;
+  private readonly uBiomeStyle: WebGLUniformLocation | null;
   private readonly uHasFarTex: WebGLUniformLocation | null;
   private readonly uScrollerFarTex: WebGLUniformLocation | null;
   private readonly uHasMidTex: WebGLUniformLocation | null;
   private readonly uScrollerMidTex: WebGLUniformLocation | null;
+  private readonly uHasNearTex: WebGLUniformLocation | null;
+  private readonly uScrollerNearTex: WebGLUniformLocation | null;
+  private readonly uHasOverlayTex: WebGLUniformLocation | null;
+  private readonly uScrollerOverlayTex: WebGLUniformLocation | null;
+  private readonly uOverlayAdditive: WebGLUniformLocation | null;
 
   private readonly dummyTex: WebGLTexture;
   private readonly farTextures = new Map<string, WebGLTexture>();
   private readonly midTextures = new Map<string, WebGLTexture>();
+  private readonly nearTextures = new Map<string, WebGLTexture>();
+  private readonly overlayTextures = new Map<string, WebGLTexture>();
+  private readonly overlayAdditiveFlags = new Map<string, boolean>();
+  private readonly ownedTextures = new Set<WebGLTexture>();
 
   constructor(gl: WebGL2RenderingContext, program: WebGLProgram) {
     this.program = program;
@@ -323,10 +349,16 @@ export class ParallaxBackdropPass {
     this.uCelShadow = gl.getUniformLocation(program, 'u_celShadow');
     this.uAccentColor = gl.getUniformLocation(program, 'u_accentColor');
     this.uThemeId = gl.getUniformLocation(program, 'u_themeId');
+    this.uBiomeStyle = gl.getUniformLocation(program, 'u_biomeStyle');
     this.uHasFarTex = gl.getUniformLocation(program, 'u_hasFarTex');
     this.uScrollerFarTex = gl.getUniformLocation(program, 'u_scrollerFarTex');
     this.uHasMidTex = gl.getUniformLocation(program, 'u_hasMidTex');
     this.uScrollerMidTex = gl.getUniformLocation(program, 'u_scrollerMidTex');
+    this.uHasNearTex = gl.getUniformLocation(program, 'u_hasNearTex');
+    this.uScrollerNearTex = gl.getUniformLocation(program, 'u_scrollerNearTex');
+    this.uHasOverlayTex = gl.getUniformLocation(program, 'u_hasOverlayTex');
+    this.uScrollerOverlayTex = gl.getUniformLocation(program, 'u_scrollerOverlayTex');
+    this.uOverlayAdditive = gl.getUniformLocation(program, 'u_overlayAdditive');
 
     const tex = gl.createTexture();
     if (!tex) throw new Error('Failed to create dummy scroller texture');
@@ -347,10 +379,17 @@ export class ParallaxBackdropPass {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
   }
 
+  private getLayerStore(layer: ScrollerLayerKind): Map<string, WebGLTexture> {
+    if (layer === 'far') return this.farTextures;
+    if (layer === 'mid') return this.midTextures;
+    if (layer === 'near') return this.nearTextures;
+    return this.overlayTextures;
+  }
+
   uploadScrollerImage(
     gl: WebGL2RenderingContext,
     themeKey: string,
-    image: ImageBitmap | HTMLImageElement
+    image: ImageBitmap | HTMLImageElement | HTMLCanvasElement
   ): void {
     this.uploadScrollerLayer(gl, themeKey, 'far', image);
   }
@@ -358,12 +397,16 @@ export class ParallaxBackdropPass {
   uploadScrollerLayer(
     gl: WebGL2RenderingContext,
     themeKey: string,
-    layer: 'far' | 'mid',
-    image: ImageBitmap | HTMLImageElement
+    layer: ScrollerLayerKind,
+    image: ImageBitmap | HTMLImageElement | HTMLCanvasElement,
+    overlayAdditive = false
   ): void {
-    const store = layer === 'far' ? this.farTextures : this.midTextures;
+    const store = this.getLayerStore(layer);
     const existing = store.get(themeKey);
-    if (existing) gl.deleteTexture(existing);
+    if (existing && this.ownedTextures.has(existing)) {
+      gl.deleteTexture(existing);
+      this.ownedTextures.delete(existing);
+    }
     const tex = gl.createTexture();
     if (!tex) return;
     gl.bindTexture(gl.TEXTURE_2D, tex);
@@ -378,6 +421,43 @@ export class ParallaxBackdropPass {
       isSquareTile ? gl.REPEAT : gl.CLAMP_TO_EDGE
     );
     store.set(themeKey, tex);
+    this.ownedTextures.add(tex);
+    if (layer === 'overlay') {
+      this.overlayAdditiveFlags.set(themeKey, overlayAdditive);
+    }
+  }
+
+  /**
+   * Registers up to 4 custom parallax scroller layer textures for a theme key
+   * (`far`, `mid`, optional `near`, and optional `overlay` godray/fog ribbon).
+   * Externally supplied WebGLTextures are not deleted on dispose().
+   */
+  setCustomScrollerTextures(
+    themeKey: string,
+    far: WebGLTexture | null,
+    mid?: WebGLTexture | null,
+    near?: WebGLTexture | null,
+    overlay?: WebGLTexture | null,
+    overlayAdditive?: boolean
+  ): void {
+    const assign = (layer: ScrollerLayerKind, tex: WebGLTexture | null | undefined): void => {
+      if (tex === undefined) return;
+      const store = this.getLayerStore(layer);
+      if (tex === null) {
+        store.delete(themeKey);
+      } else {
+        store.set(themeKey, tex);
+      }
+    };
+    assign('far', far);
+    assign('mid', mid);
+    assign('near', near);
+    assign('overlay', overlay);
+    if (overlayAdditive !== undefined) {
+      this.overlayAdditiveFlags.set(themeKey, overlayAdditive);
+    } else if (overlay === null) {
+      this.overlayAdditiveFlags.delete(themeKey);
+    }
   }
 
   render(
@@ -415,19 +495,46 @@ export class ParallaxBackdropPass {
     );
     gl.uniform3f(this.uAccentColor, theme.accentRgb[0], theme.accentRgb[1], theme.accentRgb[2]);
     gl.uniform1i(this.uThemeId, theme.themeId);
+    if (this.uBiomeStyle) {
+      gl.uniform1i(this.uBiomeStyle, theme.biomeStyle);
+    }
 
     let farTex: WebGLTexture | undefined;
     let midTex: WebGLTexture | undefined;
+    let nearTex: WebGLTexture | undefined;
+    let overlayTex: WebGLTexture | undefined;
+    let overlayAdd = false;
+
     if (useCustomScroller) {
-      farTex = this.farTextures.get(theme.scrollerKey);
-      midTex = this.midTextures.get(theme.scrollerKey);
-      if (!farTex && theme.scrollerKey === 'castle') {
-        farTex = this.farTextures.get('courtyard');
-        midTex = midTex ?? this.midTextures.get('courtyard');
+      let resolvedKey = theme.scrollerKey;
+      farTex = this.farTextures.get(resolvedKey);
+
+      if (!farTex && resolvedKey === 'dookuCastle') {
+        for (const fb of ['castle', 'ossuary', 'courtyard']) {
+          if (this.farTextures.has(fb)) {
+            resolvedKey = fb;
+            farTex = this.farTextures.get(fb);
+            break;
+          }
+        }
+      } else if (!farTex && resolvedKey === 'ossuary') {
+        for (const fb of ['cliff', 'prison']) {
+          if (this.farTextures.has(fb)) {
+            resolvedKey = fb;
+            farTex = this.farTextures.get(fb);
+            break;
+          }
+        }
       }
-      if (!farTex && theme.scrollerKey !== 'prison') {
+      if (!farTex && resolvedKey !== 'prison') {
+        resolvedKey = 'prison';
         farTex = this.farTextures.get('prison');
       }
+
+      midTex = this.midTextures.get(resolvedKey);
+      nearTex = this.nearTextures.get(resolvedKey);
+      overlayTex = this.overlayTextures.get(resolvedKey);
+      overlayAdd = this.overlayAdditiveFlags.get(resolvedKey) ?? false;
     }
 
     gl.activeTexture(gl.TEXTURE0);
@@ -440,18 +547,30 @@ export class ParallaxBackdropPass {
     gl.uniform1i(this.uScrollerMidTex, 1);
     gl.uniform1f(this.uHasMidTex, midTex ? 1.0 : 0.0);
 
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, nearTex ?? this.dummyTex);
+    if (this.uScrollerNearTex) gl.uniform1i(this.uScrollerNearTex, 2);
+    if (this.uHasNearTex) gl.uniform1f(this.uHasNearTex, nearTex ? 1.0 : 0.0);
+
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D, overlayTex ?? this.dummyTex);
+    if (this.uScrollerOverlayTex) gl.uniform1i(this.uScrollerOverlayTex, 3);
+    if (this.uHasOverlayTex) gl.uniform1f(this.uHasOverlayTex, overlayTex ? 1.0 : 0.0);
+    if (this.uOverlayAdditive) gl.uniform1f(this.uOverlayAdditive, overlayAdd ? 1.0 : 0.0);
+
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
   dispose(gl: WebGL2RenderingContext): void {
     gl.deleteTexture(this.dummyTex);
-    for (const tex of this.farTextures.values()) {
+    for (const tex of this.ownedTextures) {
       gl.deleteTexture(tex);
     }
-    for (const tex of this.midTextures.values()) {
-      gl.deleteTexture(tex);
-    }
+    this.ownedTextures.clear();
     this.farTextures.clear();
     this.midTextures.clear();
+    this.nearTextures.clear();
+    this.overlayTextures.clear();
+    this.overlayAdditiveFlags.clear();
   }
 }
