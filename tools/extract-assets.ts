@@ -1,6 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { AssetManifest, AssetManifestEntry } from '../src/contracts/index.ts';
+import type {
+  AssetManifest,
+  AssetManifestEntry,
+  CardIconRect,
+} from '../src/contracts/index.ts';
 
 const DEFAULT_PAK_PATH = 'C:\\Program Files (x86)\\Steam\\steamapps\\common\\Dead Cells\\res.pak';
 const OUT_DIR = path.resolve(process.cwd(), '.krunked-cells-assets');
@@ -232,9 +236,128 @@ const CURATED_ATLASES: readonly string[] = [
   'fxCommon',
   'fxWeapon',
   'fxEnemy',
+  'ui',
+  'titleScreen',
 ];
 
-const CURATED_SCROLLER_GROUPS: readonly string[] = ['prison', 'courtyard', 'sewers', 'cliff'];
+const CURATED_SCROLLER_GROUPS: readonly string[] = [
+  'prison',
+  'courtyard',
+  'sewers',
+  'cliff',
+  'dookuCastle',
+  'ossuary',
+];
+
+// Krunked Cells item/skill/mutation/HUD ID -> Dead Cells data.cdb `item` sheet ID
+const CARD_ICON_CDB_MAP: Readonly<Record<string, string>> = {
+  // Weapons (20)
+  StartSword: 'StartSword',
+  QuickSword: 'QuickSword',
+  DualDaggers: 'DualDaggers',
+  BackStabber: 'BackStabber',
+  Bleeder: 'Bleeder',
+  BroadSword: 'BroadSword',
+  StunMace: 'StunMace',
+  SpeedBlade: 'SpeedBlade',
+  ImpaleSpear: 'ImpaleSpear',
+  Rapier: 'Rapier',
+  Whip: 'Whip',
+  CloseCombatBow: 'CloseCombatBow',
+  FastBow: 'FastBow',
+  FrostBow: 'FrostBow',
+  ThrowingKnife: 'ThrowingKnife',
+  Fireball: 'FireBall',
+  StartShield: 'StartShield',
+  StunShield: 'BumpShield',
+  BleedShield: 'BloodShield',
+  ForceShield: 'Rampart',
+  // Skills (12)
+  SinewSlicer: 'StandardTurret',
+  HeavyTurret: 'HeavyTurret',
+  InfantryGrenade: 'FastGrenade',
+  FireGrenade: 'FireBomb',
+  IceGrenade: 'IceBomb',
+  ClusterGrenade: 'ClusterBomb',
+  Phaser: 'BackBlink',
+  WolfTrap: 'RootTrap',
+  WaveOfDenial: 'Shockwave',
+  CorruptedPower: 'DamageBuff',
+  KnifeDance: 'KnivesCircle',
+  Tonic: 'ExtraHeal',
+  // Mutations (15)
+  Combo: 'P_DmgKill',
+  OpenWounds: 'P_Bleed',
+  Melee: 'P_DodgeSlow',
+  Predator: 'P_InvisibilityOnKill',
+  Vengeance: 'P_DmgRevenge',
+  Support: 'P_DeployedDmg',
+  PointBlank: 'P_DmgNearRanged',
+  BarbedTips: 'P_DmgPlantedArrow',
+  Tranquility: 'P_NoMobAround',
+  Necromancy: 'P_HealOnKill',
+  Gastronomy: 'P_Food',
+  WhatDoesntKillMe: 'P_HealOnParry',
+  Armadillopack: 'P_Backpack_Shield',
+  Disengagement: 'P_Disengage',
+  InstinctOfTheMaster: 'P_CDR_Kill',
+  // Core HUD icons (9)
+  HealthFlask: 'FlaskRefill',
+  Cell: 'Cell',
+  Gold: 'DeathMoney',
+  ScrollAny: 'AnyUp',
+  ScrollBrutality: 'BrutalityStuff',
+  ScrollTactics: 'TacticStuff',
+  ScrollSurvival: 'SurvivalStuff',
+  Skull: 'P_Curse',
+  BossCell: 'CellBonus',
+};
+
+interface CdbSheetLite {
+  name: string;
+  lines: Array<Record<string, unknown>>;
+}
+
+function extractCardIconsFromCdb(
+  fd: number,
+  archive: PakArchive,
+): Record<string, CardIconRect> {
+  const result: Record<string, CardIconRect> = {};
+  const cdbEntry = archive.files.get('data.cdb');
+  if (!cdbEntry) return result;
+
+  const cdbBuf = readPakEntry(fd, archive.headerSize, cdbEntry);
+  const parsed = JSON.parse(cdbBuf.toString('utf8')) as { sheets?: CdbSheetLite[] };
+  const itemSheet = parsed.sheets?.find((s) => s.name === 'item');
+  if (!itemSheet || !Array.isArray(itemSheet.lines)) return result;
+
+  const byId = new Map<string, Record<string, unknown>>();
+  for (const row of itemSheet.lines) {
+    if (typeof row.id === 'string') {
+      byId.set(row.id, row);
+    }
+  }
+
+  for (const [krunkedId, cdbId] of Object.entries(CARD_ICON_CDB_MAP)) {
+    const row = byId.get(cdbId);
+    const icon = row?.icon as Record<string, unknown> | undefined;
+    if (
+      icon &&
+      typeof icon.x === 'number' &&
+      typeof icon.y === 'number' &&
+      Number.isFinite(icon.x) &&
+      Number.isFinite(icon.y)
+    ) {
+      const size =
+        typeof icon.size === 'number' && Number.isFinite(icon.size) && icon.size > 0
+          ? icon.size
+          : 24;
+      result[krunkedId] = { x: icon.x, y: icon.y, size };
+    }
+  }
+
+  return result;
+}
 
 const CURATED_ROOT_TEXTURES: ReadonlyArray<{ key: string; pakPath: string }> = [
   { key: 'perlinNoise', pakPath: 'perlinNoise.png' },
@@ -555,6 +678,9 @@ function main(): void {
       };
     }
 
+    // 7. Parse data.cdb (`item` sheet) for exact cardIcons.png sprite coordinates
+    const cardIcons = extractCardIconsFromCdb(fd, archive);
+
     const entries = Array.from(writtenByRelPath.values()).sort((a, b) =>
       a.relPath.localeCompare(b.relPath),
     );
@@ -568,6 +694,7 @@ function main(): void {
       gradients,
       audioSfx,
       audioMusic,
+      cardIcons,
       entries,
     };
 
@@ -579,7 +706,7 @@ function main(): void {
       `[extract-assets] Done in ${elapsedSec}s: ${entries.length} files (${(totalBytes / (1024 * 1024)).toFixed(1)} MB) -> .krunked-cells-assets/manifest.json`,
     );
     console.log(
-      `[extract-assets] Summary: atlases=${Object.keys(atlases).length}, scrollerGroups=${Object.keys(scrollers).length}, gradients=${Object.keys(gradients).length}, sfxKeys=${Object.keys(audioSfx).length}, musicTracks=${Object.keys(audioMusic).length}`,
+      `[extract-assets] Summary: atlases=${Object.keys(atlases).length}, scrollerGroups=${Object.keys(scrollers).length}, gradients=${Object.keys(gradients).length}, cardIcons=${Object.keys(cardIcons).length}, sfxKeys=${Object.keys(audioSfx).length}, musicTracks=${Object.keys(audioMusic).length}`,
     );
   } finally {
     fs.closeSync(fd);

@@ -286,6 +286,7 @@ function checkManifestIntegrity(): CheckResult {
     for (const p of atlas.pages ?? []) allPaths.add(p);
     for (const np of atlas.normalPages ?? []) allPaths.add(np);
     if (atlas.tracksFile) allPaths.add(atlas.tracksFile);
+    if (atlas.skinFile) allPaths.add(atlas.skinFile);
 
     // Ensure extracted .atlas is readable libGDX text, not raw binary BATL
     const atlasAbs = path.resolve(PACK_DIR, atlas.atlasFile);
@@ -342,6 +343,27 @@ function checkManifestIntegrity(): CheckResult {
     errors.push('Manifest lists zero files');
   }
 
+  const cardIcons = manifest.cardIcons ?? {};
+  const cardIconEntries = Object.entries(cardIcons);
+  if (cardIconEntries.length > 0) {
+    if (!allPaths.has('cardIcons.png')) {
+      errors.push('Manifest defines cardIcons coordinates but cardIcons.png is missing');
+    }
+    for (const [iconId, rect] of cardIconEntries) {
+      if (
+        !rect ||
+        typeof rect.x !== 'number' ||
+        typeof rect.y !== 'number' ||
+        typeof rect.size !== 'number' ||
+        rect.x < 0 ||
+        rect.y < 0 ||
+        rect.size <= 0
+      ) {
+        errors.push(`Invalid cardIcons rect for "${iconId}"`);
+      }
+    }
+  }
+
   if (errors.length > 0) {
     return {
       name: 'Custom Pack Manifest Integrity',
@@ -353,7 +375,7 @@ function checkManifestIntegrity(): CheckResult {
   return {
     name: 'Custom Pack Manifest Integrity',
     status: 'PASS',
-    detail: `Verified ${verifiedCount} unique files on disk (>0 bytes), ${Object.keys(manifest.atlases ?? {}).length} atlases, ${Object.keys(manifest.audioSfx ?? {}).length} SFX keys, ${Object.keys(manifest.audioMusic ?? {}).length} music tracks`,
+    detail: `Verified ${verifiedCount} unique files on disk (>0 bytes), ${Object.keys(manifest.atlases ?? {}).length} atlases, ${Object.keys(manifest.scrollers ?? {}).length} scroller groups, ${cardIconEntries.length} cardIcons, ${Object.keys(manifest.audioSfx ?? {}).length} SFX keys, ${Object.keys(manifest.audioMusic ?? {}).length} music tracks`,
   };
 }
 
