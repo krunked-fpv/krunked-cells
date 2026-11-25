@@ -1,0 +1,271 @@
+{
+  "slug": "krunked-cells",
+  "brandName": "Krunked Cells",
+  "sourceGenre": "roguelite-action-platformer",
+  "simHz": 60,
+  "renderMode": "webgl2-normal-mapped-pixel-art",
+  "repoPath": "C:\\krunked-cells",
+  "buildDate": "2026-11-25",
+  "feelParams": {
+    "fixedDt": 0.0166666667,
+    "tileSizePx": 24,
+    "logicalViewport": {
+      "width": 480,
+      "height": 270
+    },
+    "playerHitboxPx": {
+      "width": 14,
+      "height": 28
+    },
+    "runBaseSpeedPxPerSec": 155,
+    "runMaxSpeedPxPerSec": 175,
+    "runAccelTicks": 3,
+    "runDecelTicks": 2,
+    "speedBuffMultiplier": 1.25,
+    "jumpVelocityPxPerSec": -335,
+    "doubleJumpVelocityPxPerSec": -305,
+    "gravityRisePxPerSec2": 980,
+    "gravityFallPxPerSec2": 1323,
+    "fallGravityMultiplier": 1.35,
+    "earlyJumpCutMultiplier": 0.48,
+    "coyoteTicks": 6,
+    "jumpBufferTicks": 7,
+    "ledgeMantleTolerancePx": 10,
+    "spiderWallRunVyPxPerSec": -135,
+    "spiderWallRunMaxTicks": 16,
+    "wallSlideMaxVyPxPerSec": 70,
+    "wallJumpVxPxPerSec": 195,
+    "wallJumpVyPxPerSec": -315,
+    "dodgeRollDurationTicks": 24,
+    "dodgeRollIframeTicks": 21,
+    "dodgeRollSpeedPxPerSec": 265,
+    "dodgeRollCooldownTicks": 15,
+    "doorSmashStunTicks": 90,
+    "diveSlamVyPxPerSec": 540,
+    "diveSlamRadiusPx": 56,
+    "diveSlamStunTicks": 45,
+    "sweptAabbSubstepThresholdPx": 10,
+    "sweptAabbMaxSubstepPx": 8,
+    "defensiveCancelBufferTicks": 4,
+    "shieldParryWindowTicks": 16,
+    "shieldParryHitstopTicks": 6,
+    "shieldParryMeleeStunTicks": 75,
+    "shieldParryCudgelStunTicks": 165,
+    "shieldParryReflectMultiplier": 2.2,
+    "shieldParrySuccessCooldownReset": 0,
+    "rallyHoldTicks": 60,
+    "rallyDrainTicks": 240,
+    "rallyHitRecoveryRatio": 0.75,
+    "hitstopNormalTicks": 2,
+    "hitstopHeavyBreachTicks": 4,
+    "hitstopCritParryTicks": 6,
+    "bossKillSlowMoTicks": 18,
+    "wallSlamDamageBonusPct": 25,
+    "wallSlamStunTicks": 35,
+    "scrollDamageBase": 1.15,
+    "gearLevelPowerBase": 1.07,
+    "healthFlaskHealRatio": 0.6,
+    "maxActiveDynamicLights": 64,
+    "defaultTargetFps": 120
+  },
+  "coreMechanics": [
+    "Sub-stepped swept AABB collision preventing tunneling at 2000+ px/s",
+    "Acrobatic 60 Hz platforming: 3-tick run accel, 2-tick zero-drift stop, variable jump, double jump, 6-tick coyote time, 7-tick jump buffer, ledge auto-mantle, one-way drop-through, Spider wall-run & wall-jump",
+    "24-tick Dodge Roll with 21 full iframes, wooden door smash + 90-tick enemy stun, secret wall break, and Armadillopack projectile parry",
+    "Airborne Dive-Slam with 56px shockwave stun and CRACKED_FLOOR shattering",
+    "Instant Dodge Roll and Shield Parry cancellation of both weapon windup and recovery",
+    "16-tick Shield Parry with 100% negation, 6-tick hitstop, 75-tick melee stun, 2.2x crit projectile reflection, shield passives, and instant cooldown reset",
+    "Rally orange health recovery (100% lost HP held 60t, drained 240t, 75% weapon hit recovery)",
+    "3-color exponential scroll scaling (1.15^(n-1)), colorless/Legendary highest-stat scaling, and diminishing max HP per color",
+    "Status synergies (Bleed, Poison, Burn, Oil+Burn 2x DoT, Frost->Freeze->Slow, Root +40% dmg, affix bonus multipliers +60%/+80%/+100%)",
+    "Cursed Chest 10-kill curse (1 unparried hit = instant death; 10 kills lifts curse)",
+    "Procedural Metroidvania biome generation with tile-space BFS reachability verification and emergency self-repair",
+    "Passage Safe Room with Timed Doors, 30/60 Kill-Streak No-Hit Doors, Collector meta blueprints, Guillain mutations/respec, Minor Forge +/++/S upgrades & reforge, and BC-scaled Health Fountain",
+    "3 Multi-Phase Bosses: The Iron Concierge (Behemoth, 4000 HP), The Chrono Warden (TimeKeeper, 2500 HP), and The Sovereign Hand (KingsHand, 5900 HP)",
+    "Boss Stem Cells 0BC-5BC meta progression with schema-validated corruption-resistant SaveManager",
+    "4-pass WebGL2 480x270 normal-mapped cel-lit pixel-art renderer with up to 64 real-time dynamic lights, drifting fog, biome weather, and additive bloom",
+    "Dual-mode built-in procedural normal-mapped atlas + Web Audio baroque-dark-synth engine with optional IP-firewalled Custom Pack streaming"
+  ],
+  "spliceableModules": [
+    {
+      "id": "contracts",
+      "path": "src/contracts/index.ts",
+      "role": "Single source of truth for SimState, InputFrame, SimEvent, SimCommand, RenderSettings, SaveData, AssetManifest, and DebugBridge",
+      "dependencies": []
+    },
+    {
+      "id": "sim-prng",
+      "path": "src/sim/prng.ts",
+      "role": "Deterministic SplitMix32 seeder + xoshiro128** PRNG with serializable RngState",
+      "dependencies": ["src/contracts/index.ts"]
+    },
+    {
+      "id": "sim-hash",
+      "path": "src/sim/hash.ts",
+      "role": "FNV-1a 32-bit deterministic SimState hasher for bit-exact replay verification",
+      "dependencies": ["src/contracts/index.ts"]
+    },
+    {
+      "id": "sim-collision",
+      "path": "src/sim/collision.ts",
+      "role": "Sub-stepped swept AABB tile collision, cracked-floor shattering, and Amanatides-Woo DDA line-of-sight raycasting",
+      "dependencies": ["src/contracts/index.ts"]
+    },
+    {
+      "id": "sim-physics",
+      "path": "src/sim/physics.ts",
+      "role": "Acrobatic 60 Hz player movement, variable/double jump, coyote/buffer, auto-mantle, Spider wall-run/jump, roll, door smash, and dive-slam",
+      "dependencies": ["src/contracts/index.ts", "src/sim/combat.ts", "src/sim/roguelite.ts", "src/sim/status.ts"]
+    },
+    {
+      "id": "sim-worldgen",
+      "path": "src/sim/worldgen.ts",
+      "role": "Procedural Metroidvania room-graph worldgen, boss arenas, Passage safe room, and tile-space BFS reachability verifier + self-repair",
+      "dependencies": ["src/contracts/index.ts", "src/data/index.ts", "src/sim/bosses.ts", "src/sim/enemies.ts", "src/sim/passage.ts", "src/sim/roguelite.ts"]
+    },
+    {
+      "id": "sim-camera",
+      "path": "src/sim/camera.ts",
+      "role": "Look-ahead damped camera tracking, bounds clamping, and screen-shake decay",
+      "dependencies": ["src/contracts/index.ts"]
+    },
+    {
+      "id": "sim-step",
+      "path": "src/sim/step.ts",
+      "role": "Master deterministic 60 Hz stepSim orchestrator, biome transitions, hitstop/slow-mo, and command dispatch",
+      "dependencies": ["src/contracts/index.ts", "src/data/index.ts", "src/sim/*"]
+    },
+    {
+      "id": "sim-status",
+      "path": "src/sim/status.ts",
+      "role": "Status effect stacking, DoT ticking, Oil+Burn 2x synergy, Frost->Freeze->Slow conversion, and affix synergy multiplier evaluation",
+      "dependencies": ["src/contracts/index.ts", "src/data/index.ts"]
+    },
+    {
+      "id": "sim-roguelite",
+      "path": "src/sim/roguelite.ts",
+      "role": "3-color scroll scaling, diminishing max HP curves, gear/affix rolling, curse tracking, kill-streak speed buff, and 15 mutation hooks",
+      "dependencies": ["src/contracts/index.ts", "src/data/index.ts"]
+    },
+    {
+      "id": "sim-combat",
+      "path": "src/sim/combat.ts",
+      "role": "Strike-chain melee/ranged choreography, instant roll/parry cancel, 16-tick shield parry, rally recovery, 12 skills, projectiles, turrets, and hazards",
+      "dependencies": ["src/contracts/index.ts", "src/data/index.ts", "src/sim/roguelite.ts", "src/sim/status.ts"]
+    },
+    {
+      "id": "sim-enemies",
+      "path": "src/sim/enemies.ts",
+      "role": "18 enemy archetype AIs with telegraphs, front-shield blocking, Protector auras, and 4 Elite affixes",
+      "dependencies": ["src/contracts/index.ts", "src/data/index.ts", "src/sim/bosses.ts", "src/sim/combat.ts", "src/sim/status.ts"]
+    },
+    {
+      "id": "sim-bosses",
+      "path": "src/sim/bosses.ts",
+      "role": "3 multi-phase boss AIs (Behemoth, TimeKeeper, KingsHand) with phase shifts, arena bounds, banners, add waves, and super-slams",
+      "dependencies": ["src/contracts/index.ts", "src/data/index.ts", "src/sim/combat.ts", "src/sim/enemies.ts", "src/sim/status.ts"]
+    },
+    {
+      "id": "sim-passage",
+      "path": "src/sim/passage.ts",
+      "role": "Passage safe room layout, Timed & Kill-Streak doors, Collector blueprints, Guillain mutations/respec, Minor Forge upgrades/reforge, and BC Fountain",
+      "dependencies": ["src/contracts/index.ts", "src/data/index.ts", "src/sim/roguelite.ts"]
+    },
+    {
+      "id": "data-catalogs",
+      "path": "src/data/index.ts",
+      "role": "Oracle-calibrated static catalogs: 11 biomes, 20 weapons, 12 skills, 15 mutations, 18 affixes, 18 enemies, 3 bosses, 0BC-5BC difficulties, meta blueprints",
+      "dependencies": ["src/contracts/index.ts"]
+    },
+    {
+      "id": "assets-procedural-atlas",
+      "path": "src/assets/ProceduralAtlas.ts",
+      "role": "Zero-DOM procedural pixel-art atlas baking 2048x1024 Albedo + Sobel Tangent Normal + Emissive RGBA textures",
+      "dependencies": []
+    },
+    {
+      "id": "assets-custom-pack",
+      "path": "src/assets/CustomPackLoader.ts",
+      "role": "Optional owned local asset pack resolver (Vite dev middleware, Folder Picker, IndexedDB cache) with clean fallback",
+      "dependencies": ["src/contracts/index.ts"]
+    },
+    {
+      "id": "render-webgl2",
+      "path": "src/render/WebGL2Renderer.ts",
+      "role": "4-pass 480x270 WebGL2 normal-mapped cel-lit pixel-art compositor with 64 dynamic lights, parallax backdrops, atmosphere particles, and additive bloom",
+      "dependencies": ["src/contracts/index.ts", "src/assets/ProceduralAtlas.ts", "src/data/index.ts", "src/render/Shaders.ts", "src/render/ParallaxBackdrop.ts", "src/render/AtmosphereParticles.ts"]
+    },
+    {
+      "id": "audio-engine",
+      "path": "src/audio/AudioEngine.ts",
+      "role": "Headless-safe dual-mode Web Audio engine (procedural baroque-dark-synth soundtrack + tactile SimEvent SFX + optional custom pack WAV/OGG)",
+      "dependencies": ["src/contracts/index.ts", "src/audio/SynthMusic.ts", "src/audio/SynthSfx.ts"]
+    },
+    {
+      "id": "input-manager",
+      "path": "src/input/InputManager.ts",
+      "role": "Keyboard, Mouse aim, and Gamepad input polling with rebindable KeyBindings and edge-triggered InputFrame generation",
+      "dependencies": ["src/contracts/index.ts"]
+    },
+    {
+      "id": "ui-manager",
+      "path": "src/ui/UIManager.ts",
+      "role": "Native-DPI HUD overlay, interactive fog-of-war Minimap with teleporters, Passage NPC modals, Boss banners, and F9 Dev Playtest Drawer",
+      "dependencies": ["src/contracts/index.ts", "src/data/index.ts", "src/ui/HudOverlay.ts", "src/ui/Minimap.ts", "src/ui/PassageModal.ts", "src/ui/DevDrawer.ts"]
+    },
+    {
+      "id": "app-runtime",
+      "path": "src/app/GameApp.ts",
+      "role": "Fixed-timestep 60 Hz sim accumulator with 30/60/120 FPS render pacing, SaveManager persistence, and window.__KRUNKED_DEBUG__ bridge",
+      "dependencies": ["src/contracts/index.ts", "src/sim/step.ts", "src/app/SaveManager.ts", "src/app/DebugBridge.ts", "src/render/WebGL2Renderer.ts", "src/audio/AudioEngine.ts", "src/input/InputManager.ts", "src/ui/UIManager.ts"]
+    }
+  ],
+  "contractTypes": [
+    "SimState",
+    "PlayerState",
+    "EnemyState",
+    "ProjectileState",
+    "TurretState",
+    "PickupState",
+    "ChestState",
+    "DoorState",
+    "TeleporterState",
+    "ShrineState",
+    "HazardState",
+    "TileGrid",
+    "RoomNode",
+    "CameraState",
+    "PassageState",
+    "BossArenaState",
+    "MetaSnapshot",
+    "RunSummary",
+    "InputFrame",
+    "SimCommand",
+    "SimEvent",
+    "RngState",
+    "RngAPI",
+    "CollisionAPI",
+    "SweepResult",
+    "GearInstance",
+    "StatusEffect",
+    "WeaponDef",
+    "SkillDef",
+    "MutationDef",
+    "AffixDef",
+    "EnemyDef",
+    "BossDef",
+    "BiomeDef",
+    "DifficultyDef",
+    "MetaBlueprintDef",
+    "RenderSettings",
+    "AudioSettings",
+    "KeyBindings",
+    "SaveData",
+    "PerfStats",
+    "AssetManifest",
+    "CustomPackStatus",
+    "RendererAPI",
+    "AudioEngineAPI",
+    "DebugBridge"
+  ]
+}
