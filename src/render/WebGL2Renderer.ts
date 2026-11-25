@@ -971,14 +971,14 @@ export class WebGL2Renderer implements RendererAPI {
     const headBone = bones?.headBone;
     if (headBone) {
       const bx = (headBone.x - origW * 0.5) * scale * flipX;
-      // Dead Cells tracks.json y is measured down from top of origH, feet near bottom of trimmed sprite
+      // Dead Cells tracks.json y is measured down from top of origH; snug flame directly onto neck collar
       const footRow = region.offsetY + region.h;
-      const by = (headBone.y - footRow) * scale;
-      this.customHeadOx = Math.max(-16, Math.min(16, bx));
-      this.customHeadOy = Math.max(-44, Math.min(-10, by));
+      const by = (headBone.y - footRow) * scale + 6;
+      this.customHeadOx = Math.max(-14, Math.min(14, bx));
+      this.customHeadOy = Math.max(-36, Math.min(-10, by));
     } else {
-      this.customHeadOx = flipX * 2;
-      this.customHeadOy = -Math.max(16, Math.min(34, dh * 0.88));
+      this.customHeadOx = flipX * 1;
+      this.customHeadOy = -Math.max(18, Math.min(30, dh * 0.80));
     }
     return true;
   }

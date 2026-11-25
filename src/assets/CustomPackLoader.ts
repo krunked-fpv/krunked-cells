@@ -727,6 +727,10 @@ function applySkinLutToImage(
 
   const scaleX = lw / 256;
   const scaleY = lh / 256;
+  // Dead Cells uses #ff00ff in *_default_s.png as an emissive glow channel sentinel
+  const glowR = lw <= 8 ? 255 : 78;
+  const glowG = lw <= 8 ? 96 : 235;
+  const glowB = lw <= 8 ? 32 : 255;
 
   for (let i = 0; i < px.length; i += 4) {
     const a = px[i + 3];
@@ -738,9 +742,18 @@ function applySkinLutToImage(
     const lx = Math.min(lw - 1, Math.floor(r * scaleX));
     const ly = Math.min(lh - 1, Math.floor(g * scaleY));
     const li = (ly * lw + lx) * 4;
-    px[i] = lutData[li];
-    px[i + 1] = lutData[li + 1];
-    px[i + 2] = lutData[li + 2];
+    const lr = lutData[li];
+    const lg = lutData[li + 1];
+    const lb = lutData[li + 2];
+    if (lr > 245 && lg < 12 && lb > 245) {
+      px[i] = glowR;
+      px[i + 1] = glowG;
+      px[i + 2] = glowB;
+    } else {
+      px[i] = lr;
+      px[i + 1] = lg;
+      px[i + 2] = lb;
+    }
   }
 
   ctx.putImageData(img, 0, 0);
