@@ -1,12 +1,13 @@
 // =============================================================================
 // KRUNKED CELLS — PROCEDURAL PIXEL-ART ATLAS (ALBEDO + SOBEL NORMAL + EMISSIVE)
-// Generates three pixel-aligned 2048x1024 RGBA textures at startup with
+// Generates three pixel-aligned 2048x2048 RGBA textures at startup with
 // sculpted heightfields -> tangent-space normal maps (Y-down world space) and
 // crisp emissive glow masks. Zero DOM dependencies required for getAtlasKeys().
 // =============================================================================
 
 import {
   BUILTIN_BAKED_SPRITES,
+  BUILTIN_HERO_HEAD_ANCHORS_DATA,
   BUILTIN_TITLE_BACKDROP,
   type BakedPixelSprite,
 } from './builtinArtData';
@@ -115,8 +116,42 @@ export const SKILL_ICON_IDS = [
 ] as const;
 
 const ATLAS_W = 2048;
-const ATLAS_H = 1024;
+const ATLAS_H = 2048;
 const PAD = 2;
+
+/**
+ * Neck-socket attachment offsets [ox, oy] (in facing-right sprite pixels relative
+ * to bottom-center feet pivot [w * 0.5, h]) for mounting live animated
+ * `hero:head_flame_0..3` cleanly onto every headless Built-In hero pose!
+ */
+export const BUILTIN_HERO_HEAD_ANCHORS: Readonly<Record<string, readonly [number, number]>> = {
+  'hero:idle_0': [1, -30],
+  'hero:idle_1': [1, -29],
+  'hero:idle_2': [1, -29],
+  'hero:idle_3': [1, -30],
+  'hero:run_0': [4, -29],
+  'hero:run_1': [4, -28],
+  'hero:run_2': [5, -30],
+  'hero:run_3': [4, -29],
+  'hero:run_4': [4, -28],
+  'hero:run_5': [5, -30],
+  'hero:attack_0': [4, -28],
+  'hero:attack_1': [3, -29],
+  'hero:attack_2': [3, -30],
+  'hero:jump': [2, -31],
+  'hero:fall': [1, -30],
+  'hero:wall_slide': [2, -29],
+  'hero:roll_0': [4, -18],
+  'hero:roll_1': [0, -14],
+  'hero:roll_2': [-3, -15],
+  'hero:roll_3': [2, -17],
+  'hero:dive_slam': [1, -24],
+  'hero:parry': [2, -29],
+  'hero:heal': [1, -30],
+  'hero:hurt': [-2, -28],
+  'hero:dead': [6, -7],
+  ...BUILTIN_HERO_HEAD_ANCHORS_DATA,
+};
 
 type RGBA = readonly [number, number, number, number];
 type RGB = readonly [number, number, number];
@@ -712,14 +747,16 @@ const TILESET_PALETTES: Record<TilesetTheme, TilesetPalette> = {
 };
 
 // =============================================================================
-// Tileset Baking (Sculpted Beveled Bricks, Moss, Pipes, Brass, Marble)
+// Tileset Baking — 12-Tile Biome Autotile Sets (Top Variants, Chamfered Corners,
+// Chiseled Wall Edges, Ceiling Overhangs, Bracketed Catwalks, Moss/Pipe/Brass/Marble)
 // =============================================================================
 
 function paintBrickTile(
   b: PixelAtlasBuilder,
   pal: TilesetPalette,
   seed: number,
-  variant: 'top' | 'mid' | 'deep' | 'var'
+  variant: 'top' | 'mid' | 'deep' | 'var',
+  topStyleIdx = 0
 ): void {
   const S = 24;
 
@@ -746,10 +783,21 @@ function paintBrickTile(
     return;
   }
 
-  // Exposed masonry: organic hand-hewn uneven gothic stone courses (2 tall rough ashlar courses, NOT repetitive tiny bricks!)
-  const courseSplitY = variant === 'var' ? 11 : 13;
-  const xSplits = variant === 'var' ? [11, 17] : [15, 8];
-  const xOffsets = variant === 'mid' ? [3, 11] : [0, 5];
+  // Exposed masonry: organic hand-hewn uneven gothic stone courses varied per topStyleIdx
+  const courseSplitY =
+    variant === 'var' ? 11 : topStyleIdx === 1 ? 14 : topStyleIdx === 2 ? 12 : topStyleIdx === 3 ? 15 : 13;
+  const xSplits =
+    variant === 'var'
+      ? [11, 17]
+      : topStyleIdx === 1
+      ? [10, 16]
+      : topStyleIdx === 2
+      ? [14, 7]
+      : topStyleIdx === 3
+      ? [12, 18]
+      : [15, 8];
+  const xOffsets =
+    variant === 'mid' ? [3, 11] : topStyleIdx === 1 ? [6, 2] : topStyleIdx === 2 ? [2, 9] : [0, 5];
 
   for (let y = 0; y < S; y++) {
     const row = y < courseSplitY ? 0 : 1;
@@ -764,14 +812,13 @@ function paintBrickTile(
       const lx = colIdx === 0 ? sx : sx - split;
       const brickW = colIdx === 0 ? split : S - split;
 
-      const brickSeed = seed * 37 + row * 19 + colIdx * 11;
+      const brickSeed = seed * 37 + row * 19 + colIdx * 11 + topStyleIdx * 53;
       const grain = hash2(x, y, brickSeed);
-      const chip = hash2(x + row * 7, y + colIdx * 5, seed + 91);
-      const brickTint = 0.84 + hash2(colIdx, row, seed) * 0.24;
+      const chip = hash2(x + row * 7, y + colIdx * 5, seed + 91 + topStyleIdx * 17);
+      const brickTint = 0.84 + hash2(colIdx, row, seed + topStyleIdx * 13) * 0.24;
 
-      // Slightly chipped irregular mortar joints so corners look weathered and organic!
       const cornerDist = Math.min(lx, brickW - 1 - lx) + Math.min(ly, rowH - 1 - ly);
-      const isChippedCorner = cornerDist <= 1 && chip > 0.42;
+      const isChippedCorner = cornerDist <= 1 && chip > (topStyleIdx === 1 ? 0.28 : 0.42);
       const isMortar = ly === 0 || lx === 0 || isChippedCorner;
       const isTopBevel = ly === 1 && !isChippedCorner;
       const isBotBevel = ly === rowH - 1;
@@ -787,7 +834,6 @@ function paintBrickTile(
       } else {
         const baseMix = variant === 'var' ? 0.50 : variant === 'mid' ? 0.38 : 0.28;
         let base = mixRgb(pal.stoneBase, pal.stoneDark, baseMix);
-        // Subtle painterly dithering + vertical age gradient darkening toward bottom of block
         const vertShade = 1.06 - (ly / Math.max(1, rowH)) * 0.22;
         base = scaleRgb(base, brickTint * vertShade * (0.90 + grain * 0.18));
 
@@ -807,9 +853,9 @@ function paintBrickTile(
         }
 
         // Weathered hairline cracks & stone pitting
-        if (grain > 0.90 && ly > 2 && ly < rowH - 2) {
-          rgb = mixRgb(rgb, pal.stoneDark, 0.45);
-          h *= 0.72;
+        if (grain > (topStyleIdx === 1 ? 0.84 : 0.90) && ly > 2 && ly < rowH - 2) {
+          rgb = mixRgb(rgb, pal.stoneDark, 0.48);
+          h *= 0.70;
         }
 
         // Style-specific architectural details
@@ -819,11 +865,35 @@ function paintBrickTile(
         } else if (pal.style === 'marble' && grain > 0.86) {
           rgb = mixRgb(rgb, pal.stoneHi, 0.22);
         } else if (pal.style === 'wood') {
-          const woodWave = Math.sin(x * 0.45 + row * 2.1) * 0.5 + 0.5;
+          const woodWave = Math.sin(x * 0.45 + row * 2.1 + topStyleIdx) * 0.5 + 0.5;
           rgb = mixRgb(pal.wood, pal.woodHi, woodWave * 0.32);
           if (ly === 0 || ly === 5) {
             rgb = pal.mortar;
             h = 0.12;
+          }
+        }
+
+        // Variant-specific weathering for top_1 (cracked), top_2 (stained/mossy/slime), top_3 (carved/riveted)
+        if (variant === 'top' && topStyleIdx === 1) {
+          if (Math.abs((x - 10) - (y - 6) * 0.7) < 0.85 && y >= 5 && y <= 19) {
+            rgb = pal.mortar;
+            h = 0.10;
+          }
+        } else if (variant === 'top' && topStyleIdx === 2) {
+          const dripLen = 6 + Math.floor(hash2(x, 3, seed + 207) * 8);
+          if (y < dripLen && (x % 7 === 2 || x % 7 === 3)) {
+            rgb = mixRgb(rgb, pal.trimAccent, pal.style === 'pipe' ? 0.65 : 0.48);
+            h = Math.min(1, h + 0.12);
+          }
+        } else if (variant === 'top' && topStyleIdx === 3) {
+          // Carved frieze band + iron/gold studs along upper course
+          if (y === 8 || y === 11) {
+            rgb = mixRgb(rgb, pal.mortar, 0.62);
+            h = 0.24;
+          } else if (y === 9 || y === 10) {
+            const isStud = x % 6 === 2 || x % 6 === 3;
+            rgb = isStud ? mixRgb(pal.stoneHi, pal.trimAccent, 0.35) : mixRgb(rgb, pal.stoneHi, 0.2);
+            h = isStud ? 0.94 : 0.76;
           }
         }
 
@@ -833,10 +903,10 @@ function paintBrickTile(
         }
       }
 
-      // Sculpted overhanging flagstone / moss / carpet top cap (5px beveled lip + dark cast shadow!)
+      // Sculpted overhanging flagstone / moss / pipe / carpet top cap (5px beveled lip + dark cast shadow!)
       if (variant === 'top' && y < 6) {
-        if (pal.style === 'moss') {
-          const drape = 2 + Math.floor(hash2(x, 0, seed + 7) * 3.8);
+        if (pal.style === 'moss' || (topStyleIdx === 2 && pal.style === 'masonry')) {
+          const drape = 2 + Math.floor(hash2(x, topStyleIdx, seed + 7) * (topStyleIdx === 2 ? 4.6 : 3.8));
           if (y < drape) {
             rgb = y === 0 ? pal.trimAccent : pal.trimTop;
             h = 0.88 - y * 0.06;
@@ -848,8 +918,8 @@ function paintBrickTile(
           if (y < 3) {
             rgb = y === 0 ? pal.trimAccent : pal.trimTop;
             h = 0.92;
-            if (y === 0 && x % 5 === 1) {
-              b.pxRgb(x, y, pal.trimAccent, 0.95, pal.glow, 170);
+            if (y === 0 && (x + topStyleIdx * 2) % 5 === 1) {
+              b.pxRgb(x, y, pal.trimAccent, 0.95, pal.glow, topStyleIdx === 2 ? 210 : 170);
               continue;
             }
           } else if (y === 3) {
@@ -857,12 +927,15 @@ function paintBrickTile(
             h = 0.14;
           }
         } else {
-          const slabCrack = (x === 7 || x === 18) && y < 4;
-          if (slabCrack) {
+          const c1 = topStyleIdx === 1 ? 5 : topStyleIdx === 2 ? 9 : topStyleIdx === 3 ? 11 : 7;
+          const c2 = topStyleIdx === 1 ? 15 : topStyleIdx === 2 ? 20 : topStyleIdx === 3 ? 21 : 18;
+          const slabCrack = (x === c1 || x === c2) && y < 4;
+          const chippedNotch = topStyleIdx === 1 && y === 0 && (x === 6 || x === 16);
+          if (slabCrack || chippedNotch) {
             rgb = pal.mortar;
             h = 0.12;
           } else if (y === 0) {
-            rgb = mixRgb(pal.trimTop, pal.stoneHi, 0.38);
+            rgb = mixRgb(pal.trimTop, pal.stoneHi, topStyleIdx === 3 ? 0.52 : 0.38);
             h = 0.95;
           } else if (y <= 2) {
             rgb = scaleRgb(pal.trimTop, 0.88 + grain * 0.16);
@@ -871,7 +944,6 @@ function paintBrickTile(
             rgb = mixRgb(pal.stoneDark, pal.mortar, 0.65);
             h = 0.30;
           } else if (y === 4) {
-            // Cast shadow tucked cleanly underneath the overhanging flagstone lip!
             rgb = mixRgb(rgb, pal.mortar, 0.72);
             h = 0.18;
           }
@@ -884,43 +956,263 @@ function paintBrickTile(
   b.bakeRegionNormals(2.9, true);
 }
 
-function paintOneWayTile(b: PixelAtlasBuilder, pal: TilesetPalette): void {
+/**
+ * Chamfered organic outer corner caps (`corner_tl`, `corner_tr`, `corner_bl`, `corner_br`)
+ * so stone platforms have sculpted beveled silhouettes instead of raw square boxes.
+ */
+function paintCornerTile(
+  b: PixelAtlasBuilder,
+  pal: TilesetPalette,
+  seed: number,
+  corner: 'tl' | 'tr' | 'bl' | 'br'
+): void {
   const S = 24;
-  // Sculpted gothic timber & forged-iron catwalk beam (y=0..8) + compact iron corbels (y=8..10)
-  for (let y = 0; y < 9; y++) {
+  const isTop = corner === 'tl' || corner === 'tr';
+  const isLeft = corner === 'tl' || corner === 'bl';
+
+  for (let y = 0; y < S; y++) {
     for (let x = 0; x < S; x++) {
-      const grain = hash2(x, y, 77);
-      const isIronStrap = x === 3 || x === 4 || x === 19 || x === 20;
-      const isPlankSeam = x === 11 && y >= 1 && y <= 6;
+      const dx = isLeft ? x : S - 1 - x; // distance from exposed vertical edge
+      const dy = isTop ? y : S - 1 - y; // distance from exposed horiz edge
+      const diag = dx + dy;
+
+      // 3px organic chamfer cutaway at the outer corner
+      if (diag < 3) continue;
+
+      const grain = hash2(x, y, seed + 307);
+      const isOuterOutline = diag === 3 || dx === 0 || (!isTop && dy === 0);
+      const isChamferBevel = diag === 4 || diag === 5;
+      const isEdgeQuoin = dx <= 4 && (y % 8 !== 0);
+
+      let rgb: RGB;
+      let h: number;
+
+      if (isOuterOutline) {
+        rgb = pal.mortar;
+        h = 0.14;
+      } else if (isTop && y < 4) {
+        if (y === 0 || isChamferBevel) {
+          rgb = mixRgb(pal.trimTop, pal.stoneHi, isLeft ? 0.55 : 0.38);
+          h = 0.96;
+        } else if (y <= 2) {
+          rgb = scaleRgb(pal.trimTop, 0.88 + grain * 0.16);
+          h = 0.86;
+        } else {
+          rgb = mixRgb(pal.stoneDark, pal.mortar, 0.68);
+          h = 0.28;
+        }
+      } else if (!isTop && dy <= 3) {
+        // Shadowed overhanging underside stone bevel
+        rgb = dy === 1 ? mixRgb(pal.stoneDark, pal.mortar, 0.55) : scaleRgb(pal.stoneDark, 0.86 + grain * 0.14);
+        h = 0.24 + dy * 0.12;
+      } else if (dx <= 2) {
+        // Crisp chiseled vertical side bevel catching light on left, deep shadow on right
+        rgb = isLeft
+          ? mixRgb(pal.stoneBase, pal.stoneHi, 0.35 + grain * 0.12)
+          : mixRgb(pal.stoneDark, pal.mortar, 0.35);
+        h = isLeft ? 0.84 : 0.55;
+      } else {
+        const courseY = y === 12 || (dx > 5 && x === (isLeft ? 13 : 10));
+        if (courseY) {
+          rgb = pal.mortar;
+          h = 0.08;
+        } else {
+          const base = isEdgeQuoin ? mixRgb(pal.stoneBase, pal.stoneHi, 0.12) : mixRgb(pal.stoneBase, pal.stoneDark, 0.36);
+          rgb = scaleRgb(base, 0.88 + grain * 0.18);
+          h = 0.56 + grain * 0.14;
+        }
+      }
+
+      // Moss or glowing acid accent wrapping over top corners
+      if (isTop && pal.style === 'moss' && y < 4 && diag >= 4) {
+        rgb = y <= 1 ? pal.trimAccent : pal.trimTop;
+        h = 0.90;
+      } else if (isTop && pal.style === 'pipe' && y === 1 && diag >= 4 && x % 4 === 1) {
+        b.pxRgb(x, y, pal.trimAccent, 0.96, pal.glow, 185);
+        continue;
+      }
+
+      b.pxRgb(x, y, rgb, h);
+    }
+  }
+  b.bakeRegionNormals(3.2, false);
+}
+
+/**
+ * Chiseled vertical wall flank tiles (`edge_left`, `edge_right`) with alternating
+ * protruding masonry quoins and recessed mortar notches.
+ */
+function paintWallEdgeTile(
+  b: PixelAtlasBuilder,
+  pal: TilesetPalette,
+  seed: number,
+  side: 'left' | 'right'
+): void {
+  const S = 24;
+  const isLeft = side === 'left';
+
+  for (let y = 0; y < S; y++) {
+    const course = Math.floor(y / 8); // 3 vertical ashlar courses
+    const ly = y - course * 8;
+    const quoinW = course % 2 === 0 ? 7 : 5;
+    const indent = ly === 0 || ly === 7 ? 1 : 0;
+
+    for (let x = 0; x < S; x++) {
+      const dx = isLeft ? x : S - 1 - x;
+      if (dx < indent) continue;
+
+      const grain = hash2(x, y, seed + 419 + course * 13);
+      const isMortar = ly === 0 || dx === quoinW;
+      const isOuter = dx === indent;
+      const isBevel = dx === indent + 1 || dx === indent + 2;
+
+      let rgb: RGB;
+      let h: number;
+
+      if (isOuter || isMortar) {
+        rgb = pal.mortar;
+        h = 0.10;
+      } else if (isBevel) {
+        rgb = isLeft
+          ? mixRgb(pal.stoneBase, pal.stoneHi, 0.42)
+          : mixRgb(pal.stoneDark, pal.mortar, 0.32);
+        h = isLeft ? 0.90 : 0.62;
+      } else if (dx < quoinW) {
+        const shade = 0.92 + (1 - ly / 8) * 0.16;
+        rgb = scaleRgb(mixRgb(pal.stoneBase, pal.stoneHi, 0.12), shade * (0.9 + grain * 0.16));
+        h = 0.78 + grain * 0.1;
+      } else {
+        const innerFade = Math.min(1, (dx - quoinW) / 14);
+        const base = mixRgb(pal.stoneBase, pal.stoneDark, 0.35 + innerFade * 0.35);
+        rgb = scaleRgb(base, 0.88 + grain * 0.16);
+        h = 0.56 - innerFade * 0.12 + grain * 0.08;
+      }
+
+      if (pal.style === 'brass' && dx === 3 && ly === 4) {
+        rgb = pal.trimAccent;
+        h = 0.96;
+      }
+      b.pxRgb(x, y, rgb, h);
+    }
+  }
+  b.bakeRegionNormals(3.3, false);
+}
+
+/**
+ * Underside overhanging ceiling tiles (`solid_ceil_0`, `solid_ceil_1`) with
+ * shadowed stone cornice lips, stalactite teeth, or iron brackets.
+ */
+function paintCeilingTile(
+  b: PixelAtlasBuilder,
+  pal: TilesetPalette,
+  seed: number,
+  variant: 0 | 1
+): void {
+  const S = 24;
+  for (let y = 0; y < S; y++) {
+    for (let x = 0; x < S; x++) {
+      const grain = hash2(x, y, seed + 521 + variant * 41);
+      // Irregular sculpted stone bottom profile at y=20..23
+      const wave =
+        variant === 0
+          ? Math.sin(x * 0.65) * 1.4 + (x % 9 === 3 ? 1.8 : 0)
+          : Math.cos(x * 0.55 + 1.2) * 1.5 + (x % 7 === 4 ? 1.6 : 0);
+      const bottomY = Math.min(23, Math.max(19, Math.round(21.5 + wave)));
+      if (y > bottomY) continue;
+
+      const isBottomOutline = y === bottomY;
+      const isUnderLip = y >= bottomY - 3;
+      const isMortar = (y === 11 && (x + variant * 5) % 12 !== 0) || ((x + (y < 11 ? 3 : 9) + variant * 4) % 14 === 0 && y < 18);
+
+      let rgb: RGB;
+      let h: number;
+
+      if (isBottomOutline || isMortar) {
+        rgb = pal.mortar;
+        h = 0.10;
+      } else if (isUnderLip) {
+        const lipShade = y === bottomY - 1 ? 0.68 : 0.84;
+        rgb = scaleRgb(mixRgb(pal.stoneDark, pal.stoneBase, 0.35), lipShade * (0.9 + grain * 0.14));
+        h = 0.34 + (bottomY - y) * 0.14;
+        // Glowing green sewer acid drip or brass bolt under ceiling
+        if (pal.style === 'pipe' && y === bottomY - 1 && (x === 6 || x === 18)) {
+          b.pxRgb(x, y, pal.trimAccent, 0.92, pal.glow, 195);
+          continue;
+        }
+        if ((pal.style === 'brass' || pal.style === 'marble') && y === bottomY - 2 && x % 6 === 3) {
+          rgb = pal.trimTop;
+          h = 0.92;
+        }
+      } else {
+        const base = mixRgb(pal.stoneDark, pal.stoneBase, 0.38);
+        rgb = scaleRgb(base, 0.86 + grain * 0.18);
+        h = 0.52 + grain * 0.12;
+      }
+      b.pxRgb(x, y, rgb, h);
+    }
+  }
+  b.bakeRegionNormals(3.0, false);
+}
+
+function paintOneWayTile(
+  b: PixelAtlasBuilder,
+  pal: TilesetPalette,
+  cap: 'left' | 'mid' | 'right' = 'mid'
+): void {
+  const S = 24;
+  const xMin = cap === 'left' ? 2 : 0;
+  const xMax = cap === 'right' ? S - 3 : S - 1;
+
+  // Biome-adapted plank & bracket materials
+  const plankHi = pal.style === 'brass' ? pal.trimAccent : pal.style === 'marble' ? pal.stoneHi : pal.woodHi;
+  const plankMid = pal.style === 'brass' ? pal.trimTop : pal.style === 'marble' ? pal.stoneBase : pal.wood;
+  const bracketHi = pal.style === 'brass' ? pal.trimAccent : pal.stoneHi;
+  const bracketMid = pal.style === 'brass' ? pal.trimTop : pal.stoneBase;
+
+  for (let y = 0; y < 9; y++) {
+    for (let x = xMin; x <= xMax; x++) {
+      // Chamfer outer top/bottom pixels on endcaps
+      if (cap === 'left' && x === xMin && (y === 0 || y === 8)) continue;
+      if (cap === 'right' && x === xMax && (y === 0 || y === 8)) continue;
+
+      const grain = hash2(x, y, 77 + (cap === 'left' ? 11 : cap === 'right' ? 23 : 0));
+      const isEndCap = (cap === 'left' && x <= 5) || (cap === 'right' && x >= S - 6);
+      const isIronStrap = isEndCap || (cap === 'mid' && (x === 3 || x === 4 || x === 19 || x === 20));
+      const isPlankSeam = !isIronStrap && x === 11 && y >= 1 && y <= 6;
+
       let col: RGB;
       let h = 0.72;
       if (isIronStrap) {
-        const isRivet = (x === 3 || x === 19) && (y === 2 || y === 5);
+        const isRivet =
+          (y === 2 || y === 5) &&
+          ((cap === 'left' && x === 4) ||
+            (cap === 'right' && x === S - 5) ||
+            (cap === 'mid' && (x === 3 || x === 19)));
         col = isRivet
-          ? pal.stoneHi
+          ? [235, 240, 250]
           : y === 0
-          ? pal.stoneHi
+          ? bracketHi
           : y <= 5
-          ? pal.stoneBase
+          ? bracketMid
           : pal.stoneDark;
-        h = isRivet ? 0.98 : 0.9;
+        h = isRivet ? 0.98 : 0.90;
       } else if (isPlankSeam) {
         col = pal.mortar;
         h = 0.24;
       } else if (y === 0) {
-        col = mixRgb(pal.woodHi, [245, 224, 190], 0.18);
+        col = mixRgb(plankHi, [245, 224, 190], 0.22);
         h = 0.94;
       } else if (y === 1 || y === 2) {
-        col = scaleRgb(pal.woodHi, 0.88 + grain * 0.16);
+        col = scaleRgb(plankHi, 0.88 + grain * 0.16);
         h = 0.86;
       } else if (y === 3) {
-        col = scaleRgb(pal.wood, 0.92 + grain * 0.14);
+        col = scaleRgb(plankMid, 0.92 + grain * 0.14);
         h = 0.78;
       } else if (y <= 6) {
-        col = scaleRgb(pal.wood, 0.78 + grain * 0.14);
+        col = scaleRgb(plankMid, 0.78 + grain * 0.14);
         h = 0.68;
       } else if (y === 7) {
-        col = scaleRgb(pal.wood, 0.45);
+        col = scaleRgb(plankMid, 0.45);
         h = 0.36;
       } else {
         col = pal.mortar;
@@ -929,14 +1221,29 @@ function paintOneWayTile(b: PixelAtlasBuilder, pal: TilesetPalette): void {
       b.pxRgb(x, y, col, h);
     }
   }
-  // Subtle compact iron bracket corbels tucked directly beneath the iron straps (no spiky comb teeth!)
-  for (const bx of [3, 19]) {
-    b.pxRgb(bx - 1, 9, pal.mortar, 0.3);
-    b.pxRgb(bx, 9, pal.stoneBase, 0.78);
-    b.pxRgb(bx + 1, 9, pal.stoneDark, 0.68);
-    b.pxRgb(bx + 2, 9, pal.mortar, 0.3);
-    b.pxRgb(bx, 10, pal.stoneDark, 0.52);
-    b.pxRgb(bx + 1, 10, pal.mortar, 0.28);
+
+  // Sculpted forged-iron support corbel brackets beneath catwalk
+  if (cap === 'mid') {
+    for (const bx of [3, 19]) {
+      b.pxRgb(bx - 1, 9, pal.mortar, 0.3);
+      b.pxRgb(bx, 9, bracketMid, 0.78);
+      b.pxRgb(bx + 1, 9, pal.stoneDark, 0.68);
+      b.pxRgb(bx + 2, 9, pal.mortar, 0.3);
+      b.pxRgb(bx, 10, pal.stoneDark, 0.52);
+      b.pxRgb(bx + 1, 10, pal.mortar, 0.28);
+    }
+  } else if (cap === 'left') {
+    // Curved end-bracket corbel bracing left edge
+    b.line(4, 9, 10, 9, bracketHi, 2, 0.84);
+    b.line(4, 9, 4, 14, bracketMid, 2, 0.80);
+    b.line(5, 13, 9, 9, pal.stoneDark, 1.5, 0.72);
+    b.pxRgb(4, 15, pal.mortar, 0.24);
+  } else {
+    // Curved end-bracket corbel bracing right edge
+    b.line(S - 11, 9, S - 5, 9, bracketHi, 2, 0.84);
+    b.line(S - 5, 9, S - 5, 14, bracketMid, 2, 0.80);
+    b.line(S - 6, 13, S - 10, 9, pal.stoneDark, 1.5, 0.72);
+    b.pxRgb(S - 5, 15, pal.mortar, 0.24);
   }
   b.bakeRegionNormals(3.0, false);
 }
@@ -1594,6 +1901,522 @@ function paintPropsAndNpcs(b: PixelAtlasBuilder): void {
   b.pxRgb(11, 26, hexRgb('#c72a3c'), 0.98); // dried crimson glint on hook barb
   b.addOutline([12, 10, 18]);
   b.bakeRegionNormals(3.4, false);
+
+  // ===========================================================================
+  // Biome-Distinct Architectural Props + Shop Stall, Merchant & Recycling Tube
+  // ===========================================================================
+  paintBiomeAndShopProps(b);
+}
+
+function paintBiomeAndShopProps(b: PixelAtlasBuilder): void {
+  const ironVoid = hexRgb('#151926');
+  const ironDark = hexRgb('#2a2e3d');
+  const ironMid = hexRgb('#525a70');
+  const ironHi = hexRgb('#8d99b8');
+  const ironSpec = hexRgb('#c6d2eb');
+  const goldDark = hexRgb('#7d5518');
+  const goldMid = hexRgb('#d49e32');
+  const goldHi = hexRgb('#ffe885');
+  const woodDark = hexRgb('#382215');
+  const woodMid = hexRgb('#694128');
+  const woodHi = hexRgb('#9c6640');
+  const crimsonDark = hexRgb('#5e101d');
+  const crimson = hexRgb('#a81c30');
+  const crimsonHi = hexRgb('#e6354c');
+  const cyanGlow = hexRgb('#4ee8ff');
+  const emeraldGlow = hexRgb('#4dff88');
+  const acidGlow = hexRgb('#8cff38');
+  const amberGlow = hexRgb('#ffa834');
+  const flameCore = hexRgb('#fff4a8');
+
+  // 1. Prisoners' Quarters Hanging Glass Specimen/Weapon Jars (42x46, ceiling-hung!)
+  b.alloc('prop:prison_jars', 42, 46, 0.5, 0.0);
+  // Horizontal iron ceiling crossbar
+  b.rect(2, 1, 38, 3, ironMid, 0.9, 1);
+  b.line(3, 1, 38, 1, ironHi, 1, 0.96);
+  const jars: ReadonlyArray<{ cx: number; topY: number; w: number; h: number; liquid: RGB; em: RGB }> = [
+    { cx: 9, topY: 11, w: 10, h: 16, liquid: hexRgb('#2299b8'), em: cyanGlow },
+    { cx: 21, topY: 17, w: 12, h: 20, liquid: hexRgb('#2d9e58'), em: emeraldGlow },
+    { cx: 33, topY: 9, w: 10, h: 17, liquid: hexRgb('#a8263b'), em: hexRgb('#ff4f66') },
+  ];
+  for (const jar of jars) {
+    // Iron suspension chain
+    for (let cy = 4; cy < jar.topY; cy += 2) {
+      b.pxRgb(jar.cx, cy, ironHi, 0.9);
+      b.pxRgb(jar.cx + (cy % 4 === 0 ? 1 : -1), cy + 1, ironDark, 0.72);
+    }
+    const hw = Math.floor(jar.w / 2);
+    // Forged metal lid & neck
+    b.rect(jar.cx - hw + 2, jar.topY, jar.w - 4, 3, ironHi, 0.94, 1);
+    // Glass cylinder body
+    const bodyY = jar.topY + 3;
+    const bodyH = jar.h - 3;
+    for (let y = 0; y < bodyH; y++) {
+      for (let dx = -hw; dx <= hw; dx++) {
+        const edge = Math.abs(dx) === hw || y === bodyH - 1;
+        const inLiquid = y >= Math.floor(bodyH * 0.34);
+        if (edge) {
+          b.pxRgb(jar.cx + dx, bodyY + y, hexRgb('#799cb8'), 0.85);
+        } else if (inLiquid) {
+          const isBubble = (dx === -1 && y === bodyH - 5) || (dx === 1 && y === bodyH - 8);
+          const col = isBubble ? [240, 255, 255] as const : mixRgb(jar.liquid, jar.em, y < bodyH * 0.5 ? 0.55 : 0.25);
+          b.pxRgb(jar.cx + dx, bodyY + y, col, 0.82, jar.em, isBubble ? 245 : 165);
+        } else {
+          b.px(jar.cx + dx, bodyY + y, 42, 62, 86, 175, 0.65);
+        }
+      }
+    }
+    // Crisp specular glass highlight stripe down left side
+    b.line(jar.cx - hw + 2, bodyY + 2, jar.cx - hw + 2, bodyY + bodyH - 3, [230, 248, 255], 1, 0.96, [210, 245, 255], 130);
+    // Iron base ring
+    b.rect(jar.cx - hw + 1, bodyY + bodyH - 1, jar.w - 1, 2, ironDark, 0.88);
+  }
+  b.addOutline([10, 10, 18]);
+  b.bakeRegionNormals(3.1, false);
+
+  // 2. Recessed Barred Prison Cell Window (36x48)
+  b.alloc('prop:iron_cell_bars', 36, 48, 0.5, 1.0);
+  const stDark = hexRgb('#1f2636');
+  const stMid = hexRgb('#3a455e');
+  const stHi = hexRgb('#627296');
+  const moonHaze = hexRgb('#446b94');
+  // Outer gothic stone frame & sill
+  b.rect(2, 16, 32, 30, stMid, 0.8, 2);
+  b.ellipse(18, 17, 16, 15, stMid, 0.84, 0.14);
+  b.rect(0, 44, 36, 4, stHi, 0.92, 1);
+  // Dark arched window recess + pale cool moonlight glow in upper panes
+  for (let y = 6; y < 44; y++) {
+    for (let x = 7; x <= 28; x++) {
+      const dx = (x - 17.5) / 10.5;
+      const dy = (y - 17.5) / 11.5;
+      const inArch = y >= 17 || dx * dx + dy * dy <= 1.0;
+      if (!inArch) continue;
+      const moonMask = Math.max(0, 1 - (y - 6) / 30) * (1 - Math.abs((x - 15) / 16));
+      if (moonMask > 0.28) {
+        const col = mixRgb(ironVoid, moonHaze, moonMask * 0.72);
+        b.pxRgb(x, y, col, 0.18, moonHaze, clampByte(moonMask * 115));
+      } else {
+        b.pxRgb(x, y, hexRgb('#0c101c'), 0.08);
+      }
+    }
+  }
+  // Vertical forged iron bars + cross-transom with rivets
+  for (const bx of [10, 15, 20, 25]) {
+    b.rect(bx, 6, 2, 38, ironDark, 0.9);
+    b.line(bx, 7, bx, 43, ironHi, 1, 0.96);
+  }
+  b.rect(7, 22, 22, 2, ironMid, 0.94);
+  b.rect(7, 34, 22, 2, ironMid, 0.94);
+  for (const bx of [10, 15, 20, 25]) {
+    b.pxRgb(bx, 22, ironSpec, 0.98);
+    b.pxRgb(bx, 34, ironSpec, 0.98);
+  }
+  b.addOutline([10, 10, 18]);
+  b.bakeRegionNormals(3.2, false);
+
+  // 3. Promenade Gnarled Dead Tree Silhouette (56x74)
+  b.alloc('prop:dead_tree', 56, 74, 0.5, 1.0);
+  const barkVoid = hexRgb('#18131c');
+  const barkDark = hexRgb('#2e252b');
+  const barkMid = hexRgb('#4c3d42');
+  const barkHi = hexRgb('#756168');
+  const mossDrape = hexRgb('#2a5c3d');
+  const mossTip = hexRgb('#49945b');
+  // Gnarled roots & curving trunk
+  b.polygon([[14, 73], [22, 62], [35, 62], [44, 73], [36, 73], [29, 66], [21, 73]], barkDark, 0.75, 0.2);
+  b.polygon([[22, 66], [21, 46], [24, 29], [32, 30], [34, 48], [35, 66]], barkMid, 0.82, 0.2);
+  b.line(23, 64, 25, 31, barkHi, 2, 0.92);
+  b.line(31, 63, 30, 36, barkVoid, 1.5, 0.45);
+  // Crooked asymmetric branches fanning upward
+  b.line(24, 34, 11, 21, barkMid, 4.2, 0.85);
+  b.line(11, 21, 4, 14, barkDark, 2.5, 0.8);
+  b.line(13, 22, 14, 9, barkHi, 2.2, 0.86);
+  b.line(28, 30, 26, 12, barkMid, 3.8, 0.86);
+  b.line(26, 12, 20, 3, barkHi, 2.0, 0.88);
+  b.line(27, 15, 34, 5, barkDark, 2.2, 0.82);
+  b.line(32, 35, 45, 22, barkMid, 4.0, 0.86);
+  b.line(45, 22, 53, 15, barkHi, 2.2, 0.88);
+  b.line(42, 25, 47, 31, barkDark, 2.0, 0.78);
+  // Eerie hanging twilight moss wisps draped from limbs
+  for (const [mx, my, ml] of [[8, 19, 10], [15, 16, 12], [23, 11, 9], [41, 25, 13], [49, 19, 9]] as const) {
+    for (let dy = 0; dy < ml; dy++) {
+      const sway = Math.round(Math.sin(dy * 0.55) * 1.0);
+      b.pxRgb(mx + sway, my + dy, dy < 3 ? mossTip : mossDrape, 0.78 - dy * 0.03);
+      if (dy < ml - 3) b.pxRgb(mx + sway + 1, my + dy, mossDrape, 0.7);
+    }
+  }
+  b.addOutline([10, 9, 16]);
+  b.bakeRegionNormals(3.1, false);
+
+  // 4. Promenade / Ramparts Hanging Gibbet Cage (28x52, ceiling-hung!)
+  b.alloc('prop:gibbet_cage', 28, 52, 0.5, 0.0);
+  // Heavy rusted hanging chain
+  for (let y = 0; y < 14; y += 3) {
+    b.rect(13, y, 2, 3, y % 6 === 0 ? ironHi : ironMid, 0.88);
+  }
+  // Conical top iron suspension ring & ribs
+  b.polygon([[14, 13], [23, 21], [5, 21]], ironMid, 0.86, 0.14);
+  b.rect(5, 20, 18, 3, ironHi, 0.94, 1);
+  b.rect(5, 33, 18, 2, ironMid, 0.9);
+  b.rect(6, 46, 16, 3, ironHi, 0.92, 1);
+  // Vertical rusted cage ribs
+  for (const bx of [6, 10, 14, 18, 21]) {
+    b.rect(bx, 22, 2, 24, bx === 6 || bx === 21 ? ironHi : ironMid, 0.86);
+  }
+  // Weathered skull & drooping crimson rag inside gibbet
+  b.polygon([[11, 35], [17, 36], [19, 49], [14, 47], [11, 51]], crimsonDark, 0.76, 0.12);
+  b.line(12, 36, 13, 48, crimson, 1.2, 0.82);
+  b.ellipse(14, 41, 3.6, 3.4, hexRgb('#cfc5b0'), 0.86, 0.16);
+  b.pxRgb(13, 41, ironVoid, 0.18);
+  b.pxRgb(16, 41, ironVoid, 0.18);
+  b.addOutline([10, 9, 16]);
+  b.bakeRegionNormals(3.3, false);
+
+  // 5. Toxic Sewers Acid Outflow Grate (38x38)
+  b.alloc('prop:sewer_grate', 38, 38, 0.5, 0.5);
+  const bronzeDark = hexRgb('#2a3629');
+  const bronzeMid = hexRgb('#4e6649');
+  const bronzeHi = hexRgb('#7ca173');
+  b.ellipse(19, 18, 17, 17, bronzeDark, 0.82, 0.18);
+  b.ellipse(19, 18, 15.5, 15.5, bronzeMid, 0.88, 0.14);
+  b.ellipse(19, 18, 11.5, 11.5, hexRgb('#0a120b'), 0.12, 0.04);
+  // Rivets around pipe flange
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2;
+    b.ellipse(19 + Math.cos(a) * 13.5, 18 + Math.sin(a) * 13.5, 1.3, 1.3, bronzeHi, 0.96, 0.04);
+  }
+  // Crossed iron culvert grate bars
+  for (const offset of [-6, 0, 6]) {
+    b.rect(18 + offset, 7, 2, 22, ironMid, 0.86);
+    b.rect(8, 17 + offset, 22, 2, ironDark, 0.82);
+  }
+  // Glowing toxic emerald slime waterfall dripping out bottom lip!
+  b.rect(13, 25, 12, 4, hexRgb('#49b81d'), 0.85, 0, acidGlow, 210);
+  b.line(15, 27, 15, 36, acidGlow, 2.2, 0.92, acidGlow, 245);
+  b.line(20, 26, 20, 34, hexRgb('#5be028'), 2.0, 0.9, acidGlow, 225);
+  b.line(23, 27, 23, 37, acidGlow, 1.6, 0.92, acidGlow, 240);
+  b.addOutline([8, 14, 10]);
+  b.bakeRegionNormals(3.3, false);
+
+  // 6. Toxic Sewers Riveted Pipe & Crimson Wheel Valve (34x36)
+  b.alloc('prop:pipe_valve', 34, 36, 0.5, 0.5);
+  const copperDark = hexRgb('#3d2c24');
+  const copperMid = hexRgb('#7a533b');
+  const copperHi = hexRgb('#ba865c');
+  // Horizontal cylindrical conduit pipe + flanged vertical joint
+  for (let y = 12; y <= 23; y++) {
+    const v = (y - 17.5) / 5.5;
+    const nz = Math.sqrt(Math.max(0.15, 1 - v * v * 0.8));
+    const shade = 0.58 + nz * 0.48 + (v < 0 ? 0.14 : -0.1);
+    for (let x = 1; x <= 32; x++) {
+      b.pxRgb(x, y, scaleRgb(copperMid, shade), 0.72 + nz * 0.24);
+      b.setNormalDirect(x, y, 0, v * 0.85, nz);
+    }
+  }
+  // Bolted pipe flanges
+  for (const fx of [3, 28]) {
+    b.rect(fx, 10, 4, 16, copperHi, 0.94, 1);
+    b.pxRgb(fx + 1, 12, ironSpec, 0.98);
+    b.pxRgb(fx + 1, 23, ironSpec, 0.98);
+  }
+  // Valve stem + bright crimson spoked wheel valve
+  b.rect(15, 6, 4, 9, ironMid, 0.88);
+  b.ellipse(17, 17, 8.5, 8.5, crimsonDark, 0.92, 0.08);
+  b.ellipse(17, 17, 7.2, 7.2, crimson, 0.95, 0.08);
+  b.ellipse(17, 17, 4.5, 4.5, copperDark, 0.4, 0.05);
+  b.line(10, 17, 24, 17, crimsonHi, 2, 0.96);
+  b.line(17, 10, 17, 24, crimsonHi, 2, 0.96);
+  b.ellipse(17, 17, 2.2, 2.2, goldHi, 0.98, 0.04);
+  // Subtle acid drip beneath pipe
+  b.ellipse(11, 27, 1.8, 3.2, acidGlow, 0.9, 0.1, acidGlow, 235);
+  b.addOutline([10, 10, 14]);
+  b.bakeRegionNormals(3.2, false);
+
+  // 7. Ramparts Animated Tattered Wind Banner (3 frames, 26x44)
+  for (let f = 0; f < 3; f++) {
+    b.alloc(`prop:wind_banner_${f}`, 26, 44, 0.5, 0.0);
+    // Forged iron wall bracket + pike pole
+    b.rect(2, 2, 3, 40, ironMid, 0.9, 1);
+    b.line(2, 2, 2, 41, ironHi, 1, 0.96);
+    b.rect(2, 4, 21, 3, goldMid, 0.94, 1);
+    b.pxRgb(23, 5, goldHi, 0.98);
+    // Whipping crimson heraldic tapestry with torn forked tails
+    const phase = f * 2.1;
+    for (let y = 7; y < 42; y++) {
+      const wave = Math.round(Math.sin(y * 0.24 + phase) * (1.2 + y * 0.07));
+      const taper = y > 28 ? (y - 28) * 0.42 : 0;
+      for (let x = 6; x <= 20; x++) {
+        const cx = 13;
+        if (y > 30 && Math.abs(x - cx) < (y - 30) * 0.45) continue; // forked wind notch
+        if (Math.abs(x - cx) > 7.5 - taper * 0.35) continue;
+        const fold = Math.sin((x + wave) * 0.72 + phase) * 0.5 + 0.5;
+        const isGoldBorder = x === 6 || x === 20 || (y >= 15 && y <= 18 && Math.abs(x - cx) <= 3);
+        const col = isGoldBorder ? (fold > 0.45 ? goldHi : goldMid) : mixRgb(crimsonDark, crimsonHi, 0.28 + fold * 0.62);
+        b.pxRgb(x + wave, y, col, 0.58 + fold * 0.36);
+      }
+    }
+    b.addOutline([12, 8, 16]);
+    b.bakeRegionNormals(2.9, false);
+  }
+  b.alias('prop:wind_banner', 'prop:wind_banner_0');
+
+  // 8. Clock Tower Stained-Glass Rose Window (56x56)
+  b.alloc('prop:clock_rose_window', 56, 56, 0.5, 0.5);
+  const cxR = 27.5;
+  const cyR = 27.5;
+  for (let y = 0; y < 56; y++) {
+    for (let x = 0; x < 56; x++) {
+      const dx = x - cxR;
+      const dy = y - cyR;
+      const r = Math.hypot(dx, dy);
+      if (r > 26.5) continue;
+      const ang = Math.atan2(dy, dx);
+      const spoke = Math.abs(Math.sin(ang * 4));
+      const petal = Math.abs(Math.cos(ang * 8));
+      if (r > 23.0) {
+        // Carved outer gothic stone ring
+        const shade = 0.8 + ((x + y) % 3 === 0 ? 0.14 : -0.05);
+        b.pxRgb(x, y, scaleRgb(hexRgb('#4f3d4f'), shade), 0.9);
+      } else if (r > 21.5 || Math.abs(r - 13.5) < 1.3 || r < 5.5 || spoke < 0.12) {
+        // Dark lead tracery mullions & brass ring
+        const isBrass = Math.abs(r - 13.5) < 0.8 || (r >= 4.2 && r < 5.5);
+        b.pxRgb(x, y, isBrass ? goldMid : ironVoid, isBrass ? 0.94 : 0.72);
+      } else {
+        // Luminous emissive stained-glass petals (amber + cyan + royal amethyst!)
+        const sector = ((Math.floor(((ang + Math.PI) / (Math.PI * 2)) * 8)) & 3);
+        const glassBase: RGB =
+          r < 13.5
+            ? mixRgb(amberGlow, flameCore, 0.35 + petal * 0.4)
+            : sector === 0 || sector === 2
+            ? mixRgb(hexRgb('#2085a8'), cyanGlow, 0.45 + petal * 0.45)
+            : mixRgb(hexRgb('#73248c'), hexRgb('#e05cff'), 0.4 + petal * 0.45);
+        const emA = clampByte(175 + petal * 75);
+        b.pxRgb(x, y, glassBase, 0.65, glassBase, emA);
+      }
+    }
+  }
+  b.ellipse(cxR, cyR, 4.2, 4.2, flameCore, 0.96, 0.04, amberGlow, 245);
+  b.bakeRegionNormals(2.6, false);
+
+  // 9. Clock Tower Swinging Brass Pendulum (28x72, top-pivoted!)
+  b.alloc('prop:clock_pendulum', 28, 72, 0.5, 0.0);
+  // Top axle mount
+  b.ellipse(14, 4, 4.2, 4.2, goldMid, 0.94, 0.06);
+  b.ellipse(14, 4, 1.8, 1.8, ironVoid, 0.5, 0.05);
+  // Fluted brass rod
+  b.rect(12, 6, 4, 42, goldDark, 0.85);
+  b.rect(13, 6, 2, 42, goldHi, 0.95);
+  // Decorative filigree collar above bob
+  b.polygon([[8, 43], [20, 43], [16, 48], [12, 48]], goldMid, 0.92, 0.12);
+  // Heavy sculpted brass sun-disc pendulum bob
+  b.ellipse(14, 57, 11.5, 11.5, goldDark, 0.86, 0.16);
+  b.ellipse(14, 57, 9.8, 9.8, goldMid, 0.92, 0.14);
+  b.ellipse(12.5, 55, 6.2, 6.2, goldHi, 0.96, 0.08);
+  // Glowing cyan chrono-rune jewel inset in center of bob
+  b.ellipse(14, 57, 3.0, 3.0, cyanGlow, 0.98, 0.04, cyanGlow, 235);
+  b.pxRgb(13, 56, [255, 255, 255], 1.0, [255, 255, 255], 255);
+  // Bottom finial spike
+  b.polygon([[12, 68], [16, 68], [14, 71]], goldHi, 0.94, 0.08);
+  b.addOutline([14, 10, 18]);
+  b.bakeRegionNormals(3.4, false);
+
+  // 10. Clock Tower Interlocking Brass Wall Gears (`wall_gear`, `wall_gear_sm`)
+  const paintGear = (key: string, size: number, teeth: number): void => {
+    b.alloc(key, size, size, 0.5, 0.5);
+    const c = (size - 1) * 0.5;
+    const outerR = size * 0.48;
+    const rimR = size * 0.37;
+    const innerR = size * 0.25;
+    const hubR = size * 0.14;
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const dx = x - c;
+        const dy = y - c;
+        const r = Math.hypot(dx, dy);
+        const ang = Math.atan2(dy, dx);
+        const toothWave = Math.cos(ang * teeth);
+        const onTooth = r <= outerR && r >= rimR - 1 && toothWave > 0.25;
+        const onRim = r <= rimR && r >= innerR;
+        const onSpoke = r < innerR && r >= hubR && Math.abs(Math.sin(ang * 2)) < 0.28;
+        const onHub = r < hubR && r >= hubR * 0.42;
+        if (!onTooth && !onRim && !onSpoke && !onHub) continue;
+        const shade = 0.78 + Math.max(0, (-dx * 0.45 - dy * 0.55) / outerR) * 0.35;
+        const isHi = Math.abs(r - rimR) < 1.2 || onHub;
+        const base = isHi ? goldHi : onSpoke ? goldDark : goldMid;
+        b.pxRgb(x, y, scaleRgb(base, shade), isHi ? 0.96 : 0.86);
+      }
+    }
+    b.addOutline([14, 10, 16]);
+    b.bakeRegionNormals(3.4, false);
+  };
+  paintGear('prop:wall_gear', 40, 10);
+  b.alias('prop:wall_gear_lg', 'prop:wall_gear');
+  paintGear('prop:wall_gear_sm', 26, 8);
+
+  // 11. High Peak Castle Lancet Stained-Glass Window (36x72)
+  b.alloc('prop:castle_stained_glass', 36, 72, 0.5, 1.0);
+  const marbleDark = hexRgb('#4c474a');
+  const marbleMid = hexRgb('#877e78');
+  const marbleHi = hexRgb('#c2b8ad');
+  // Pointed gothic marble lancet outer frame
+  for (let y = 2; y < 72; y++) {
+    const halfW = y < 22 ? Math.max(2, Math.round(Math.sqrt(Math.max(0, (y - 2) / 20)) * 16.5)) : 16.5;
+    for (let dx = -Math.ceil(halfW); dx <= Math.ceil(halfW); dx++) {
+      const x = 18 + dx;
+      const distEdge = halfW - Math.abs(dx);
+      if (distEdge <= 3.2 || y >= 68) {
+        const col = y >= 68 ? marbleHi : distEdge < 1.5 ? marbleDark : marbleMid;
+        b.pxRgb(x, y, col, 0.88);
+      } else {
+        // Stained-glass royal diamond mosaic + golden crest in upper lancet!
+        const isMullion = Math.abs(dx) <= 1 || y === 24 || y === 46;
+        if (isMullion) {
+          b.pxRgb(x, y, ironVoid, 0.72);
+        } else {
+          const diamond = ((Math.abs(dx) + y) % 8 === 0 || (Math.abs(dx) - y + 96) % 8 === 0);
+          let glass: RGB = y < 24 ? goldHi : y < 46 ? crimsonHi : hexRgb('#3874c9');
+          if (y >= 26 && y <= 40 && Math.abs(dx) <= 5) glass = goldHi; // heraldic gold shield emblem
+          if (diamond) glass = scaleRgb(glass, 0.72);
+          b.pxRgb(x, y, glass, 0.68, glass, diamond ? 130 : 210);
+        }
+      }
+    }
+  }
+  b.addOutline([16, 14, 20]);
+  b.bakeRegionNormals(3.1, false);
+
+  // 12. High Peak Castle Royal Five-Candle Candelabra (28x52)
+  b.alloc('prop:royal_candelabra', 28, 52, 0.5, 1.0);
+  // Ornate clawed pedestal base & fluted golden column
+  b.polygon([[5, 51], [10, 45], [18, 45], [23, 51]], goldDark, 0.86, 0.16);
+  b.rect(12, 18, 4, 28, goldMid, 0.9);
+  b.line(13, 18, 13, 46, goldHi, 1, 0.96);
+  // Scrolled ornate golden candelabra arms
+  b.line(4, 21, 13, 27, goldMid, 2.2, 0.9);
+  b.line(24, 21, 15, 27, goldMid, 2.2, 0.9);
+  b.line(8, 17, 13, 22, goldHi, 2.0, 0.92);
+  b.line(20, 17, 15, 22, goldHi, 2.0, 0.92);
+  // 5 ivory candles + blazing golden emissive flames
+  const candles: ReadonlyArray<readonly [number, number]> = [
+    [4, 15],
+    [9, 11],
+    [14, 9],
+    [19, 11],
+    [24, 15],
+  ];
+  for (const [cx, cy] of candles) {
+    b.rect(cx - 2, cy + 5, 5, 2, goldHi, 0.94); // drip saucer
+    b.rect(cx - 1, cy, 3, 6, hexRgb('#efe7d3'), 0.9); // wax candle
+    b.ellipse(cx, cy - 3, 2.0, 3.0, amberGlow, 0.92, 0.08, amberGlow, 245);
+    b.ellipse(cx, cy - 2.5, 1.0, 1.7, flameCore, 1.0, 0.02, flameCore, 255);
+  }
+  b.addOutline([14, 10, 16]);
+  b.bakeRegionNormals(3.2, false);
+
+  // 13. In-Biome Merchant Shop Stall (76x56)
+  b.alloc('prop:shop_stall', 76, 56, 0.5, 1.0);
+  // Back vertical timber support posts
+  b.rect(6, 14, 4, 41, woodMid, 0.84, 1);
+  b.rect(66, 14, 4, 41, woodMid, 0.84, 1);
+  // Weathered oak wooden sales counter (y=36..55)
+  b.rect(4, 36, 68, 4, woodHi, 0.92, 1);
+  b.rect(6, 40, 64, 15, woodMid, 0.82, 2);
+  for (let px = 14; px < 66; px += 10) {
+    b.line(px, 41, px, 54, woodDark, 1, 0.48);
+  }
+  // Draped emerald/gold merchant table runner + iron corner braces
+  b.polygon([[26, 39], [50, 39], [48, 51], [38, 54], [28, 51]], hexRgb('#1f594d'), 0.88, 0.12);
+  b.line(27, 40, 49, 40, goldHi, 1.5, 0.95);
+  b.ellipse(38, 46, 3.2, 3.2, goldMid, 0.94, 0.06, goldHi, 120);
+  // Counter wares: glowing cyan potion bottle, emerald elixir, leather coin sack & sword rack
+  b.rect(12, 29, 5, 7, cyanGlow, 0.92, 0, cyanGlow, 215);
+  b.rect(13, 27, 3, 2, woodHi, 0.9);
+  b.ellipse(22, 33, 3.5, 3.2, hexRgb('#9e7445'), 0.88, 0.12); // coin pouch
+  b.pxRgb(22, 30, goldHi, 0.96);
+  b.rect(56, 30, 5, 6, emeraldGlow, 0.92, 0, emeraldGlow, 215);
+  b.rect(57, 28, 3, 2, woodHi, 0.9);
+  // Hanging warm merchant lantern beneath right awning
+  b.line(62, 16, 62, 21, ironMid, 1.5, 0.88);
+  b.rect(59, 21, 6, 7, amberGlow, 0.92, 0, amberGlow, 250);
+  b.rect(60, 22, 4, 5, flameCore, 0.98, 0, flameCore, 255);
+  b.rect(58, 20, 8, 2, ironDark, 0.94);
+  b.rect(58, 28, 8, 2, ironDark, 0.94);
+  // Sloped red-and-gold striped scalloped canvas canopy roof (y=4..18)
+  for (let y = 4; y <= 17; y++) {
+    const t = (y - 4) / 13;
+    const xL = Math.round(8 - t * 6);
+    const xR = Math.round(67 + t * 6);
+    for (let x = xL; x <= xR; x++) {
+      if (y >= 15 && Math.sin(x * 0.65) < -0.35) continue; // scalloped fabric hem
+      const stripe = Math.floor((x - 2) / 7) % 2 === 0;
+      const base = stripe ? (y < 9 ? crimsonHi : crimson) : (y < 9 ? hexRgb('#e8d2a6') : hexRgb('#b59769'));
+      const shade = y >= 14 ? 0.72 : 1.04 - t * 0.16;
+      b.pxRgb(x, y, scaleRgb(base, shade), 0.88 - t * 0.08);
+    }
+  }
+  b.rect(8, 3, 60, 2, goldMid, 0.95);
+  b.addOutline([12, 9, 16]);
+  b.bakeRegionNormals(3.1, false);
+
+  // 14. Hooded Goblin Shop Merchant NPC (32x40)
+  b.alloc('prop:npc_merchant', 32, 40, 0.5, 1.0);
+  const cloakDark = hexRgb('#1a2b3d');
+  const cloakMid = hexRgb('#2b4a66');
+  const cloakHi = hexRgb('#497699');
+  // Merchant cloak & layered golden shoulder mantle
+  b.polygon([[7, 39], [10, 17], [22, 17], [26, 39]], cloakDark, 0.8, 0.18);
+  b.polygon([[10, 18], [21, 18], [23, 36], [11, 36]], cloakMid, 0.86, 0.16);
+  b.line(10, 19, 22, 19, goldHi, 2, 0.95);
+  b.line(16, 20, 16, 37, goldMid, 1.5, 0.92);
+  // Deep pointed hood + glowing mischievous golden eyes!
+  b.polygon([[15, 4], [24, 10], [22, 19], [9, 19], [8, 12]], cloakHi, 0.9, 0.18);
+  b.polygon([[11, 10], [21, 10], [20, 17], [12, 17]], ironVoid, 0.62, 0.08);
+  b.rect(14, 13, 2, 2, goldHi, 0.98, 0, amberGlow, 255);
+  b.rect(18, 13, 2, 2, goldHi, 0.98, 0, amberGlow, 255);
+  // Heavy coin purse at belt + gleaming gold goblet held out
+  b.ellipse(10, 28, 3.6, 3.8, woodHi, 0.9, 0.1);
+  b.line(20, 23, 26, 20, cloakHi, 2.8, 0.88);
+  b.ellipse(27, 17, 3.0, 3.4, goldHi, 0.96, 0.06, goldHi, 215);
+  b.rect(26, 20, 2, 3, goldMid, 0.94);
+  b.addOutline([10, 9, 18]);
+  b.bakeRegionNormals(3.2, false);
+
+  // 15. Iconic Glowing Glass Recycling Tube (32x48)
+  b.alloc('prop:recycling_tube', 32, 48, 0.5, 1.0);
+  // Heavy riveted brass & iron base pedestal
+  b.rect(4, 41, 24, 6, ironMid, 0.88, 2);
+  b.rect(6, 37, 20, 5, goldMid, 0.92, 1);
+  b.pxRgb(9, 39, goldHi, 0.98);
+  b.pxRgb(22, 39, goldHi, 0.98);
+  // Ornate brass top cap & pressure dome
+  b.rect(6, 7, 20, 5, goldMid, 0.92, 1);
+  b.ellipse(16, 7, 8, 4, ironHi, 0.9, 0.12);
+  b.rect(14, 1, 4, 4, goldHi, 0.96);
+  // Cylindrical glowing cyan glass chamber (y=12..37)
+  for (let y = 12; y < 37; y++) {
+    for (let x = 8; x <= 23; x++) {
+      const u = (x - 15.5) / 7.5;
+      const isRim = x === 8 || x === 23;
+      if (isRim) {
+        b.pxRgb(x, y, hexRgb('#88c8de'), 0.9);
+      } else {
+        const coreGlow = Math.max(0, 1 - Math.abs(u) * 1.15);
+        const col = mixRgb(hexRgb('#12364d'), cyanGlow, 0.25 + coreGlow * 0.45);
+        b.px(x, y, col[0], col[1], col[2], 215, 0.72 + coreGlow * 0.2, cyanGlow[0], cyanGlow[1], cyanGlow[2], clampByte(65 + coreGlow * 120));
+      }
+    }
+  }
+  // Crisp glass reflection streak + shimmering suspended motes inside tube
+  b.line(10, 14, 10, 35, [225, 250, 255], 1, 0.96, [220, 250, 255], 175);
+  b.ellipse(16, 24, 3.0, 5.0, cyanGlow, 0.92, 0.08, cyanGlow, 235);
+  b.pxRgb(16, 22, [255, 255, 255], 1.0, [255, 255, 255], 255);
+  b.pxRgb(13, 18, flameCore, 0.96, cyanGlow, 220);
+  b.pxRgb(19, 30, flameCore, 0.96, cyanGlow, 220);
+  // Side brass support struts
+  b.rect(6, 12, 2, 25, ironDark, 0.92);
+  b.rect(24, 12, 2, 25, ironDark, 0.92);
+  b.addOutline([10, 12, 20]);
+  b.bakeRegionNormals(3.3, false);
 }
 
 // =============================================================================
@@ -2825,6 +3648,360 @@ function paintVfxAndPixelFont(b: PixelAtlasBuilder): void {
     }
   }
 
+  // ===========================================================================
+  // Painterly Weapon Slash Smears, Shield Guard, Parry Burst, Splinters, Gibs,
+  // Floor Decals, 4-Frame Spinning Coins, Curse Skull & Unparriable `!!`
+  // ===========================================================================
+
+  const paintPainterlyArc = (
+    key: string,
+    w: number,
+    h: number,
+    thickness: number,
+    arcStart: number,
+    arcEnd: number,
+    coreRgb: RGB,
+    midRgb: RGB,
+    rimRgb: RGB,
+    seed: number
+  ): void => {
+    b.alloc(key, w, h, 0.24, 0.5);
+    const cx = w * 0.22;
+    const cy = h * 0.5;
+    const rx = w * 0.74;
+    const ry = h * 0.46;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const dx = (x - cx) / rx;
+        const dy = (y - cy) / ry;
+        const dist = Math.hypot(dx, dy);
+        const ang = Math.atan2(dy, dx);
+        if (ang < arcStart || ang > arcEnd) continue;
+        const angNorm = (ang - arcStart) / (arcEnd - arcStart);
+        // Asymmetric Dead Cells smear curve: razor lead tip, fat painterly belly, feathered tail!
+        const leadBias = Math.pow(Math.sin(angNorm * Math.PI), 0.72) * (0.65 + 0.45 * angNorm);
+        const featherNoise = (hash2(Math.floor(angNorm * 28), Math.floor(dist * 14), seed) - 0.5) * 0.14;
+        const outerR = 1.0;
+        const innerR = Math.max(0.12, outerR - thickness * leadBias + featherNoise);
+        if (dist <= outerR && dist >= innerR) {
+          const edgeFrac = (dist - innerR) / Math.max(0.01, outerR - innerR);
+          // Jagged painterly trailing streaks on inner tail
+          const streakCut = edgeFrac < 0.32 && hash2(x, Math.floor(angNorm * 36), seed + 7) > edgeFrac * 3.1;
+          if (streakCut) continue;
+          const col =
+            edgeFrac > 0.76
+              ? coreRgb
+              : edgeFrac > 0.36
+              ? mixRgb(midRgb, coreRgb, (edgeFrac - 0.36) / 0.4)
+              : mixRgb(rimRgb, midRgb, edgeFrac / 0.36);
+          const alpha = clampByte(Math.min(1, (0.35 + 0.65 * Math.pow(edgeFrac, 0.55)) * Math.min(1, leadBias * 1.45)) * 255);
+          b.px(x, y, col[0], col[1], col[2], alpha, 0.95, col[0], col[1], col[2], alpha);
+          b.setNormalDirect(x, y, 0, 0, 1);
+        }
+      }
+    }
+  };
+
+  // 1. Blade Smears (3 combo arcs)
+  paintPainterlyArc('vfx:slash_blade_0', 56, 42, 0.46, -1.25, 1.12, [255, 255, 255], hexRgb('#8ceeff'), hexRgb('#2a88d4'), 11);
+  paintPainterlyArc('vfx:slash_blade_1', 56, 42, 0.42, -1.05, 1.32, [255, 255, 255], hexRgb('#a8f4ff'), hexRgb('#3b9ce8'), 22);
+  paintPainterlyArc('vfx:slash_blade_2', 60, 46, 0.54, -1.38, 1.28, hexRgb('#fff8c4'), hexRgb('#ffd454'), hexRgb('#ff5e2b'), 33);
+
+  // 2. Heavy Overhead Cleave Smears (2 massive frames)
+  paintPainterlyArc('vfx:slash_heavy_0', 68, 56, 0.60, -1.48, 1.38, hexRgb('#fffbe0'), hexRgb('#ffb838'), hexRgb('#e03428'), 44);
+  paintPainterlyArc('vfx:slash_heavy_1', 68, 56, 0.54, -1.22, 1.48, [255, 255, 255], hexRgb('#ffe070'), hexRgb('#ff621c'), 55);
+
+  // 3. Piercing Lance / Rapier Thrust Streaks (2 frames, 72x20)
+  for (let f = 0; f < 2; f++) {
+    b.alloc(`vfx:slash_thrust_${f}`, 72, 20, 0.14, 0.5);
+    const cy = 9.5;
+    const tipX = f === 0 ? 69 : 66;
+    for (let y = 0; y < 20; y++) {
+      for (let x = 0; x < 72; x++) {
+        const dy = Math.abs(y - cy);
+        const t = x / tipX;
+        if (x > tipX) continue;
+        const halfH = t < 0.72 ? 1.5 + t * (f === 0 ? 5.2 : 6.4) : Math.max(0.5, (1 - (t - 0.72) / 0.28) * 6.0);
+        const shockRing = Math.abs(x - (f === 0 ? 22 : 30)) <= 1.8 && dy < 8.5 && dy > 2.2;
+        if (dy <= halfH || shockRing) {
+          const core = dy < halfH * 0.38 && t > 0.25;
+          const col = core ? ([255, 255, 255] as const) : dy < halfH * 0.72 ? hexRgb('#8cf2ff') : hexRgb('#3694e8');
+          const alpha = shockRing
+            ? clampByte((1 - dy / 8.5) * 210)
+            : clampByte(Math.min(1, (0.28 + t * 0.78) * (1 - (dy / Math.max(0.5, halfH)) * 0.55)) * 255);
+          b.px(x, y, col[0], col[1], col[2], alpha, 0.95, col[0], col[1], col[2], alpha);
+          b.setNormalDirect(x, y, 0, 0, 1);
+        }
+      }
+    }
+  }
+
+  // 4. Twin Dagger X-Cross Slashes (2 frames, 52x44)
+  for (let f = 0; f < 2; f++) {
+    b.alloc(`vfx:slash_twin_${f}`, 52, 44, 0.28, 0.5);
+    const c1 = f === 0 ? hexRgb('#8cf5ff') : hexRgb('#ffe875');
+    const c2 = f === 0 ? hexRgb('#ff4266') : hexRgb('#ff6238');
+    // Intersecting razor arcs forming dramatic X-cross
+    for (let i = 0; i <= 48; i++) {
+      const t = i / 48;
+      const bend = Math.sin(t * Math.PI) * 7.5;
+      const xA = 4 + t * 44;
+      const yA = 6 + t * 32 - bend;
+      const xB = 6 + t * 42;
+      const yB = 37 - t * 30 - bend * 0.75;
+      const wA = Math.max(1.2, Math.sin(t * Math.PI) * 5.2);
+      b.line(xA, yA, xA + 1, yA, c2, wA + 2, 0.92, c2, 220);
+      b.line(xA, yA, xA + 1, yA, c1, wA * 0.65, 0.96, c1, 250);
+      b.line(xB, yB, xB + 1, yB, c2, wA + 1.5, 0.92, c2, 210);
+      b.line(xB, yB, xB + 1, yB, [255, 255, 255], wA * 0.45, 0.98, [255, 255, 255], 255);
+    }
+    // Hot intersection diamond glint
+    b.ellipse(26, 20, 4.2, 4.2, [255, 255, 255], 1.0, 0.0, [255, 255, 255], 255);
+  }
+
+  // 5. Electric / Valmont Whip Lash Arcs (2 frames, 68x32)
+  for (let f = 0; f < 2; f++) {
+    b.alloc(`vfx:slash_whip_${f}`, 68, 32, 0.12, 0.5);
+    const whipOuter = hexRgb('#9d4dff');
+    const whipMid = hexRgb('#4eeeff');
+    let prevX = 2;
+    let prevY = 16;
+    for (let seg = 1; seg <= 16; seg++) {
+      const t = seg / 16;
+      const nx = 2 + t * 63;
+      const amp = (4 + t * 8.5) * (f === 0 ? 1 : -1);
+      const jag = (hash2(seg, f, 731) - 0.5) * 4.5;
+      const ny = 16 + Math.sin(t * Math.PI * 2.2 + f * 1.4) * amp + jag;
+      const thick = 3.2 - t * 1.5;
+      b.line(prevX, prevY, nx, ny, whipOuter, thick + 2.2, 0.9, whipOuter, 210);
+      b.line(prevX, prevY, nx, ny, whipMid, thick, 0.95, whipMid, 245);
+      b.line(prevX, prevY, nx, ny, [255, 255, 255], Math.max(1, thick * 0.45), 1.0, [255, 255, 255], 255);
+      if (seg % 4 === 0 && seg < 15) {
+        b.line(nx, ny, nx + 5, ny + (seg % 8 === 0 ? -7 : 7), whipMid, 1, 0.94, whipMid, 210);
+      }
+      prevX = nx;
+      prevY = ny;
+    }
+    // Crackling whip tip starburst
+    b.ellipse(prevX, prevY, 4.0, 4.0, [255, 255, 255], 1.0, 0, whipMid, 255);
+  }
+
+  // 6. Held Metallic Buckler / Tower Shield Guard Flash (22x34)
+  b.alloc('vfx:shield_guard', 22, 34, 0.45, 0.5);
+  const shSteel = hexRgb('#5c7299');
+  const shHi = hexRgb('#b8d0f2');
+  const shGold = hexRgb('#f0be4a');
+  const shWard = hexRgb('#6cf2ff');
+  b.polygon([[3, 5], [14, 2], [18, 10], [18, 24], [13, 32], [3, 28], [5, 17]], shSteel, 0.86, 0.18);
+  b.polygon([[5, 7], [13, 5], [15, 12], [15, 22], [12, 28], [6, 25]], shHi, 0.92, 0.14);
+  b.line(13, 3, 18, 10, shGold, 2.2, 0.96, shGold, 150);
+  b.line(18, 10, 18, 24, shGold, 2.2, 0.96, shGold, 165);
+  b.line(18, 24, 13, 31, shGold, 2.2, 0.96, shGold, 150);
+  // Kinetic ward shimmer along leading shield face
+  b.line(19, 6, 21, 17, shWard, 2, 0.98, shWard, 240);
+  b.line(21, 17, 19, 28, shWard, 2, 0.98, shWard, 240);
+  b.addOutline([12, 14, 24]);
+  b.bakeRegionNormals(3.3, false);
+
+  // 7. Explosive Golden Parry Burst Starburst (60x60)
+  b.alloc('vfx:parry_burst', 60, 60, 0.5, 0.5);
+  for (let y = 0; y < 60; y++) {
+    for (let x = 0; x < 60; x++) {
+      const dx = x - 29.5;
+      const dy = y - 29.5;
+      const r = Math.hypot(dx, dy);
+      const ang = Math.atan2(dy, dx);
+      const cross4 = Math.pow(Math.abs(Math.cos(ang * 2)), 14) * Math.max(0, 1 - r / 29);
+      const diag4 = Math.pow(Math.abs(Math.cos(ang * 2 + Math.PI * 0.5)), 18) * Math.max(0, 1 - r / 21) * 0.72;
+      const outerRing = Math.exp(-Math.pow((r - 22.5) / 2.2, 2)) * 0.92;
+      const innerRing = Math.exp(-Math.pow((r - 12.0) / 1.8, 2)) * 0.65;
+      const core = r < 7.5 ? 1 - r / 7.5 : 0;
+      const intensity = Math.min(1, core * 1.2 + cross4 * 1.15 + diag4 + outerRing + innerRing);
+      if (intensity > 0.08) {
+        const cr = 255;
+        const cg = clampByte(205 + intensity * 50);
+        const cb = clampByte(75 + intensity * 180);
+        const alpha = clampByte(intensity * 255);
+        b.px(x, y, cr, cg, cb, alpha, 0.95, cr, cg, cb, alpha);
+        b.setNormalDirect(x, y, 0, 0, 1);
+      }
+    }
+  }
+
+  // 8. Tumbling Wooden Door Splinters (3 variants)
+  const spDark = hexRgb('#422616');
+  const spMid = hexRgb('#7d4b2a');
+  const spHi = hexRgb('#ba7d4c');
+  b.alloc('vfx:wood_splinter_0', 8, 4, 0.5, 0.5);
+  b.polygon([[0, 2], [2, 0], [7, 1], [6, 3], [1, 3]], spMid, 0.85, 0.14);
+  b.line(1, 1, 6, 1, spHi, 1, 0.94);
+  b.bakeRegionNormals(3.0, false);
+
+  b.alloc('vfx:wood_splinter_1', 10, 4, 0.5, 0.5);
+  b.polygon([[0, 1], [4, 0], [9, 2], [6, 3], [1, 3]], spMid, 0.86, 0.14);
+  b.line(2, 1, 8, 2, spHi, 1, 0.95);
+  b.pxRgb(0, 1, spDark, 0.6);
+  b.bakeRegionNormals(3.0, false);
+
+  b.alloc('vfx:wood_splinter_2', 6, 5, 0.5, 0.5);
+  b.polygon([[0, 3], [2, 0], [5, 1], [4, 4], [1, 4]], spDark, 0.84, 0.16);
+  b.line(2, 1, 4, 2, spHi, 1, 0.94);
+  b.bakeRegionNormals(3.0, false);
+
+  // 9. Meaty / Bone / Armor Enemy Death Gibs (3 variants)
+  b.alloc('vfx:gib_0', 6, 5, 0.5, 0.5);
+  b.ellipse(3, 2.5, 2.4, 2.0, hexRgb('#8c1828'), 0.85, 0.15);
+  b.pxRgb(2, 1, hexRgb('#e03a4f'), 0.96);
+  b.addOutline([18, 6, 12]);
+  b.bakeRegionNormals(3.0, false);
+
+  b.alloc('vfx:gib_1', 7, 6, 0.5, 0.5);
+  b.line(1, 4, 5, 1, hexRgb('#ded4bf'), 2.2, 0.92);
+  b.pxRgb(1, 4, hexRgb('#a81a2c'), 0.88);
+  b.addOutline([18, 12, 16]);
+  b.bakeRegionNormals(3.0, false);
+
+  b.alloc('vfx:gib_2', 5, 5, 0.5, 0.5);
+  b.polygon([[0, 2], [2, 0], [4, 2], [3, 4], [1, 4]], hexRgb('#5c6782'), 0.9, 0.14);
+  b.pxRgb(2, 1, hexRgb('#b8c7e6'), 0.98);
+  b.bakeRegionNormals(3.2, false);
+
+  // 10. Ascending Cyan-Violet Soul Wisp (12x16)
+  b.alloc('vfx:soul_wisp', 12, 16, 0.5, 0.65);
+  const wispHalo = hexRgb('#6f52ff');
+  const wispCyan = hexRgb('#4eeeff');
+  b.polygon([[6, 1], [9, 6], [9, 10], [6, 14], [3, 10], [3, 6]], wispHalo, 0.78, 0.18, wispHalo, 190);
+  b.ellipse(6, 9, 3.0, 3.6, wispCyan, 0.92, 0.08, wispCyan, 245);
+  b.ellipse(6, 8.5, 1.5, 2.0, [255, 255, 255], 1.0, 0.0, [255, 255, 255], 255);
+
+  // 11. Persistent Ground Decals (3 Blood Spatters, Scorch Mark, Frost Rime)
+  const paintBloodDecal = (key: string, w: number, h: number, seed: number): void => {
+    b.alloc(key, w, h, 0.5, 0.5);
+    const bDark = hexRgb('#590915');
+    const bMid = hexRgb('#9e1326');
+    const bHi = hexRgb('#cf233a');
+    const cx = (w - 1) * 0.5;
+    const cy = (h - 1) * 0.5;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const nx = (x - cx) / (w * 0.46);
+        const ny = (y - cy) / (h * 0.42);
+        const d = Math.hypot(nx, ny);
+        const n = hash2(x, y, seed);
+        if (d < 0.82 + (n - 0.5) * 0.42) {
+          const col = d < 0.45 ? bDark : n > 0.75 ? bHi : bMid;
+          const a = d < 0.65 ? 230 : clampByte((1.15 - d) * 210);
+          b.px(x, y, col[0], col[1], col[2], a, 0.45);
+          b.setNormalDirect(x, y, 0, -0.25, 0.97);
+        }
+      }
+    }
+  };
+  paintBloodDecal('vfx:decal_blood_0', 22, 8, 601);
+  paintBloodDecal('vfx:decal_blood_1', 28, 9, 607);
+  paintBloodDecal('vfx:decal_blood_2', 18, 7, 613);
+
+  b.alloc('vfx:decal_scorch', 28, 10, 0.5, 0.5);
+  for (let y = 0; y < 10; y++) {
+    for (let x = 0; x < 28; x++) {
+      const d = Math.hypot((x - 13.5) / 12.8, (y - 4.5) / 4.2);
+      const n = hash2(x, y, 631);
+      if (d < 0.9 + (n - 0.5) * 0.35) {
+        const isEmber = d < 0.38 && n > 0.83;
+        if (isEmber) {
+          b.px(x, y, 255, 118, 36, 235, 0.6, 255, 96, 24, 210);
+        } else {
+          const v = clampByte(14 + (1 - Math.min(1, d)) * 18);
+          b.px(x, y, v, v - 2, v + 2, clampByte((1.1 - d * 0.85) * 225), 0.35);
+        }
+        b.setNormalDirect(x, y, 0, -0.2, 0.98);
+      }
+    }
+  }
+
+  b.alloc('vfx:decal_frost', 26, 10, 0.5, 0.5);
+  for (let y = 0; y < 10; y++) {
+    for (let x = 0; x < 26; x++) {
+      const d = Math.hypot((x - 12.5) / 11.8, (y - 4.5) / 4.2);
+      const spike = Math.abs(Math.sin(Math.atan2(y - 4.5, x - 12.5) * 5)) * 0.25;
+      const n = hash2(x, y, 647);
+      if (d < 0.78 + spike + (n - 0.5) * 0.22) {
+        const core = d < 0.45 || n > 0.78;
+        const col = core ? hexRgb('#d8f8ff') : hexRgb('#5cd4ff');
+        const a = clampByte((1.15 - d * 0.8) * 215);
+        b.px(x, y, col[0], col[1], col[2], a, 0.72, col[0], col[1], col[2], clampByte(a * 0.55));
+        b.setNormalDirect(x, y, 0, -0.3, 0.95);
+      }
+    }
+  }
+
+  // 12. 4-Frame Spinning Metallic Gold Coin (`vfx:coin_0..3`, 10x10)
+  const coinWidths = [3.6, 2.3, 0.9, 2.3] as const;
+  for (let f = 0; f < 4; f++) {
+    b.alloc(`vfx:coin_${f}`, 10, 10, 0.5, 0.5);
+    const rx = coinWidths[f];
+    const cDark = hexRgb('#9e6814');
+    const cMid = hexRgb('#f2be35');
+    const cHi = hexRgb('#fff7a8');
+    b.ellipse(4.5, 4.5, rx + 0.5, 3.8, cDark, 0.85, 0.14);
+    b.ellipse(4.5, 4.5, rx, 3.3, cMid, 0.92, 0.1, cMid, 165);
+    if (f === 2) {
+      b.line(4.5, 1.5, 4.5, 7.5, cHi, 1.2, 1.0, cHi, 255);
+    } else {
+      b.ellipse(4.5 - (f === 3 ? -0.6 : 0.6), 3.6, Math.max(0.7, rx * 0.45), 1.4, cHi, 0.98, 0.04, cHi, 235);
+    }
+    b.addOutline([20, 14, 12]);
+    b.bakeRegionNormals(3.0, false);
+  }
+
+  // 13. World-Space Floating Curse Skull Above Hero's Head (18x20)
+  b.alloc('vfx:curse_skull_world', 18, 20, 0.5, 0.5);
+  const csDark = hexRgb('#695278');
+  const csBone = hexRgb('#d8cae6');
+  const csHi = hexRgb('#fff7ff');
+  const csEye = hexRgb('#ff1f4f');
+  const csEyeCore = hexRgb('#ff9cb5');
+  // Eerie dark crimson-violet aura behind cranium
+  b.ellipse(8.5, 9, 8.2, 8.8, hexRgb('#4d0d2e'), 0.4, 0.1, hexRgb('#a81648'), 120);
+  // Sculpted gothic cranium & cheekbones
+  b.ellipse(8.5, 7.5, 6.2, 5.6, csBone, 0.88, 0.16);
+  b.ellipse(8.0, 5.6, 4.2, 2.8, csHi, 0.94, 0.08);
+  b.rect(4, 10, 10, 4, csDark, 0.84);
+  b.rect(5, 14, 8, 4, csBone, 0.86);
+  // Jagged teeth notches
+  b.pxRgb(7, 15, hexRgb('#1a0818'), 0.2);
+  b.pxRgb(10, 15, hexRgb('#1a0818'), 0.2);
+  b.pxRgb(7, 17, hexRgb('#1a0818'), 0.2);
+  b.pxRgb(10, 17, hexRgb('#1a0818'), 0.2);
+  // Forehead crack + nasal cavity
+  b.line(11, 3, 9, 6, csDark, 1, 0.45);
+  b.pxRgb(8, 12, hexRgb('#1a0818'), 0.18);
+  b.pxRgb(9, 12, hexRgb('#1a0818'), 0.18);
+  // Burning crimson-magenta hollow eye sockets!
+  b.rect(4, 8, 3, 3, csEye, 0.98, 0, csEye, 255);
+  b.rect(11, 8, 3, 3, csEye, 0.98, 0, csEye, 255);
+  b.pxRgb(5, 9, csEyeCore, 1.0, csEyeCore, 255);
+  b.pxRgb(12, 9, csEyeCore, 1.0, csEyeCore, 255);
+  b.addOutline([26, 4, 20]);
+  b.bakeRegionNormals(2.6, false);
+
+  // 14. Crimson Unparriable Danger Telegraph `!!` (22x24)
+  b.alloc('vfx:telegraph_danger', 22, 24, 0.5, 1.0);
+  const dOuter = hexRgb('#d9142c');
+  const dMid = hexRgb('#ff4624');
+  const dCore = hexRgb('#fff2b2');
+  // Jagged crimson danger glow behind twin exclamation marks
+  b.line(7, 2, 7, 21, dOuter, 6, 0.88, dOuter, 215);
+  b.line(14, 2, 14, 21, dOuter, 6, 0.88, dOuter, 215);
+  for (const bx of [6, 13]) {
+    b.rect(bx, 3, 3, 11, dMid, 0.96, 0, dMid, 255);
+    b.rect(bx + 1, 4, 1, 9, dCore, 1.0, 0, dCore, 255);
+    b.rect(bx, 16, 3, 4, dMid, 0.96, 0, dMid, 255);
+    b.rect(bx + 1, 17, 1, 2, dCore, 1.0, 0, dCore, 255);
+  }
+  b.addOutline([28, 6, 12]);
+  b.bakeRegionNormals(2.0, false);
+
   // Crisp 5x7 Pixel Bitmap Font Glyphs for floating world combat numbers & CRIT/PARRY popups!
   const FONT_GLYPHS: Record<string, string[]> = {
     '0': ['01110', '10001', '10011', '10101', '11001', '10001', '01110'],
@@ -2876,6 +4053,21 @@ export function getAtlasKeys(): string[] {
   for (const t of TILESET_THEMES) {
     keys.push(
       `tile:${t}:solid_top`,
+      `tile:${t}:solid_top_0`,
+      `tile:${t}:solid_top_1`,
+      `tile:${t}:solid_top_2`,
+      `tile:${t}:solid_top_3`,
+      `tile:${t}:corner_tl`,
+      `tile:${t}:corner_tr`,
+      `tile:${t}:corner_bl`,
+      `tile:${t}:corner_br`,
+      `tile:${t}:edge_left`,
+      `tile:${t}:edge_right`,
+      `tile:${t}:solid_ceil_0`,
+      `tile:${t}:solid_ceil_1`,
+      `tile:${t}:plat_left`,
+      `tile:${t}:plat_mid`,
+      `tile:${t}:plat_right`,
       `tile:${t}:solid_mid`,
       `tile:${t}:solid_deep`,
       `tile:${t}:solid_var`,
@@ -2937,6 +4129,26 @@ export function getAtlasKeys(): string[] {
     'prop:pillar_ornate',
     'prop:chain_hook',
     'prop:gothic_arch',
+    'prop:prison_jars',
+    'prop:iron_cell_bars',
+    'prop:dead_tree',
+    'prop:gibbet_cage',
+    'prop:sewer_grate',
+    'prop:pipe_valve',
+    'prop:wind_banner',
+    'prop:wind_banner_0',
+    'prop:wind_banner_1',
+    'prop:wind_banner_2',
+    'prop:clock_rose_window',
+    'prop:clock_pendulum',
+    'prop:wall_gear',
+    'prop:wall_gear_lg',
+    'prop:wall_gear_sm',
+    'prop:castle_stained_glass',
+    'prop:royal_candelabra',
+    'prop:shop_stall',
+    'prop:npc_merchant',
+    'prop:recycling_tube',
     'hero:idle_0',
     'hero:idle_1',
     'hero:idle_2',
@@ -2953,6 +4165,7 @@ export function getAtlasKeys(): string[] {
     'hero:roll_0',
     'hero:roll_1',
     'hero:roll_2',
+    'hero:roll_3',
     'hero:dive_slam',
     'hero:attack_0',
     'hero:attack_1',
@@ -2968,11 +4181,41 @@ export function getAtlasKeys(): string[] {
   );
 
   for (const id of ENEMY_ARCHETYPE_IDS) {
-    keys.push(`enemy:${id}`, `enemy:${id}_0`, `enemy:${id}_1`, id);
+    keys.push(
+      `enemy:${id}`,
+      `enemy:${id}_0`,
+      `enemy:${id}_1`,
+      `enemy:${id}_walk0`,
+      `enemy:${id}_walk1`,
+      `enemy:${id}_windup`,
+      `enemy:${id}_attack`,
+      id
+    );
   }
   for (const id of BOSS_ARCHETYPE_IDS) {
-    keys.push(`boss:${id}`, `boss:${id}_0`, `boss:${id}_1`, id);
+    keys.push(
+      `boss:${id}`,
+      `boss:${id}_0`,
+      `boss:${id}_1`,
+      `boss:${id}_idle0`,
+      `boss:${id}_idle1`,
+      `boss:${id}_walk`,
+      `boss:${id}_windup`,
+      `boss:${id}_attack`,
+      id
+    );
   }
+  keys.push(
+    'boss:Behemoth_slam',
+    'boss:Behemoth_dash',
+    'boss:Behemoth_roar',
+    'boss:TimeKeeper_slash',
+    'boss:TimeKeeper_dash',
+    'boss:TimeKeeper_throw',
+    'boss:KingsHand_cleave',
+    'boss:KingsHand_charge',
+    'boss:KingsHand_slam'
+  );
 
   keys.push(
     'pickup:gold',
@@ -3011,7 +4254,38 @@ export function getAtlasKeys(): string[] {
     'vfx:slash_1',
     'vfx:slash_2',
     'vfx:slash_heavy',
+    'vfx:slash_blade_0',
+    'vfx:slash_blade_1',
+    'vfx:slash_blade_2',
+    'vfx:slash_heavy_0',
+    'vfx:slash_heavy_1',
+    'vfx:slash_thrust_0',
+    'vfx:slash_thrust_1',
+    'vfx:slash_twin_0',
+    'vfx:slash_twin_1',
+    'vfx:slash_whip_0',
+    'vfx:slash_whip_1',
+    'vfx:shield_guard',
+    'vfx:parry_burst',
+    'vfx:wood_splinter_0',
+    'vfx:wood_splinter_1',
+    'vfx:wood_splinter_2',
+    'vfx:gib_0',
+    'vfx:gib_1',
+    'vfx:gib_2',
+    'vfx:soul_wisp',
+    'vfx:decal_blood_0',
+    'vfx:decal_blood_1',
+    'vfx:decal_blood_2',
+    'vfx:decal_scorch',
+    'vfx:decal_frost',
+    'vfx:coin_0',
+    'vfx:coin_1',
+    'vfx:coin_2',
+    'vfx:coin_3',
+    'vfx:curse_skull_world',
     'vfx:telegraph',
+    'vfx:telegraph_danger',
     'vfx:parry_ring',
     'vfx:aura_ring',
     'vfx:shield_dome',
@@ -3142,6 +4416,7 @@ interface StampBakedOpts {
   shiftY?: number;
   topSwayX?: number;
   topSwayCutoffFrac?: number;
+  rotate180?: boolean;
   tintMul?: readonly [number, number, number];
   desaturate?: number;
   emScale?: number;
@@ -3172,6 +4447,7 @@ function stampBakedSprite(
   const shiftY = opts.shiftY ?? 0;
   const topSwayX = opts.topSwayX ?? 0;
   const swayCutY = Math.floor(h * (opts.topSwayCutoffFrac ?? 0.45));
+  const rot180 = opts.rotate180 === true;
   const tint = opts.tintMul;
   const desat = opts.desaturate ?? 0;
   const emScale = opts.emScale ?? 1.0;
@@ -3210,8 +4486,10 @@ function stampBakedSprite(
       const pidx = indices[rowOff + x];
       if (pidx === 0) continue;
 
-      const dx = x + shiftX + rowSway;
-      const dy = y + shiftY;
+      const rx = rot180 ? w - 1 - x : x;
+      const ry = rot180 ? h - 1 - y : y;
+      const dx = rx + shiftX + rowSway;
+      const dy = ry + shiftY;
       if (dx < 0 || dx >= w || dy < 0 || dy >= h) continue;
 
       let r = palR[pidx];
@@ -3329,42 +4607,48 @@ function overlayBakedBuiltinArt(b: PixelAtlasBuilder): void {
     stampBakedSprite(b, 'prop:gothic_arch', S['prop:gothic_arch'], { normalStrength: 2.8 });
   }
 
-  // 2. Hero Multi-Frame AAA Poses (with integrated cyan-amber flame head!)
-  const hIdle = S['hero:idle_0'];
-  const hRun = S['hero:run_0'];
-  const hAtk = S['hero:attack_0'];
-  const hJump = S['hero:jump'];
-  if (hIdle) {
-    stampBakedSprite(b, 'hero:idle_0', hIdle, { topSwayX: 0, emScale: 1.05 });
-    stampBakedSprite(b, 'hero:idle_1', hIdle, { shiftY: 1, topSwayX: 1, topSwayCutoffFrac: 0.36, emScale: 1.15 });
-    stampBakedSprite(b, 'hero:idle_2', hIdle, { shiftY: 1, topSwayX: -1, topSwayCutoffFrac: 0.36, emScale: 1.08 });
-    stampBakedSprite(b, 'hero:idle_3', hIdle, { shiftY: 0, topSwayX: 1, topSwayCutoffFrac: 0.36, emScale: 1.12 });
-    stampBakedSprite(b, 'hero:parry', hIdle, { shiftX: 1, heroAccent: 'parry', emScale: 1.18 });
-    stampBakedSprite(b, 'hero:heal', hIdle, { heroAccent: 'heal', tintMul: [0.94, 1.08, 0.98], emScale: 1.2 });
-    stampBakedSprite(b, 'hero:hurt', hIdle, { shiftX: -2, tintMul: [1.22, 0.85, 0.85], heroAccent: 'hurt' });
-  }
-  if (hRun) {
-    const runBobs = [-1, 0, 1, 0, -1, 1];
-    const runSway = [-1, 0, 1, 1, 0, -1];
-    for (let i = 0; i < 6; i++) {
-      stampBakedSprite(b, `hero:run_${i}`, hRun, {
-        shiftY: runBobs[i],
-        topSwayX: runSway[i],
-        topSwayCutoffFrac: 0.42,
-        emScale: 1.05 + (i % 2) * 0.1,
-      });
+  // 2. Hero TRUE Multi-Frame Headless Poses (18 direct baked frames + derived smooth transitions!)
+  //    Live animated `hero:head_flame_0..3` attaches cleanly using `BUILTIN_HERO_HEAD_ANCHORS`!
+  for (let i = 0; i < 6; i++) {
+    const src = S[`hero:run_${i}`] ?? S['hero:run_0'];
+    if (src) {
+      stampBakedSprite(b, `hero:run_${i}`, src, { emScale: 1.15, normalStrength: 2.7 });
     }
   }
-  if (hAtk) {
-    stampBakedSprite(b, 'hero:attack_0', hAtk, { shiftX: 1, heroAccent: 'attack0', emScale: 1.15 });
-    stampBakedSprite(b, 'hero:attack_1', hAtk, { shiftX: 2, shiftY: -1, heroAccent: 'attack1', emScale: 1.25 });
-    stampBakedSprite(b, 'hero:attack_2', hAtk, { shiftX: 2, heroAccent: 'attack2', emScale: 1.3 });
-    stampBakedSprite(b, 'hero:dive_slam', hAtk, { shiftY: 1, heroAccent: 'dive', tintMul: [0.92, 1.04, 1.14], emScale: 1.25 });
+  const hIdle0 = S['hero:idle_0'];
+  const hIdle1 = S['hero:idle_1'] ?? hIdle0;
+  if (hIdle0) {
+    stampBakedSprite(b, 'hero:idle_0', hIdle0, { emScale: 1.15, normalStrength: 2.7 });
+    stampBakedSprite(b, 'hero:idle_1', hIdle1, { emScale: 1.18, normalStrength: 2.7 });
+    stampBakedSprite(b, 'hero:idle_2', hIdle1, { shiftY: 1, emScale: 1.12, normalStrength: 2.7 });
+    stampBakedSprite(b, 'hero:idle_3', hIdle0, { topSwayX: 1, topSwayCutoffFrac: 0.35, emScale: 1.15, normalStrength: 2.7 });
+    stampBakedSprite(b, 'hero:hurt', hIdle0, { shiftX: -2, tintMul: [1.26, 0.82, 0.82], emScale: 1.1 });
   }
-  if (hJump) {
-    stampBakedSprite(b, 'hero:jump', hJump, { emScale: 1.12 });
-    stampBakedSprite(b, 'hero:fall', hJump, { shiftY: 1, topSwayX: -1, topSwayCutoffFrac: 0.48, emScale: 1.08 });
-    stampBakedSprite(b, 'hero:wall_slide', hJump, { shiftX: 1, emScale: 1.05 });
+  const directHeroKeys: ReadonlyArray<readonly [string, string, StampBakedOpts]> = [
+    ['hero:attack_0', 'hero:attack_0', { emScale: 1.2, normalStrength: 2.8 }],
+    ['hero:attack_1', 'hero:attack_1', { emScale: 1.2, normalStrength: 2.8 }],
+    ['hero:attack_2', 'hero:attack_2', { emScale: 1.25, normalStrength: 2.8 }],
+    ['hero:parry', 'hero:parry', { emScale: 1.2, normalStrength: 2.8 }],
+    ['hero:dive_slam', 'hero:dive_slam', { emScale: 1.25, normalStrength: 2.8 }],
+    ['hero:heal', 'hero:heal', { emScale: 1.35, normalStrength: 2.7 }],
+    ['hero:jump', 'hero:jump', { emScale: 1.15, normalStrength: 2.7 }],
+    ['hero:fall', 'hero:fall', { emScale: 1.15, normalStrength: 2.7 }],
+    ['hero:roll_0', 'hero:roll_0', { emScale: 1.2, normalStrength: 2.8 }],
+    ['hero:roll_1', 'hero:roll_1', { emScale: 1.2, normalStrength: 2.8 }],
+  ];
+  for (const [dstKey, srcKey, opts] of directHeroKeys) {
+    if (S[srcKey]) stampBakedSprite(b, dstKey, S[srcKey], opts);
+  }
+  if (S['hero:roll_0']) {
+    stampBakedSprite(b, 'hero:roll_2', S['hero:roll_0'], { rotate180: true, emScale: 1.25, normalStrength: 2.8 });
+  }
+  if (S['hero:roll_1']) {
+    stampBakedSprite(b, 'hero:roll_3', S['hero:roll_1'], { shiftX: 1, emScale: 1.18, normalStrength: 2.8 });
+  } else if (S['hero:roll_0']) {
+    stampBakedSprite(b, 'hero:roll_3', S['hero:roll_0'], { emScale: 1.15, normalStrength: 2.8 });
+  }
+  if (S['hero:jump']) {
+    stampBakedSprite(b, 'hero:wall_slide', S['hero:jump'], { shiftX: 1, emScale: 1.15, normalStrength: 2.7 });
   }
 
   // 3. Dungeon Props, Doors, Chests, Teleporters, Fountain & Passage NPCs
@@ -3459,83 +4743,110 @@ function overlayBakedBuiltinArt(b: PixelAtlasBuilder): void {
     });
   }
 
-  // 4. All 18 Enemy Archetypes (12 direct AAA sheets + 6 distinct palette-graded cousins!)
-  const enemyMap: ReadonlyArray<{
-    id: string;
-    srcKey: string;
-    tint?: readonly [number, number, number];
-    warm?: StampBakedOpts['warmCoreBoost'];
-  }> = [
-    { id: 'Zombie', srcKey: 'enemy:Zombie_0', warm: 'fire' },
-    { id: 'Runner', srcKey: 'enemy:Zombie_0', tint: [1.24, 0.76, 0.80], warm: 'red_eye' },
-    { id: 'Archer', srcKey: 'enemy:Archer_0', warm: 'red_eye' },
-    { id: 'Shield', srcKey: 'enemy:Shield_0', warm: 'fire' },
-    { id: 'Mage360', srcKey: 'enemy:Mage360_0', warm: 'magic_violet' },
-    { id: 'Grenader', srcKey: 'enemy:Grenader_0', warm: 'fire' },
-    { id: 'ClusterGrenader', srcKey: 'enemy:Grenader_0', tint: [0.88, 0.90, 1.14], warm: 'fire' },
-    { id: 'CastleKnight', srcKey: 'enemy:CastleKnight_0', warm: 'cyan_rune' },
-    { id: 'Ninja', srcKey: 'enemy:Ninja_0', warm: 'red_eye' },
-    { id: 'Comboter', srcKey: 'enemy:Ninja_0', tint: [1.26, 0.80, 0.84], warm: 'fire' },
-    { id: 'PirateChief', srcKey: 'enemy:PirateChief_0', warm: 'fire' },
-    { id: 'Lancer', srcKey: 'enemy:Lancer_0', warm: 'cyan_rune' },
-    { id: 'LeapingDuelyst', srcKey: 'enemy:Lancer_0', tint: [0.92, 0.84, 1.22], warm: 'magic_violet' },
-    { id: 'Worm', srcKey: 'enemy:Worm_0' },
-    { id: 'Scorpio', srcKey: 'enemy:Worm_0', tint: [1.18, 0.82, 1.22], warm: 'magic_violet' },
-    { id: 'BatKamikaze', srcKey: 'enemy:BatKamikaze_0', warm: 'fire' },
-    { id: 'BatDasher', srcKey: 'enemy:BatKamikaze_0', tint: [1.30, 0.72, 1.16], warm: 'magic_violet' },
-    { id: 'Protector', srcKey: 'enemy:Protector_0', warm: 'cyan_rune' },
-  ];
+  // 4. ALL 18 Enemy Archetypes — 100% Distinct Multi-Pose Silhouettes (ZERO Palette Clones!)
+  const enemyWarmMap: Partial<Record<string, StampBakedOpts['warmCoreBoost']>> = {
+    Zombie: 'fire',
+    Runner: 'red_eye',
+    Archer: 'fire',
+    Mage360: 'cyan_rune',
+    Grenader: 'fire',
+    ClusterGrenader: 'fire',
+    CastleKnight: 'fire',
+    Comboter: 'fire',
+    PirateChief: 'fire',
+    LeapingDuelyst: 'cyan_rune',
+    BatKamikaze: 'fire',
+    BatDasher: 'red_eye',
+    Protector: 'cyan_rune',
+  };
 
-  for (const em of enemyMap) {
-    const src = S[em.srcKey];
-    if (!src) continue;
-    stampBakedSprite(b, `enemy:${em.id}_0`, src, {
-      tintMul: em.tint,
-      warmCoreBoost: em.warm,
-      emScale: 1.08,
-    });
-    stampBakedSprite(b, `enemy:${em.id}_1`, src, {
-      shiftX: 1,
-      shiftY: em.id.startsWith('Bat') ? -1 : 0,
-      topSwayX: 1,
-      topSwayCutoffFrac: 0.55,
-      tintMul: em.tint,
-      warmCoreBoost: em.warm,
-      emScale: 1.24,
-    });
-    b.regions[`enemy:${em.id}`] = { ...b.regions[`enemy:${em.id}_0`], key: `enemy:${em.id}` };
-    b.regions[em.id] = { ...b.regions[`enemy:${em.id}_0`], key: em.id };
+  for (const id of ENEMY_ARCHETYPE_IDS) {
+    const warm = enemyWarmMap[id];
+    const spWalk0 = S[`enemy:${id}_walk0`];
+    const spWalk1 = S[`enemy:${id}_walk1`];
+    const spWindup = S[`enemy:${id}_windup`];
+    const spAttack = S[`enemy:${id}_attack`];
+    if (!spWalk0) continue;
+
+    stampBakedSprite(b, `enemy:${id}_walk0`, spWalk0, { warmCoreBoost: warm, emScale: 1.12 });
+    if (spWalk1) {
+      stampBakedSprite(b, `enemy:${id}_walk1`, spWalk1, { warmCoreBoost: warm, emScale: 1.12 });
+    } else {
+      // Secondary 3-frame archetypes: crisp stride shift for walk1
+      stampBakedSprite(b, `enemy:${id}_walk1`, spWalk0, {
+        shiftX: 1,
+        shiftY: id.startsWith('Bat') ? -2 : -1,
+        topSwayX: 1,
+        topSwayCutoffFrac: 0.55,
+        warmCoreBoost: warm,
+        emScale: 1.15,
+      });
+    }
+    if (spWindup) {
+      stampBakedSprite(b, `enemy:${id}_windup`, spWindup, { warmCoreBoost: warm, emScale: 1.28 });
+    } else {
+      b.regions[`enemy:${id}_windup`] = { ...b.regions[`enemy:${id}_walk0`], key: `enemy:${id}_windup` };
+    }
+    if (spAttack) {
+      stampBakedSprite(b, `enemy:${id}_attack`, spAttack, { warmCoreBoost: warm, emScale: 1.32 });
+    } else {
+      b.regions[`enemy:${id}_attack`] = { ...b.regions[`enemy:${id}_walk1`], key: `enemy:${id}_attack` };
+    }
+
+    // Legacy key compatibility (`enemy:<id>`, `enemy:<id>_0`, `enemy:<id>_1`, `<id>`)
+    b.regions[`enemy:${id}_0`] = { ...b.regions[`enemy:${id}_walk0`], key: `enemy:${id}_0` };
+    b.regions[`enemy:${id}_1`] = { ...b.regions[`enemy:${id}_attack`], key: `enemy:${id}_1` };
+    b.regions[`enemy:${id}`] = { ...b.regions[`enemy:${id}_walk0`], key: `enemy:${id}` };
+    b.regions[id] = { ...b.regions[`enemy:${id}_walk0`], key: id };
   }
 
-  // 5. All 3 Monumental Multi-Phase Bosses
-  const bossSpecs: ReadonlyArray<{
-    id: string;
-    srcKey: string;
-    warm?: StampBakedOpts['warmCoreBoost'];
-  }> = [
-    { id: 'Behemoth', srcKey: 'boss:Behemoth_0', warm: 'fire' },
-    { id: 'TimeKeeper', srcKey: 'boss:TimeKeeper_0', warm: 'cyan_rune' },
-    { id: 'KingsHand', srcKey: 'boss:KingsHand_0', warm: 'cyan_rune' },
-  ];
+  // 5. ALL 3 Monumental Multi-Phase Bosses — 4 TRUE Combat Poses Each + Action Aliases!
+  // 5A. Behemoth (Iron Concierge)
+  if (S['boss:Behemoth_idle0']) {
+    stampBakedSprite(b, 'boss:Behemoth_idle0', S['boss:Behemoth_idle0'], { warmCoreBoost: 'fire', normalStrength: 2.9, emScale: 1.25 });
+    stampBakedSprite(b, 'boss:Behemoth_idle1', S['boss:Behemoth_idle1'] ?? S['boss:Behemoth_idle0'], { warmCoreBoost: 'fire', normalStrength: 2.9, emScale: 1.25 });
+    stampBakedSprite(b, 'boss:Behemoth_windup', S['boss:Behemoth_windup'] ?? S['boss:Behemoth_idle0'], { warmCoreBoost: 'fire', normalStrength: 2.9, emScale: 1.38 });
+    stampBakedSprite(b, 'boss:Behemoth_attack', S['boss:Behemoth_attack'] ?? S['boss:Behemoth_idle0'], { warmCoreBoost: 'fire', normalStrength: 2.9, emScale: 1.42 });
+    stampBakedSprite(b, 'boss:Behemoth_dash', S['boss:Behemoth_idle1'] ?? S['boss:Behemoth_idle0'], { shiftX: 2, warmCoreBoost: 'fire', normalStrength: 2.9, emScale: 1.35 });
+    stampBakedSprite(b, 'boss:Behemoth_roar', S['boss:Behemoth_windup'] ?? S['boss:Behemoth_idle0'], { warmCoreBoost: 'fire', tintMul: [1.10, 0.96, 0.90], normalStrength: 2.9, emScale: 1.5 });
+    b.regions['boss:Behemoth_walk'] = { ...b.regions['boss:Behemoth_idle1'], key: 'boss:Behemoth_walk' };
+    b.regions['boss:Behemoth_slam'] = { ...b.regions['boss:Behemoth_attack'], key: 'boss:Behemoth_slam' };
+    b.regions['boss:Behemoth_0'] = { ...b.regions['boss:Behemoth_idle0'], key: 'boss:Behemoth_0' };
+    b.regions['boss:Behemoth_1'] = { ...b.regions['boss:Behemoth_attack'], key: 'boss:Behemoth_1' };
+    b.regions['boss:Behemoth'] = { ...b.regions['boss:Behemoth_idle0'], key: 'boss:Behemoth' };
+    b.regions['Behemoth'] = { ...b.regions['boss:Behemoth_idle0'], key: 'Behemoth' };
+  }
 
-  for (const bs of bossSpecs) {
-    const src = S[bs.srcKey];
-    if (!src) continue;
-    stampBakedSprite(b, `boss:${bs.id}_0`, src, {
-      warmCoreBoost: bs.warm,
-      normalStrength: 2.9,
-      emScale: 1.15,
-    });
-    stampBakedSprite(b, `boss:${bs.id}_1`, src, {
-      shiftX: 2,
-      topSwayX: 1,
-      topSwayCutoffFrac: 0.52,
-      warmCoreBoost: bs.warm,
-      normalStrength: 2.9,
-      emScale: 1.32,
-    });
-    b.regions[`boss:${bs.id}`] = { ...b.regions[`boss:${bs.id}_0`], key: `boss:${bs.id}` };
-    b.regions[bs.id] = { ...b.regions[`boss:${bs.id}_0`], key: bs.id };
+  // 5B. TimeKeeper (Chrono Warden)
+  if (S['boss:TimeKeeper_idle0']) {
+    stampBakedSprite(b, 'boss:TimeKeeper_idle0', S['boss:TimeKeeper_idle0'], { warmCoreBoost: 'cyan_rune', normalStrength: 2.9, emScale: 1.2 });
+    stampBakedSprite(b, 'boss:TimeKeeper_idle1', S['boss:TimeKeeper_idle1'] ?? S['boss:TimeKeeper_idle0'], { warmCoreBoost: 'cyan_rune', normalStrength: 2.9, emScale: 1.22 });
+    stampBakedSprite(b, 'boss:TimeKeeper_windup', S['boss:TimeKeeper_windup'] ?? S['boss:TimeKeeper_idle0'], { warmCoreBoost: 'cyan_rune', normalStrength: 2.9, emScale: 1.35 });
+    stampBakedSprite(b, 'boss:TimeKeeper_attack', S['boss:TimeKeeper_attack'] ?? S['boss:TimeKeeper_idle0'], { warmCoreBoost: 'cyan_rune', normalStrength: 2.9, emScale: 1.4 });
+    b.regions['boss:TimeKeeper_walk'] = { ...b.regions['boss:TimeKeeper_idle1'], key: 'boss:TimeKeeper_walk' };
+    b.regions['boss:TimeKeeper_dash'] = { ...b.regions['boss:TimeKeeper_idle1'], key: 'boss:TimeKeeper_dash' };
+    b.regions['boss:TimeKeeper_slash'] = { ...b.regions['boss:TimeKeeper_attack'], key: 'boss:TimeKeeper_slash' };
+    b.regions['boss:TimeKeeper_throw'] = { ...b.regions['boss:TimeKeeper_windup'], key: 'boss:TimeKeeper_throw' };
+    b.regions['boss:TimeKeeper_0'] = { ...b.regions['boss:TimeKeeper_idle0'], key: 'boss:TimeKeeper_0' };
+    b.regions['boss:TimeKeeper_1'] = { ...b.regions['boss:TimeKeeper_attack'], key: 'boss:TimeKeeper_1' };
+    b.regions['boss:TimeKeeper'] = { ...b.regions['boss:TimeKeeper_idle0'], key: 'boss:TimeKeeper' };
+    b.regions['TimeKeeper'] = { ...b.regions['boss:TimeKeeper_idle0'], key: 'TimeKeeper' };
+  }
+
+  // 5C. KingsHand (Sovereign Hand)
+  if (S['boss:KingsHand_idle0']) {
+    stampBakedSprite(b, 'boss:KingsHand_idle0', S['boss:KingsHand_idle0'], { warmCoreBoost: 'cyan_rune', normalStrength: 2.9, emScale: 1.2 });
+    stampBakedSprite(b, 'boss:KingsHand_idle1', S['boss:KingsHand_idle0'], { shiftY: 1, topSwayX: 1, topSwayCutoffFrac: 0.45, warmCoreBoost: 'cyan_rune', normalStrength: 2.9, emScale: 1.24 });
+    stampBakedSprite(b, 'boss:KingsHand_windup', S['boss:KingsHand_windup'] ?? S['boss:KingsHand_idle0'], { warmCoreBoost: 'cyan_rune', normalStrength: 2.9, emScale: 1.32 });
+    stampBakedSprite(b, 'boss:KingsHand_cleave', S['boss:KingsHand_cleave'] ?? S['boss:KingsHand_idle0'], { warmCoreBoost: 'cyan_rune', normalStrength: 2.9, emScale: 1.38 });
+    stampBakedSprite(b, 'boss:KingsHand_charge', S['boss:KingsHand_charge'] ?? S['boss:KingsHand_idle0'], { warmCoreBoost: 'cyan_rune', normalStrength: 2.9, emScale: 1.30 });
+    b.regions['boss:KingsHand_walk'] = { ...b.regions['boss:KingsHand_charge'], key: 'boss:KingsHand_walk' };
+    b.regions['boss:KingsHand_attack'] = { ...b.regions['boss:KingsHand_cleave'], key: 'boss:KingsHand_attack' };
+    b.regions['boss:KingsHand_slam'] = { ...b.regions['boss:KingsHand_windup'], key: 'boss:KingsHand_slam' };
+    b.regions['boss:KingsHand_0'] = { ...b.regions['boss:KingsHand_idle0'], key: 'boss:KingsHand_0' };
+    b.regions['boss:KingsHand_1'] = { ...b.regions['boss:KingsHand_cleave'], key: 'boss:KingsHand_1' };
+    b.regions['boss:KingsHand'] = { ...b.regions['boss:KingsHand_idle0'], key: 'boss:KingsHand' };
+    b.regions['KingsHand'] = { ...b.regions['boss:KingsHand_idle0'], key: 'KingsHand' };
   }
 }
 
@@ -3574,15 +4885,51 @@ export function getBuiltinTitleBackdropDataUrl(): string | null {
 export function buildProceduralAtlas(): ProceduralAtlasData {
   const b = new PixelAtlasBuilder();
 
-  // 1. All 10 Biome Tilesets
+  // 1. All 10 Biome 12-Tile Autotile Sets (Top Variants, Chamfered Corners, Wall Edges, Ceilings, Catwalks)
   for (let ti = 0; ti < TILESET_THEMES.length; ti++) {
     const theme = TILESET_THEMES[ti];
     const pal = TILESET_PALETTES[theme];
     const seed = 101 + ti * 73;
 
-    b.alloc(`tile:${theme}:solid_top`, 24, 24, 0, 0);
-    paintBrickTile(b, pal, seed + 1, 'top');
+    // 4 varied weathered top floor slabs + legacy solid_top alias
+    for (let v = 0; v < 4; v++) {
+      b.alloc(`tile:${theme}:solid_top_${v}`, 24, 24, 0, 0);
+      paintBrickTile(b, pal, seed + 1 + v * 11, 'top', v);
+    }
+    b.alias(`tile:${theme}:solid_top`, `tile:${theme}:solid_top_0`);
 
+    // 4 chamfered organic stone outer corners
+    b.alloc(`tile:${theme}:corner_tl`, 24, 24, 0, 0);
+    paintCornerTile(b, pal, seed + 21, 'tl');
+    b.alloc(`tile:${theme}:corner_tr`, 24, 24, 0, 0);
+    paintCornerTile(b, pal, seed + 22, 'tr');
+    b.alloc(`tile:${theme}:corner_bl`, 24, 24, 0, 0);
+    paintCornerTile(b, pal, seed + 23, 'bl');
+    b.alloc(`tile:${theme}:corner_br`, 24, 24, 0, 0);
+    paintCornerTile(b, pal, seed + 24, 'br');
+
+    // 2 chiseled vertical wall edges
+    b.alloc(`tile:${theme}:edge_left`, 24, 24, 0, 0);
+    paintWallEdgeTile(b, pal, seed + 31, 'left');
+    b.alloc(`tile:${theme}:edge_right`, 24, 24, 0, 0);
+    paintWallEdgeTile(b, pal, seed + 32, 'right');
+
+    // 2 overhanging ceiling lips
+    b.alloc(`tile:${theme}:solid_ceil_0`, 24, 24, 0, 0);
+    paintCeilingTile(b, pal, seed + 41, 0);
+    b.alloc(`tile:${theme}:solid_ceil_1`, 24, 24, 0, 0);
+    paintCeilingTile(b, pal, seed + 42, 1);
+
+    // 3 one-way catwalk planks (left endcap, mid, right endcap) + legacy oneway alias
+    b.alloc(`tile:${theme}:plat_left`, 24, 24, 0, 0);
+    paintOneWayTile(b, pal, 'left');
+    b.alloc(`tile:${theme}:plat_mid`, 24, 24, 0, 0);
+    paintOneWayTile(b, pal, 'mid');
+    b.alloc(`tile:${theme}:plat_right`, 24, 24, 0, 0);
+    paintOneWayTile(b, pal, 'right');
+    b.alias(`tile:${theme}:oneway`, `tile:${theme}:plat_mid`);
+
+    // Interior solid, background masonry, cracked floor & secret walls
     b.alloc(`tile:${theme}:solid_mid`, 24, 24, 0, 0);
     paintBrickTile(b, pal, seed + 2, 'mid');
 
@@ -3591,9 +4938,6 @@ export function buildProceduralAtlas(): ProceduralAtlasData {
 
     b.alloc(`tile:${theme}:solid_var`, 24, 24, 0, 0);
     paintBrickTile(b, pal, seed + 4, 'var');
-
-    b.alloc(`tile:${theme}:oneway`, 24, 24, 0, 0);
-    paintOneWayTile(b, pal);
 
     b.alloc(`tile:${theme}:bg_wall`, 24, 24, 0, 0);
     paintBgWallTile(b, pal, seed + 5, 'wall');
@@ -3614,20 +4958,19 @@ export function buildProceduralAtlas(): ProceduralAtlasData {
     paintBgWallTile(b, pal, seed + 10, 'arch');
   }
 
-  // 2. Universal Tiles & Props / Doors / Chests / Shrines / NPCs
+  // 2. Universal Tiles & Architectural/Biome/Shop Props / Doors / Chests / Shrines / NPCs
   paintUniversalTiles(b);
   paintPropsAndNpcs(b);
 
-  // 3. Prisoner (Hero) Procedural Roll/Dead + Homunculus Plasma Flame (used by Custom Pack)
-  for (let i = 0; i < 3; i++) paintHeroPose(b, `hero:roll_${i}`, 'roll', i);
+  // 3. Prisoner (Hero) Procedural Dead Pose + Live 4-Frame Homunculus Plasma Flame Head
   paintHeroPose(b, 'hero:dead', 'dead', 0);
   paintHomunculusHeadFrames(b);
 
-  // 4. Pickups, Turrets (fallback/wolfTrap/bossBanner), Projectiles, VFX & Bitmap Font
+  // 4. Pickups, Turrets (fallback/wolfTrap/bossBanner), Projectiles, Painterly VFX & Bitmap Font
   paintPickupsTurretsProjectiles(b);
   paintVfxAndPixelFont(b);
 
-  // 5. AAA Original Krunked Built-In Pixel-Art Sprites (Hero, 18 Enemies, 3 Bosses, Props, NPCs, Gothic Arch!)
+  // 5. AAA Original Krunked Built-In Multi-Frame Pixel-Art Sprites (Hero, 18 Enemies, 3 Bosses, Props, NPCs, Gothic Arch!)
   overlayBakedBuiltinArt(b);
 
   const keys = Object.keys(b.regions);

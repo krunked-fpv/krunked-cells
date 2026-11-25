@@ -449,11 +449,11 @@ describe('Worldgen Reachability, Passage Safe Room, SaveManager, Audio/Atlas & R
       // Build atlas pixel buffers in headless Node (zero DOM)
       const atlas = buildProceduralAtlas();
       expect(atlas.width).toBe(2048);
-      expect(atlas.height).toBe(1024);
+      expect(atlas.height).toBe(2048);
       expect(atlas.albedoCanvas).toBeNull();
-      expect(atlas.albedoPixels.byteLength).toBe(2048 * 1024 * 4);
-      expect(atlas.normalPixels.byteLength).toBe(2048 * 1024 * 4);
-      expect(atlas.emissivePixels.byteLength).toBe(2048 * 1024 * 4);
+      expect(atlas.albedoPixels.byteLength).toBe(2048 * 2048 * 4);
+      expect(atlas.normalPixels.byteLength).toBe(2048 * 2048 * 4);
+      expect(atlas.emissivePixels.byteLength).toBe(2048 * 2048 * 4);
       expect(resolveSpriteRegion(atlas.regions, 'boss_Behemoth').w).toBeGreaterThan(0);
       expect(resolveSpriteRegion(atlas.regions, 'weapon_StartSword').w).toBeGreaterThan(0);
     });
