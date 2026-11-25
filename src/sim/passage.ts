@@ -197,12 +197,14 @@ function ensureFountainCounters(state: SimState): {
   singleLeft: number;
 } {
   const diff = getDifficulty(state.bossStemCells);
-  if (state.fountainRefillsLeft === undefined) {
-    state.fountainRefillsLeft = diff.fountainRefills;
-  }
-  if (state.singleFlaskRefillsLeft === undefined) {
-    state.singleFlaskRefillsLeft = diff.singleFlaskRefills;
-  }
+  state.fountainRefillsLeft = Math.min(
+    state.fountainRefillsLeft ?? diff.fountainRefills,
+    diff.fountainRefills
+  );
+  state.singleFlaskRefillsLeft = Math.min(
+    state.singleFlaskRefillsLeft ?? diff.singleFlaskRefills,
+    diff.singleFlaskRefills
+  );
   return {
     fountainLeft: state.fountainRefillsLeft,
     singleLeft: state.singleFlaskRefillsLeft,

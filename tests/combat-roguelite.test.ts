@@ -683,6 +683,24 @@ describe('Combat, Parry, Rally, Scrolls, Synergies, Curse & Bosses', () => {
       for (let t = 0; t < 35; t++) stepSim(state, inputOf());
       const survivingEggs = state.projectiles.filter((p) => p.ownerUid === worm.uid);
       expect(survivingEggs.length).toBeGreaterThan(0);
+
+      // Grounded Worm death-eggs remain parriable, and unparried eggs detonate after floor fuse!
+      const eggToParry = survivingEggs[0]!;
+      state.player.loadout.weapon2 = makeGear('StartShield', 'weapon', { color: 'survival' });
+      eggToParry.pos.x = state.player.pos.x + 10;
+      eggToParry.pos.y = state.player.pos.y;
+      stepSim(state, inputOf({ weapon2Pressed: true }));
+      expect(eggToParry.owner).toBe('player');
+
+      let sawEggExplosion = false;
+      for (let t = 0; t < 160; t++) {
+        stepSim(state, inputOf());
+        if (state.events.some((e) => e.type === 'explosion')) {
+          sawEggExplosion = true;
+        }
+      }
+      expect(sawEggExplosion).toBe(true);
+      expect(state.projectiles.filter((p) => p.ownerUid === worm.uid).length).toBe(0);
     });
 
     it('lodges Quick Bow arrows for stuckArrows3 crits, returns ammo on kill, and triggers Pyrotechnics oiled-only crit + Electric Whip water crit + Phaser next-melee bonus', () => {
@@ -757,16 +775,96 @@ describe('Combat, Parry, Rally, Scrolls, Synergies, Curse & Bosses', () => {
 
       // 4. Phaser empowers NEXT MELEE STRIKE of ANY weapon + Tonic gives tempShieldHp barrier
       const sSkill = createCombatSandbox(1107);
+      const rngS = createRng(1107);
+      sSkill.player.loadout.weapon1 = makeGear('StartSword', 'weapon', { color: 'brutality' });
       sSkill.player.loadout.skill1 = makeGear('Phaser', 'skill', { color: 'brutality' });
       sSkill.player.loadout.skill2 = makeGear('Tonic', 'skill', { color: 'survival' });
+
+      // Measure baseline StartSword swing damage first
+      const baseTarget = spawnEnemy(sSkill, 'CastleKnight', sSkill.player.pos.x + 22, sSkill.player.pos.y, 0, rngS);
+      baseTarget.attackCooldownTicks = 9999;
+      const baseHpBefore = baseTarget.hp;
+      for (let t = 0; t < 14; t++) stepSim(sSkill, inputOf({ weapon1Pressed: t === 0 }));
+      const baseSwingDmg = baseHpBefore - baseTarget.hp;
+
+      // Wait out swing recovery, clear previous target, cast Phaser -> empowers next StartSword swing & clears bonus on hit!
+      for (let t = 0; t < 12; t++) stepSim(sSkill, inputOf());
+      sSkill.enemies = [];
       stepSim(sSkill, inputOf({ skill1Pressed: true }));
       expect(sSkill.player.phaserBonusDamage ?? 0).toBeGreaterThan(0);
       expect(sSkill.player.phaserBuffTicks ?? 0).toBeGreaterThan(0);
+      const phaserTarget = spawnEnemy(sSkill, 'CastleKnight', sSkill.player.pos.x + sSkill.player.facing * 22, sSkill.player.pos.y, 0, rngS);
+      phaserTarget.attackCooldownTicks = 9999;
+      const pHpBefore = phaserTarget.hp;
+      for (let t = 0; t < 14; t++) stepSim(sSkill, inputOf({ weapon1Pressed: t === 0 }));
+      const phaserSwingDmg = pHpBefore - phaserTarget.hp;
+      expect(phaserSwingDmg).toBeGreaterThan(baseSwingDmg);
+      expect(sSkill.player.phaserBonusDamage).toBe(0);
 
       sSkill.player.hp = 50;
       stepSim(sSkill, inputOf({ skill2Pressed: true }));
       expect(sSkill.player.hp).toBe(50); // No infinite permanent heal!
       expect(sSkill.player.tempShieldHp ?? 0).toBeGreaterThan(0);
+    });
+
+    it('applies S-tier gear bonusScrolls (+2 stat & maxHp) on equip and removes them cleanly on unequip (gear_scroll_bonuses_applied)', () => {
+      const state = createCombatSandbox(1112);
+      const baseBrut = state.player.scrolls.brutality;
+      const baseMaxHp = state.player.maxHp;
+
+      // Place an S-tier Brutality sword (+2 Brutality) pickup at player's feet and equip it
+      const sTierSword = makeGear('BroadSword', 'weapon', {
+        uid: state.nextUid++,
+        color: 'brutality',
+        quality: 'S',
+        bonusScrolls: { brutality: 2 },
+      });
+      const pickupUid = state.nextUid++;
+      state.pickups.push({
+        uid: pickupUid,
+        kind: 'gear',
+        pos: { x: state.player.pos.x, y: state.player.pos.y },
+        prevPos: { x: state.player.pos.x, y: state.player.pos.y },
+        vel: { x: 0, y: 0 },
+        value: 0,
+        gear: sTierSword,
+        label: 'BroadSword-S',
+        magnetTicks: 0,
+        collected: false,
+        bobPhase: 0,
+      });
+
+      stepSim(state, inputOf({ commands: [{ type: 'equipPickup', pickupUid, targetSlot: 1 }] }));
+      expect(state.player.loadout.weapon1?.uid).toBe(sTierSword.uid);
+      expect(state.player.scrolls.brutality).toBe(baseBrut + 2);
+      expect(state.player.maxHp).toBe(computePlayerMaxHp(state.player.scrolls));
+      expect(state.player.maxHp).toBeGreaterThan(baseMaxHp);
+
+      // Displace with a plain base sword (no bonusScrolls) -> +2 Brutality & maxHp revert cleanly!
+      const plainSword = makeGear('StartSword', 'weapon', {
+        uid: state.nextUid++,
+        color: 'brutality',
+        quality: 'base',
+      });
+      const plainUid = state.nextUid++;
+      state.pickups.push({
+        uid: plainUid,
+        kind: 'gear',
+        pos: { x: state.player.pos.x, y: state.player.pos.y },
+        prevPos: { x: state.player.pos.x, y: state.player.pos.y },
+        vel: { x: 0, y: 0 },
+        value: 0,
+        gear: plainSword,
+        label: 'StartSword',
+        magnetTicks: 0,
+        collected: false,
+        bobPhase: 0,
+      });
+
+      stepSim(state, inputOf({ commands: [{ type: 'equipPickup', pickupUid: plainUid, targetSlot: 1 }] }));
+      expect(state.player.loadout.weapon1?.uid).toBe(plainSword.uid);
+      expect(state.player.scrolls.brutality).toBe(baseBrut);
+      expect(state.player.maxHp).toBe(baseMaxHp);
     });
 
     it('filters rollAffixes by gear kind, enforces 2BC fountain refill limits, and opens Flawless Boss Door + Forge scroll delta', () => {

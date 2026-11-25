@@ -644,22 +644,23 @@ function runCategory1StarterKit(): PlaytesterResult[] {
       const state = createCombatSandbox(1004);
       const rng = createRng(1004);
 
-      // Hold weapon2Held (StartShield) without active parry window -> enters shieldBlocking
-      stepAndCollect(state, 3, () => ({ weapon2Held: true }));
+      // Hold weapon2Held >= 16t (StartShield) without active parry window -> enters frontal shieldBlocking
+      stepAndCollect(state, 18, () => ({ weapon2Held: true }));
       const blockingActive = state.player.shieldBlocking === true;
       ctx.metric('shieldBlockingActive', blockingActive);
       ctx.check(
         blockingActive,
         'MAJOR',
         'SHIELD_HOLD_BLOCK_MISSING',
-        `Holding StartShield (weapon2Held=true, parryWindow=0) did not set player.shieldBlocking=true (got ${String(state.player.shieldBlocking)})`
+        `Holding StartShield (weapon2Held=true, shieldHoldTicks>=16) did not set player.shieldBlocking=true (got ${String(state.player.shieldBlocking)})`
       );
 
-      // Incoming 40 damage while blocking should be reduced (~75% -> ~10 dmg) & emit shieldBlock
+      // Incoming 40 frontal damage while blocking should be reduced (~75% -> ~10 dmg) & emit shieldBlock
       state.player.iframeTicks = 0;
+      state.player.onHitShieldTicks = 0;
       const hpBefore = state.player.hp;
       state.events = [];
-      damagePlayer(state, 40, 'Zombie', rng);
+      damagePlayer(state, 40, 'Zombie', rng, false, { attackerX: state.player.pos.x + 20 });
       const dmgTaken = hpBefore - state.player.hp;
       const sawShieldBlock = state.events.some((e) => e.type === 'shieldBlock');
       ctx.metric('blockedDamageTaken', dmgTaken);
@@ -974,12 +975,12 @@ function runCategory1StarterKit(): PlaytesterResult[] {
         `Enemy behind smashed door stunTicks=${guard.stunTicks} (expected >= 75)`
       );
 
-      // Rally orange health recovery check
+      // Rally orange health recovery check (Oracle: 80% of lost HP -> 48 rallyHp on 60 dmg)
       const s2 = createCombatSandbox(10102);
       applyScrollPickup(s2, 'survival');
       applyScrollPickup(s2, 'survival');
       damagePlayer(s2, 60, 'Zombie', rng);
-      ctx.check(s2.player.rallyHp === 60, 'MAJOR', 'RALLY_NOT_POPULATED', `rallyHp=${s2.player.rallyHp}, expected 60`);
+      ctx.check(s2.player.rallyHp === 48, 'MAJOR', 'RALLY_NOT_POPULATED', `rallyHp=${s2.player.rallyHp}, expected 48`);
       const hpAfterHit = s2.player.hp;
       const target = spawnEnemy(s2, 'CastleKnight', s2.player.pos.x + 22, s2.player.pos.y, 0, rng);
       target.attackCooldownTicks = 9999;
@@ -1031,8 +1032,8 @@ function runCategory2WeaponsMatrix(): PlaytesterResult[] {
             `${def.id}: pressing shield did not emit parryStart`
           );
 
-          // 2. Projectile reflection
-          stepAndCollect(state, 32);
+          // 2. Projectile reflection (wait >= 38t for 36t whiff lockout to clear)
+          stepAndCollect(state, 40);
           const bolt = spawnEnemyProjectile(state, state.player.pos.x + 14, state.player.pos.y, -260, 0, 32, true);
           stepSim(state, inputOf({ weapon2Pressed: true }));
           const reflected =
@@ -1084,22 +1085,23 @@ function runCategory2WeaponsMatrix(): PlaytesterResult[] {
             );
           }
 
-          // 4. Hold-to-block damage reduction
+          // 4. Hold-to-block frontal damage reduction (activates at shieldHoldTicks >= 16)
           const sBlock = createCombatSandbox(seed + 90);
           sBlock.player.loadout.weapon2 = makeGear(sBlock, def.id, 'weapon', { color: def.colors[0] ?? 'survival' });
-          stepAndCollect(sBlock, 3, () => ({ weapon2Held: true }));
+          stepAndCollect(sBlock, 18, () => ({ weapon2Held: true }));
           const isBlocking = sBlock.player.shieldBlocking === true;
           ctx.metric('shieldBlocking', isBlocking);
           ctx.check(
             isBlocking,
             'MAJOR',
             'SHIELD_HOLD_BLOCK_MISSING',
-            `${def.id}: holding weapon2Held did not activate player.shieldBlocking`
+            `${def.id}: holding weapon2Held (>=16t) did not activate player.shieldBlocking`
           );
           sBlock.player.iframeTicks = 0;
+          sBlock.player.onHitShieldTicks = 0;
           const hpBeforeBlock = sBlock.player.hp;
           sBlock.events = [];
-          damagePlayer(sBlock, 40, 'Zombie', rng);
+          damagePlayer(sBlock, 40, 'Zombie', rng, false, { attackerX: sBlock.player.pos.x + 20 });
           const blockedDmg = hpBeforeBlock - sBlock.player.hp;
           const sawBlockEvt = sBlock.events.some((e) => e.type === 'shieldBlock');
           ctx.metric('blockedDmg', blockedDmg);
@@ -1153,7 +1155,10 @@ function runCategory2WeaponsMatrix(): PlaytesterResult[] {
         } else if (def.critCondition === 'speedBuff') {
           state.player.speedBuffTicks = 240;
         } else if (def.critCondition === 'highCombo') {
-          state.player.killStreak = 5;
+          state.player.balancedStacks = 10;
+          state.player.balancedDecayTicks = 240;
+        } else if (def.critCondition === 'oiled') {
+          applyStatus(enemy.statusEffects, 'oil', 240, 0, 0);
         } else if (def.critCondition === 'afterRoll') {
           // Execute a full dodge roll forward right up to the enemy!
           stepAndCollect(state, 26, (t) => ({ rollPressed: t === 0 }));
@@ -1168,9 +1173,11 @@ function runCategory2WeaponsMatrix(): PlaytesterResult[] {
         const strikesNeeded =
           def.critCondition === 'finalHit'
             ? def.strikeChain.length
-            : def.critCondition === 'bleeding' || def.critCondition === 'burning'
-              ? 2
-              : 1;
+            : def.critCondition === 'stuckArrows3'
+              ? 4
+              : def.critCondition === 'bleeding' || def.critCondition === 'burning'
+                ? 2
+                : 1;
 
         for (let s = 0; s < strikesNeeded; s++) {
           if (def.kind === 'melee' && def.id !== 'ImpaleSpear') {
@@ -1241,7 +1248,7 @@ function runCategory2WeaponsMatrix(): PlaytesterResult[] {
           );
         }
 
-        // Ammo consumption & regeneration check for ammo-capped ranged weapons
+        // Ammo consumption & stuck-arrow lodge/return check for ammo-capped ranged weapons
         if (def.ammoCapacity !== undefined && startAmmo !== undefined) {
           const ammoAfterShots = gear.ammo ?? 0;
           ctx.metric('ammoAfterShots', ammoAfterShots);
@@ -1251,15 +1258,23 @@ function runCategory2WeaponsMatrix(): PlaytesterResult[] {
             'RANGED_AMMO_NOT_CONSUMED',
             `${def.id}: ammo stayed ${ammoAfterShots}/${startAmmo} after firing`
           );
-          // Step 95 ticks to trigger passive ammo regen (every 90 ticks)
-          stepAndCollect(state, 95);
+          const stuckCount = enemy.stuckArrows?.length ?? 0;
+          ctx.metric('stuckArrows', stuckCount);
+          ctx.check(
+            stuckCount > 0,
+            'MAJOR',
+            'RANGED_ARROWS_NOT_LODGED',
+            `${def.id}: fired ammo did not lodge in target enemy.stuckArrows`
+          );
+          // Kill enemy to verify stuck arrows return immediately to gear.ammo (or 8s timeout)
+          damageEnemy(state, enemy, 99999, false, 10, 0, 0, rng, 'StartSword');
           const ammoAfterRegen = gear.ammo ?? 0;
           ctx.metric('ammoAfterRegen', ammoAfterRegen);
           ctx.check(
             ammoAfterRegen > ammoAfterShots,
             'MAJOR',
             'RANGED_AMMO_NO_REGEN',
-            `${def.id}: ammo failed to regenerate (${ammoAfterShots} -> ${ammoAfterRegen})`
+            `${def.id}: lodged ammo failed to return on kill (${ammoAfterShots} -> ${ammoAfterRegen})`
           );
         }
 
@@ -1308,12 +1323,13 @@ function runCategory3SkillsMatrix(): PlaytesterResult[] {
 
         const startXEmpty = emptyState.player.pos.x;
         const startHpEmpty = emptyState.player.hp;
-        const emptyEvents = stepAndCollect(emptyState, 90, (t) => ({ skill1Pressed: t === 0 }));
+        const emptyWaitTicks = def.id === 'ClusterGrenade' ? 160 : 90;
+        const emptyEvents = stepAndCollect(emptyState, emptyWaitTicks, (t) => ({ skill1Pressed: t === 0 }));
 
         const sawEmptyCast = emptyEvents.some((e) => e.type === 'skillCast' && e.skillId === def.id);
         ctx.check(sawEmptyCast, 'CRITICAL', 'SKILL_CAST_EVENT_MISSING', `${def.id}: empty-room cast emitted no skillCast`);
         ctx.check(
-          emptyGear.cooldownTicks > 0 || def.cooldownTicks <= 90,
+          emptyGear.cooldownTicks > 0 || def.cooldownTicks <= emptyWaitTicks,
           'MAJOR',
           'SKILL_COOLDOWN_NOT_APPLIED',
           `${def.id}: cooldownTicks=${emptyGear.cooldownTicks} after cast`
@@ -1396,17 +1412,19 @@ function runCategory3SkillsMatrix(): PlaytesterResult[] {
             `KnifeDance spawned ${knives.length} knives (expected >= 8 radial knives)`
           );
         } else if (def.id === 'Tonic') {
+          const tempBarrier = emptyState.player.tempShieldHp ?? 0;
+          ctx.metric('tempShieldHp', tempBarrier);
           ctx.check(
-            emptyState.player.hp > startHpEmpty,
+            emptyState.player.hp === startHpEmpty && tempBarrier > 0 && (emptyState.player.tempShieldTicks ?? 0) > 0,
             'CRITICAL',
             'TONIC_NO_HEAL',
-            `Tonic failed to heal injured player (${startHpEmpty} -> ${emptyState.player.hp})`
+            `Tonic failed to grant tempShieldHp overheal barrier without permanent heal (hp=${startHpEmpty}->${emptyState.player.hp}, tempShieldHp=${tempBarrier})`
           );
           ctx.check(
-            hasStatus(emptyState.player.statusEffects, 'shield'),
+            tempBarrier > 0 && (emptyState.player.tempShieldTicks ?? 0) > 0,
             'MAJOR',
             'TONIC_NO_SHIELD',
-            'Tonic did not grant shield status'
+            'Tonic did not grant temporary barrier shield'
           );
           ctx.check(
             !hasStatus(emptyState.player.statusEffects, 'poison'),
@@ -1565,13 +1583,16 @@ function runCategory3SkillsMatrix(): PlaytesterResult[] {
           combatState.player.hp = 50;
           stepSim(combatState, inputOf({ skill1Pressed: true }));
           const hpAfterTonic = combatState.player.hp;
+          const shieldBefore = combatState.player.tempShieldHp ?? 0;
           combatState.player.iframeTicks = 0;
-          const hitLanded = damagePlayer(combatState, 40, 'Zombie', rng, true);
+          combatState.player.onHitShieldTicks = 0;
+          damagePlayer(combatState, 40, 'Zombie', rng, true);
+          const shieldAfter = combatState.player.tempShieldHp ?? 0;
           ctx.check(
-            !hitLanded && combatState.player.hp === hpAfterTonic,
+            shieldBefore > 0 && shieldAfter < shieldBefore && combatState.player.hp === hpAfterTonic,
             'MAJOR',
             'TONIC_SHIELD_NO_PROTECTION',
-            `Tonic shield failed to block incoming hit (hitLanded=${hitLanded})`
+            `Tonic tempShieldHp failed to absorb incoming hit (shield=${shieldBefore}->${shieldAfter}, hp=${hpAfterTonic}->${combatState.player.hp})`
           );
         }
 
@@ -1649,10 +1670,10 @@ function runCategory4MutationsMatrix(): PlaytesterResult[] {
             foe.attackCooldownTicks = 9999;
             performSingleMeleeStrike(s, 1);
             ctx.check(
-              hasStatus(foe.statusEffects, 'slow') && hasStatus(foe.statusEffects, 'frost'),
+              hasStatus(foe.statusEffects, 'slow') && !hasStatus(foe.statusEffects, 'frost') && !hasStatus(foe.statusEffects, 'freeze'),
               'MAJOR',
               'MUT_MELEE_FAILED',
-              'Melee mutation did not apply slow + frost'
+              'Melee mutation did not apply slow-only status'
             );
             break;
           }
@@ -1664,12 +1685,12 @@ function runCategory4MutationsMatrix(): PlaytesterResult[] {
             const fodder = spawnEnemy(s, 'BatKamikaze', s.player.pos.x + 22, s.player.pos.y, 0, rng);
             damageEnemy(s, fodder, 999, false, 10, 0, 0, rng, 'StartSword');
             ctx.metric('speedBuffTicks', s.player.speedBuffTicks);
-            ctx.metric('iframeTicks', s.player.iframeTicks);
+            ctx.metric('stealthTicks', s.player.stealthTicks ?? 0);
             ctx.check(
-              s.player.speedBuffTicks >= 180 && s.player.iframeTicks >= 20,
+              s.player.speedBuffTicks >= 180 && (s.player.stealthTicks ?? 0) >= 120,
               'MAJOR',
               'MUT_PREDATOR_FAILED',
-              `Predator failed on melee kill (speed=${s.player.speedBuffTicks}, iframes=${s.player.iframeTicks})`
+              `Predator failed on melee kill (speed=${s.player.speedBuffTicks}, stealth=${s.player.stealthTicks ?? 0})`
             );
             break;
           }
@@ -1683,7 +1704,7 @@ function runCategory4MutationsMatrix(): PlaytesterResult[] {
               damagePlayer(s, 30, 'Zombie', rng);
               s.player.godMode = true;
             });
-            // Also check 25% damage reduction while rallyHp > 0
+            // Also check 25% damage reduction within 480t Vengeance window after taking damage
             const sDrBase = createCombatSandbox(seed + 10);
             const sDrMut = createCombatSandbox(seed + 10);
             sDrMut.player.mutations = ['Vengeance'];
@@ -1692,6 +1713,7 @@ function runCategory4MutationsMatrix(): PlaytesterResult[] {
               applyScrollPickup(st, 'survival');
               damagePlayer(st, 20, 'FirstHit', createRng(seed + 11));
               st.player.iframeTicks = 0;
+              st.player.onHitShieldTicks = 0;
             }
             const bBefore = sDrBase.player.hp;
             const mBefore = sDrMut.player.hp;
@@ -1764,7 +1786,18 @@ function runCategory4MutationsMatrix(): PlaytesterResult[] {
             foe.attackCooldownTicks = 9999;
             performSingleMeleeStrike(s, 1);
             stepAndCollect(s, 18);
-            ctx.check(hasStatus(foe.statusEffects, 'bleed'), 'MAJOR', 'MUT_BARBED_TIPS_FAILED', 'BarbedTips did not apply bleed on arrow hit');
+            const hpAfterArrow = foe.hp;
+            const stuckCount = foe.stuckArrows?.length ?? 0;
+            stepAndCollect(s, 45);
+            const dotDmg = hpAfterArrow - foe.hp;
+            ctx.metric('barbedStuckArrows', stuckCount);
+            ctx.metric('barbedDotDmg', dotDmg);
+            ctx.check(
+              stuckCount > 0 && dotDmg > 0,
+              'MAJOR',
+              'MUT_BARBED_TIPS_FAILED',
+              `BarbedTips failed to deal stuck-arrow DoT (stuck=${stuckCount}, dotDmg=${dotDmg})`
+            );
             break;
           }
 
@@ -2284,19 +2317,34 @@ function fightBossToDeath(
     if (boss.state === 'dead' || boss.hp <= 0) {
       return { phasesSeen, killed: true, ticksUsed: t };
     }
-    const dx = boss.pos.x - state.player.pos.x;
+
+    const adds = state.enemies.filter((e) => !e.isBoss && e.state !== 'dead' && e.hp > 0);
+    const bossInvulnerable = Boolean(boss.bossFloatingSummon) || boss.bossShieldTicks > 0;
+    let target: EnemyState | null = boss;
+    if (adds.length > 0 && bossInvulnerable) {
+      adds.sort((a, b) => {
+        if (a.isElite !== b.isElite) return a.isElite ? -1 : 1;
+        return Math.abs(a.pos.x - state.player.pos.x) - Math.abs(b.pos.x - state.player.pos.x);
+      });
+      target = adds[0]!;
+    } else if (bossInvulnerable) {
+      target = null;
+    }
+
     const frame: Partial<InputFrame> = {};
-    if (Math.abs(dx) > 32) {
-      if (dx > 0) frame.moveRight = true;
-      else frame.moveLeft = true;
-    } else {
-      frame.moveRight = dx >= 0;
-      frame.moveLeft = dx < 0;
-      if (boss.bossShieldTicks <= 0) {
+    if (target) {
+      const dx = target.pos.x - state.player.pos.x;
+      if (Math.abs(dx) > 32) {
+        if (dx > 0) frame.moveRight = true;
+        else frame.moveLeft = true;
+      } else {
+        frame.moveRight = dx >= 0;
+        frame.moveLeft = dx < 0;
         frame.weapon1Pressed = t % 4 === 0;
         frame.weapon1Held = true;
       }
     }
+
     stepSim(state, inputOf(frame));
     for (const ev of state.events) {
       if (ev.type === 'bossPhaseShift' && ev.bossId === boss.bossId) {
@@ -2306,6 +2354,23 @@ function fightBossToDeath(
     phasesSeen.add(boss.bossPhase);
   }
   return { phasesSeen, killed: boss.hp <= 0 || boss.state === 'dead', ticksUsed: maxTicks };
+}
+
+function claimSovereignThrone(state: SimState): void {
+  // Wait out any boss-kill hitstop / slow-mo before walking to Sovereign Throne shrine
+  for (let t = 0; t < 80 && (state.hitstopTicks > 0 || state.slowMoTicks > 0); t++) {
+    stepSim(state, inputOf());
+  }
+  const throne = state.shrines.find((s) => s.kind === 'loreSkeleton');
+  if (!throne) return;
+  for (let t = 0; t < 240; t++) {
+    const dx = throne.pos.x - state.player.pos.x;
+    if (Math.abs(dx) <= 32) {
+      stepSim(state, inputOf({ interactPressed: true }));
+      return;
+    }
+    stepSim(state, inputOf(dx > 0 ? { moveRight: true } : { moveLeft: true }));
+  }
 }
 
 function calibrateBossBuild(state: SimState, bossMaxHp: number): void {
@@ -2373,8 +2438,11 @@ function runCategory6BossesAndScaling(): PlaytesterResult[] {
 
         calibrateBossBuild(state, boss.maxHp);
         const fight = fightBossToDeath(state, boss);
-        // Step 2 more ticks so step.ts exit unlock / Throne victory sync runs
+        // Step 2 more ticks so step.ts exit unlock runs
         stepAndCollect(state, 3);
+        if (cfg.bossId === 'KingsHand' && fight.killed) {
+          claimSovereignThrone(state);
+        }
 
         ctx.metric('phasesSeen', [...fight.phasesSeen].sort().join(','));
         ctx.metric('killed', fight.killed);
@@ -2469,6 +2537,9 @@ function runCategory6BossesAndScaling(): PlaytesterResult[] {
         calibrateBossBuild(sThrone, kh.maxHp);
         const res = fightBossToDeath(sThrone, kh);
         stepAndCollect(sThrone, 2);
+        if (res.killed) {
+          claimSovereignThrone(sThrone);
+        }
         const expectedUnlocked = Math.min(MAX_BOSS_CELLS, bc + 1);
         ctx.check(
           res.killed && sThrone.runStatus === 'victory',
@@ -2521,6 +2592,9 @@ function runCategory6BossesAndScaling(): PlaytesterResult[] {
         calibrateBossBuild(state, boss.maxHp);
         const fight = fightBossToDeath(state, boss, 2200);
         stepAndCollect(state, 3);
+        if (cfg.bossId === 'KingsHand' && fight.killed) {
+          claimSovereignThrone(state);
+        }
         ctx.metric('phases', [...fight.phasesSeen].sort().join(','));
         ctx.metric('killed', fight.killed);
 
