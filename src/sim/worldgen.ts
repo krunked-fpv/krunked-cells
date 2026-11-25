@@ -29,6 +29,82 @@ import { rollGearInstance } from './roguelite';
 
 const ALL_SCROLL_STATS: readonly ScrollStat[] = ['brutality', 'tactics', 'survival'];
 
+const OUTDOOR_BIOMES = new Set<BiomeId>([
+  'PrisonCourtyard',
+  'PrisonRoof',
+  'Bridge',
+  'StiltVillage',
+  'Throne',
+]);
+
+function setBgTile(grid: TileGrid, tx: number, ty: number, val: TileKindValue | 0): void {
+  if (tx < 0 || ty < 0 || tx >= grid.width || ty >= grid.height) return;
+  grid.bgTiles[ty * grid.width + tx] = val;
+}
+
+function carveRoomBackground(
+  grid: TileGrid,
+  biomeId: BiomeId,
+  innerTx: number,
+  innerTy: number,
+  innerTw: number,
+  innerTh: number,
+  floorTy: number
+): void {
+  if (OUTDOOR_BIOMES.has(biomeId)) {
+    // Open twilight / storm sky across the entire chamber so Pass 1 parallax moon,
+    // castles, spires, clouds, and god-rays shine unobstructed!
+    for (let y = innerTy; y < floorTy; y++) {
+      for (let x = innerTx; x < innerTx + innerTw; x++) {
+        setBgTile(grid, x, y, 0);
+      }
+    }
+    // Keep a 1-tile ruined stone parapet along the floor & spaced gothic stone piers
+    for (let x = innerTx; x < innerTx + innerTw; x++) {
+      if ((x - innerTx) % 9 === 0) {
+        for (let y = innerTy; y < floorTy; y++) {
+          setBgTile(grid, x, y, TileKind.BG_WALL);
+        }
+      } else if ((x - innerTx) % 2 === 0 && biomeId !== 'StiltVillage') {
+        setBgTile(grid, x, floorTy - 1, TileKind.BG_WALL);
+      }
+    }
+    return;
+  }
+
+  // Indoor gothic halls: carve dramatic arched cathedral/prison windows into upper walls
+  // so moonlight, distant towers, and giant clockwork gears shine dramatically inside!
+  if (biomeId === 'TopClockTower') {
+    const cx = innerTx + innerTw * 0.5;
+    const cy = innerTy + innerTh * 0.45;
+    const rad = Math.min(innerTw, innerTh) * 0.44;
+    for (let y = innerTy; y < floorTy - 1; y++) {
+      for (let x = innerTx + 2; x < innerTx + innerTw - 2; x++) {
+        const dx = (x + 0.5 - cx) * 0.72;
+        const dy = y + 0.5 - cy;
+        if (dx * dx + dy * dy <= rad * rad) {
+          setBgTile(grid, x, y, 0);
+        }
+      }
+    }
+    return;
+  }
+
+  const period = biomeId === 'Sewer' ? 9 : 7;
+  const winW = biomeId === 'Castle' || biomeId === 'ClockTower' ? 4 : 3;
+  const winTop = Math.max(innerTy + 1, floorTy - 6);
+  const winBot = floorTy - 1;
+  for (let bx = innerTx + 2; bx + winW <= innerTx + innerTw - 2; bx += period) {
+    for (let y = winTop; y < winBot; y++) {
+      for (let x = bx; x < bx + winW; x++) {
+        // Pointed gothic arch top corners remain stone
+        if (y === winTop && (x === bx || x === bx + winW - 1)) continue;
+        setBgTile(grid, x, y, 0);
+      }
+    }
+  }
+}
+
 const CELL_W = 22;
 const CELL_H = 11;
 const GRID_COLS = 6;
@@ -404,10 +480,11 @@ function generateBossArena(
 
   // Carve dramatic wide gothic hall (tx: 2..41, ty: 2..13)
   fillTileRect(grid, col, 2, 2, width - 4, floorTy - 2, TileKind.EMPTY);
+  carveRoomBackground(grid, biome.id, 2, 2, width - 4, floorTy - 2, floorTy);
 
   // Side elevated one-way balconies for dodging shockwaves & aerial combat
   fillTileRect(grid, col, 7, 10, 6, 1, TileKind.ONE_WAY);
-  fillTileRect(grid, col, 31, 10, 6, 1, TileKind.ONE_WAY);
+  fillTileRect(grid, col, 28, 10, 6, 1, TileKind.ONE_WAY);
 
   // Throne Room special: iconic left & right recessed spike pits with escape ledges!
   if (biome.id === 'Throne') {
@@ -436,18 +513,18 @@ function generateBossArena(
   };
   state.rooms = [arenaRoom];
 
-  // Atmospheric braziers & torch lights
+  // Atmospheric grounded floor braziers lighting the arena!
   const primaryLight = hexToRgb01(biome.lightColors[0] ?? '#ff9d42');
   const accentLight = hexToRgb01(biome.lightColors[1] ?? '#ffd166');
-  for (let tx = 5; tx <= 39; tx += 5) {
-    const isAccent = (tx / 5) % 2 === 0;
+  for (let tx = 7; tx <= 35; tx += 7) {
+    const isAccent = (tx / 7) % 2 === 0;
     addWorldLight(
       state,
       tx * TILE_SIZE + 12,
-      (floorTy - 3) * TILE_SIZE,
-      140,
+      floorSurfaceY - 18,
+      145,
       isAccent ? accentLight : primaryLight,
-      1.15,
+      1.1,
       'brazier',
       4.5 + (tx % 3),
       0.16
@@ -496,7 +573,7 @@ function generateBossArena(
   }
 
   // Place player safely on left arena floor
-  state.player.pos = { x: 9 * TILE_SIZE, y: floorSurfaceY - PLAYER_HEIGHT * 0.5 };
+  state.player.pos = { x: 10 * TILE_SIZE, y: floorSurfaceY - PLAYER_HEIGHT * 0.5 };
   state.player.prevPos = { ...state.player.pos };
   state.player.vel = { x: 0, y: 0 };
   state.player.facing = 1;
@@ -505,10 +582,10 @@ function generateBossArena(
   state.player.diveSlamState = 'none';
   state.player.airJumpsLeft = state.player.maxAirJumps;
 
-  // Spawn the biome's Boss!
+  // Spawn the biome's Boss on-screen in dramatic standoff framing!
   const bossId = biome.bossId ?? 'Behemoth';
   const bossDef = getBoss(bossId);
-  const bossX = 31 * TILE_SIZE;
+  const bossX = 22 * TILE_SIZE;
   const bossY = floorSurfaceY - bossDef.height * 0.5;
   spawnBoss(state, bossId, bossX, bossY);
 
@@ -538,8 +615,9 @@ function generatePassageSafeRoom(
   const grid = createEmptyGrid(width, height);
   const floorTy = 12;
 
-  // Carve warm stone gallery (tx: 2..49, ty: 2..11)
+  // Carve warm stone gallery (tx: 2..49, ty: 2..11) + arched sanctuary windows
   fillTileRect(grid, col, 2, 2, width - 4, floorTy - 2, TileKind.EMPTY);
+  carveRoomBackground(grid, 'Passage', 2, 2, width - 4, floorTy - 2, floorTy);
   // Decorative loft platform near left ceiling
   fillTileRect(grid, col, 6, 8, 8, 1, TileKind.ONE_WAY);
 
@@ -819,6 +897,7 @@ function generateRegularBiome(
     const floorTy = r.ty + r.th - 1;
 
     fillTileRect(grid, col, innerTx, innerTy, innerTw, innerTh, TileKind.EMPTY);
+    carveRoomBackground(grid, biome.id, innerTx, innerTy, innerTw, innerTh, floorTy);
 
     // One-way platform tiers (3 tiles above floor -> trivially single-jumpable!)
     if (r.type === 'combatArena' || r.type === 'corridor' || r.type === 'verticalShaft') {
@@ -877,15 +956,16 @@ function generateRegularBiome(
       col.setTile(grid, innerTx + 4, floorTy, TileKind.CRACKED_FLOOR);
     }
 
-    // Atmospheric wall torches / braziers (2–3 lights per room, spaced 6–9 tiles)
+    // Atmospheric wall torches + grounded floor braziers!
     const torchY = (floorTy - 3) * TILE_SIZE;
+    const brazierY = floorTy * TILE_SIZE - 18;
     const lColor = i % 3 === 0 ? primaryLight : i % 3 === 1 ? secondaryLight : accentLight;
-    addWorldLight(state, (innerTx + 3) * TILE_SIZE, torchY, 128, lColor, 1.05, 'torch', 4.6, 0.14);
+    addWorldLight(state, (innerTx + 3) * TILE_SIZE, torchY, 132, lColor, 1.0, 'torch', 4.6, 0.14);
     addWorldLight(
       state,
       (innerTx + innerTw - 4) * TILE_SIZE,
-      torchY,
-      128,
+      brazierY,
+      138,
       i % 2 === 0 ? primaryLight : secondaryLight,
       1.05,
       'brazier',

@@ -106,59 +106,74 @@ void main() {
     col = mix(col, scTex.rgb * mix(u_skyMid, vec3(1.0), 0.45), scTex.a * 0.62);
   }
 
-  // Celestial moon / eclipse / skylight glow
-  vec2 moonPos = vec2(0.76 - fract(u_camera.x * 0.00003) * 0.08, 0.22);
+  // Subtle twinkling night stars in high sky
+  float starCell = hash21(floor(vec2(px.x + u_camera.x * 0.02, px.y) * 0.5));
+  float starTwinkle = 0.65 + 0.35 * sin(u_time * 3.0 + starCell * 42.0);
+  if (starCell > 0.992 && sy < 0.52) {
+    col += mix(u_accentColor, vec3(0.95, 0.97, 1.0), 0.7) * starTwinkle * (1.0 - sy * 1.6) * 0.75;
+  }
+
+  // Celestial full moon with sculpted craters & lush atmospheric halo
+  vec2 moonPos = vec2(0.76 - fract(u_camera.x * 0.000025) * 0.08, 0.21);
   vec2 mDelta = (vec2(uv.x, sy) - moonPos) * vec2(u_resolution.x / u_resolution.y, 1.0);
   float mDist = length(mDelta);
-  float moonDisc = 1.0 - smoothstep(0.068, 0.075, mDist);
-  float moonHalo = exp(-mDist * 4.8) * 0.42;
-  col += mix(u_accentColor, vec3(1.0, 0.96, 0.88), 0.55) * (moonHalo + moonDisc * 0.65);
+  float moonDisc = 1.0 - smoothstep(0.082, 0.090, mDist);
+  float moonCrater = fbm2(mDelta * 36.0 + vec2(3.1, 1.7));
+  float moonHalo = exp(-mDist * 3.8) * 0.52 + exp(-mDist * 1.6) * 0.16;
+  vec3 moonTint = mix(u_accentColor, vec3(1.0, 0.96, 0.88), 0.65);
+  col += moonTint * moonHalo;
+  if (moonDisc > 0.01) {
+    vec3 discCol = moonTint * (0.85 + moonCrater * 0.32);
+    col = mix(col, discCol, moonDisc * 0.92);
+  }
 
-  // Drifting pixel-crisp nocturnal clouds (Layer 0)
-  vec2 cloudCoord = vec2(uv.x * 5.5 + u_camera.x * 0.00018 + u_time * 0.015, sy * 3.8);
+  // Drifting pixel-crisp nocturnal storm clouds (Layer 0)
+  vec2 cloudCoord = vec2(uv.x * 4.8 + u_camera.x * 0.00018 + u_time * 0.014, sy * 3.4);
   float cl = fbm2(cloudCoord);
-  float cloudBand = smoothstep(0.46, 0.72, cl) * (1.0 - smoothstep(0.42, 0.82, sy));
-  col = mix(col, mix(u_skyMid * 1.25, u_accentColor, 0.2), cloudBand * 0.36);
+  float cloudBand = smoothstep(0.42, 0.72, cl) * (1.0 - smoothstep(0.40, 0.86, sy));
+  vec3 cloudCol = mix(u_skyMid * 1.15, moonTint * 0.72, exp(-mDist * 2.5) * 0.55);
+  col = mix(col, cloudCol, cloudBand * 0.44);
 
-  // Diagonal atmospheric moonbeam / skylight god-rays
-  float rayCoord = uv.x * 11.0 + sy * 4.5 + u_camera.x * 0.0005;
-  float rayWave = pow(max(0.0, sin(rayCoord) * 0.5 + 0.5), 4.0) * pow(max(0.0, sin(rayCoord * 0.37 + 1.4) * 0.5 + 0.5), 2.0);
-  float rayFade = (1.0 - sy * 0.75) * smoothstep(0.0, 0.25, sy);
-  col += mix(u_accentColor, u_skyTop * 1.4, 0.5) * (rayWave * rayFade * 0.22);
+  // Diagonal volumetric moonbeam / cathedral skylight god-rays!
+  float rayCoord = uv.x * 9.5 + sy * 4.2 + u_camera.x * 0.00045;
+  float rayWave = pow(max(0.0, sin(rayCoord) * 0.5 + 0.5), 3.2) * pow(max(0.0, sin(rayCoord * 0.41 + 1.4) * 0.5 + 0.5), 1.8);
+  float rayFade = (1.0 - sy * 0.68) * smoothstep(0.0, 0.18, sy);
+  col += mix(u_accentColor, vec3(0.85, 0.94, 1.0), 0.45) * (rayWave * rayFade * 0.32);
 
   // Layer 1 (Far Architectural Silhouettes — 0.08x parallax)
   float xFar = uv.x * 480.0 + u_camera.x * 0.08;
   float farCell = floor(xFar / 44.0);
   float farLocal = fract(xFar / 44.0);
-  float farH = 0.44 + hash11(farCell * 3.17 + float(u_themeId)) * 0.24;
+  float farH = 0.40 + hash11(farCell * 3.17 + float(u_themeId)) * 0.24;
 
   // Theme-tailored far silhouette profiles
-  if (u_themeId == 1 || u_themeId == 3 || u_themeId == 7) {
-    // Gothic spires & battlements (Promenade / Ramparts / Castle)
-    float spire = step(abs(farLocal - 0.5), (1.0 - clamp((sy - (farH - 0.14)) / 0.16, 0.0, 1.0)) * 0.26);
-    if (sy > farH || (sy > farH - 0.14 && spire > 0.5 && hash11(farCell + 9.0) > 0.35)) {
-      vec3 silCol = mix(u_celShadow * 0.55, u_fogColor * 0.85, 0.55);
-      // Warm distant castle windows
-      float wx = fract(xFar / 11.0);
-      float wy = fract(sy * 30.0);
-      float win = step(0.32, wx) * step(wx, 0.68) * step(0.25, wy) * step(wy, 0.72) * step(0.84, hash21(vec2(floor(xFar / 11.0), floor(sy * 30.0))));
-      col = mix(silCol, u_accentColor * 1.25, win * 0.85);
+  if (u_themeId == 1 || u_themeId == 3 || u_themeId == 4 || u_themeId == 5 || u_themeId == 7 || u_themeId == 8) {
+    // Distant gothic citadel spires, cathedrals & battlements (Promenade / Ramparts / Bridge / Stilt / Castle / Throne)
+    float spire = step(abs(farLocal - 0.5), (1.0 - clamp((sy - (farH - 0.17)) / 0.19, 0.0, 1.0)) * 0.28);
+    float merlon = step(0.5, fract(xFar / 8.0)) * 0.025;
+    if (sy > farH - merlon || (sy > farH - 0.17 && spire > 0.5 && hash11(farCell + 9.0) > 0.30)) {
+      vec3 silCol = mix(u_celShadow * 0.42, u_fogColor * 0.78, 0.55);
+      // Warm distant lit castle windows
+      float wx = fract(xFar / 10.0);
+      float wy = fract(sy * 28.0);
+      float win = step(0.32, wx) * step(wx, 0.68) * step(0.24, wy) * step(wy, 0.72) * step(0.80, hash21(vec2(floor(xFar / 10.0), floor(sy * 28.0))));
+      col = mix(silCol, u_accentColor * 1.3, win * 0.9);
     }
   } else if (u_themeId == 6) {
-    // Clock Tower / Clock Room giant interlocking rotating gears!
+    // Clock Tower / Clock Room giant interlocking rotating bronze gears!
     vec2 gp = vec2(mod(xFar, 180.0), sy * 270.0);
-    float g1 = gearMask(gp, vec2(52.0, 125.0), 46.0, 12.0, 0.25);
-    float g2 = gearMask(gp, vec2(126.0, 170.0), 34.0, 10.0, -0.34);
-    float g3 = gearMask(gp, vec2(150.0, 82.0), 26.0, 8.0, 0.42);
+    float g1 = gearMask(gp, vec2(52.0, 120.0), 50.0, 12.0, 0.25);
+    float g2 = gearMask(gp, vec2(126.0, 162.0), 38.0, 10.0, -0.34);
+    float g3 = gearMask(gp, vec2(150.0, 76.0), 28.0, 8.0, 0.42);
     float gm = clamp(g1 + g2 + g3, 0.0, 1.0);
     if (gm > 0.5) {
-      col = mix(u_celShadow * 0.5, u_accentColor * 0.45, 0.35);
+      col = mix(u_celShadow * 0.45, u_accentColor * 0.65, 0.45);
     }
   } else {
-    // Dungeon vaults / Sewer conduits / Bridge keep / Stilt cliffs / Throne monoliths
+    // Prison vaults / Sewer conduits / Passage towers
     float battlement = step(0.5, fract(xFar / 14.0)) * 0.03;
     if (sy > farH - battlement) {
-      col = mix(u_celShadow * 0.48, u_fogColor * 0.85, 0.5);
+      col = mix(u_celShadow * 0.45, u_fogColor * 0.85, 0.5);
     }
   }
 
@@ -360,10 +375,10 @@ void main() {
   float skyNdl = max(dot(N, skyDir), 0.0);
   float skyCel = 0.25 + 0.35 * smoothstep(0.14, 0.32, skyNdl) + 0.40 * smoothstep(0.52, 0.70, skyNdl);
 
-  // Deep biome celShadow in crevices transitioning to ambient sky light on upward bevels
-  vec3 baseLight = mix(u_celShadowColor * 0.62, u_ambientColor * 0.64, skyCel);
+  // Deep velvety Dead Cells celShadow in crevices vs cool ambient moon/sky on upward bevels
+  vec3 baseLight = mix(u_celShadowColor * 0.42, u_ambientColor * 0.48, skyCel);
   // Crisp silhouette edge rim highlight
-  float topRim = pow(max(0.0, -N.y), 2.0) * 0.24;
+  float topRim = pow(max(0.0, -N.y), 2.0) * 0.20;
   baseLight += u_rimColor * topRim;
 
   // Dynamic Point Lights (up to 64 active lights with 3-band cel-stepped normal shading)
@@ -386,36 +401,39 @@ void main() {
     float ndl = max(dot(N, L), 0.0);
 
     // 3-band stylized Dead Cells cel ramp with bevel grazing rim!
-    float cel = 0.20
-      + 0.38 * smoothstep(0.10, 0.24, ndl)
-      + 0.42 * smoothstep(0.46, 0.62, ndl);
-    float grazing = pow(clamp(1.0 - max(N.z, 0.0), 0.0, 1.0), 1.8) * smoothstep(0.12, 0.45, ndl) * 0.36;
+    float cel = 0.16
+      + 0.40 * smoothstep(0.10, 0.24, ndl)
+      + 0.44 * smoothstep(0.46, 0.62, ndl);
+    float grazing = pow(clamp(1.0 - max(N.z, 0.0), 0.0, 1.0), 1.8) * smoothstep(0.14, 0.48, ndl) * 0.30;
 
     pointAccum += lc.rgb * (lc.a * atten * (cel + grazing));
   }
 
+  // Soft-knee shoulder compression on overlapping lights so pillars & hero NEVER blow out white!
+  pointAccum = pointAccum / (1.0 + pointAccum * 0.42);
+
   vec3 totalLight = baseLight + pointAccum;
   if (isBgWall) {
-    // Recessed background masonry sits deeper in shadow + tinted by biome fog for instant depth!
-    totalLight *= 0.62;
+    // Recessed background masonry sits deeper in cool shadow so foreground pops cleanly!
+    totalLight *= 0.48;
   }
 
   vec3 lit = gAlbedo.rgb * totalLight;
   if (isBgWall) {
-    lit = mix(lit, u_fogColor * 0.72, 0.24);
+    lit = mix(lit, u_fogColor * 0.62, 0.28);
   }
 
   // Unshaded self-illuminated emissive pixels (homunculus head, braziers, runes, glowing eyes, acid)
-  vec3 emBoost = gEmissive.rgb * 1.45;
+  vec3 emBoost = gEmissive.rgb * 1.28;
   vec3 finalCol = lit + emBoost;
 
-  // Bright-pass bloom contribution: strong emissives + intensely torch-lit bevel highlights
+  // Bright-pass bloom contribution: surgical emissive glow + crisp high-intensity bevel catch
   float litLum = dot(lit, vec3(0.299, 0.587, 0.114));
-  vec3 specBloom = lit * smoothstep(0.88, 1.35, litLum) * 0.45;
-  vec3 bloomCol = gEmissive.rgb * 1.15 + specBloom;
+  vec3 specBloom = lit * smoothstep(0.92, 1.45, litLum) * 0.30;
+  vec3 bloomCol = gEmissive.rgb * 1.05 + specBloom;
 
   o_lit = vec4(finalCol, 1.0);
-  o_bloom = vec4(clamp(bloomCol, 0.0, 1.5), 1.0);
+  o_bloom = vec4(clamp(bloomCol, 0.0, 1.35), 1.0);
 }
 `;
 
@@ -591,11 +609,11 @@ void main() {
 
   // Sample silky half-res blurred bloom additively
   vec3 bloom = texture(u_bloomTex, v_uv).rgb;
-  vec3 col = scene + bloom * u_bloomStrength;
+  vec3 hdr = scene + bloom * (u_bloomStrength * 0.72);
 
-  // Subtle gothic filmic shoulder rolloff so overlapping torchlights stay rich, not clipped
-  col = col / (1.0 + col * 0.16);
-  col = mix(col, col * u_gradeTint, 0.12);
+  // ACES Filmic tone-mapping curve: velvety dark gothic shadows + saturated glowing highlights!
+  vec3 col = (hdr * (2.51 * hdr + 0.03)) / (hdr * (2.43 * hdr + 0.59) + 0.14);
+  col = mix(col, col * u_gradeTint, 0.14);
 
   // Crisp subtle corner vignette for theatrical Dead Cells framing
   vec2 centered = v_uv * 2.0 - 1.0;

@@ -960,35 +960,8 @@ export class AtmosphereParticles {
       }
     }
 
-    // 7. Crisp Pixel Bitmap Combat Popups (Damage / CRIT! / PARRY!)
-    for (let i = 0; i < MAX_POPUPS; i++) {
-      const life = this.pLife[i];
-      if (life <= 0) continue;
-      const text = this.pText[i];
-      if (!text) continue;
-      const t = life / Math.max(0.01, this.pMaxLife[i]);
-      const sc = this.pScale[i];
-      const charStep = 6 * sc;
-      const startX = this.px[i] - camX - ((text.length - 1) * charStep) * 0.5;
-      const sy = this.py[i] - camY;
-      for (let c = 0; c < text.length; c++) {
-        const ch = text[c];
-        emitQuad(
-          `font:${ch}`,
-          startX + c * charStep,
-          sy,
-          7 * sc,
-          9 * sc,
-          this.pr[i],
-          this.pg[i],
-          this.pb[i],
-          Math.min(1, t * 1.6),
-          1,
-          0,
-          0.9
-        );
-      }
-    }
+    // 7. Combat popups are rendered at crisp native DPI by HudOverlay.ts
+    // (avoiding duplicate overlapping text numbers).
   }
 
   getActiveParticleCount(): number {

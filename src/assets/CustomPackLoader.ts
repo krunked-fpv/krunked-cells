@@ -114,20 +114,56 @@ export function parseLibGdxAtlas(text: string): ParsedLibGdxAtlas {
 
   const commitRegion = (): void => {
     if (!currentRegion) return;
-    const key =
-      currentRegion.index >= 0
-        ? `${currentRegion.name}_${currentRegion.index}`
-        : currentRegion.name;
+    const rawName = currentRegion.name;
+    let baseName = rawName;
+    let frameNum = currentRegion.index;
+
+    // Dead Cells BATL->libGDX exports store frame indices either in `index:` or as `animName_00` / `dir/animName00`
+    if (frameNum < 0) {
+      const mUnderscore = /^(.*)_(\d+)$/.exec(rawName);
+      if (mUnderscore) {
+        baseName = mUnderscore[1];
+        frameNum = parseInt(mUnderscore[2], 10);
+      } else {
+        const mDigits = /^(.*?)(\d{2,})$/.exec(rawName);
+        if (mDigits && mDigits[1].length > 0) {
+          baseName = mDigits[1];
+          frameNum = parseInt(mDigits[2], 10);
+        }
+      }
+    }
+    currentRegion.index = frameNum;
+
+    const key = frameNum >= 0 ? `${baseName}_${frameNum}` : rawName;
+    regions.set(rawName, currentRegion);
     regions.set(key, currentRegion);
-    if (!regions.has(currentRegion.name)) {
-      regions.set(currentRegion.name, currentRegion);
+    if (!regions.has(baseName)) {
+      regions.set(baseName, currentRegion);
     }
-    let list = animations.get(currentRegion.name);
-    if (!list) {
-      list = [];
-      animations.set(currentRegion.name, list);
+
+    const pushAnim = (animKey: string): void => {
+      if (!animKey) return;
+      let list = animations.get(animKey);
+      if (!list) {
+        list = [];
+        animations.set(animKey, list);
+      }
+      list.push(currentRegion!);
+    };
+
+    pushAnim(baseName);
+    const lowerBase = baseName.toLowerCase();
+    if (lowerBase !== baseName) pushAnim(lowerBase);
+
+    // Also register suffix after last '/' (e.g. `deadArcher/idle` -> `idle`, `assassin/run` -> `run`)
+    const slashIdx = baseName.lastIndexOf('/');
+    if (slashIdx >= 0 && slashIdx < baseName.length - 1) {
+      const shortName = baseName.slice(slashIdx + 1);
+      pushAnim(shortName);
+      const lowerShort = shortName.toLowerCase();
+      if (lowerShort !== shortName) pushAnim(lowerShort);
     }
-    list.push(currentRegion);
+
     currentRegion = null;
   };
 
@@ -294,7 +330,22 @@ export function parseTracksJson(text: string): ParsedTracksData {
       let foundDirect = false;
 
       for (const [subKey, subVal] of Object.entries(obj)) {
-        if (Array.isArray(subVal) && subVal.length > 0 && typeof subVal[0] === 'object') {
+        if (Array.isArray(subVal) && subVal.length >= 3 && typeof subVal[0] === 'number') {
+          // Case 3 (Dead Cells retail `*_tracks.json`): flat 3-tuple array [x0, y0, rot0, x1, y1, rot1, ...]
+          const frameCount = Math.floor(subVal.length / 3);
+          for (let fi = 0; fi < frameCount; fi++) {
+            const x = Number(subVal[fi * 3]);
+            const y = Number(subVal[fi * 3 + 1]);
+            const rot = Number(subVal[fi * 3 + 2]);
+            if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+            const b: BoneOffset = { x, y, rot: Number.isFinite(rot) ? rot : undefined };
+            const fk = `${animKey}_${fi}`;
+            const frameMap = byAnimFrame.get(fk) ?? {};
+            frameMap[subKey] = b;
+            byAnimFrame.set(fk, frameMap);
+            if (!defaultBones[subKey]) defaultBones[subKey] = b;
+          }
+        } else if (Array.isArray(subVal) && subVal.length > 0 && typeof subVal[0] === 'object') {
           // Case 2: { "idle": { "headBone": [ {x,y}, {x,y}, ... ] } }
           for (let fi = 0; fi < subVal.length; fi++) {
             const b = extractBone(subVal[fi]);

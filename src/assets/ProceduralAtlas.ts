@@ -659,25 +659,54 @@ function paintBrickTile(
   variant: 'top' | 'mid' | 'deep' | 'var'
 ): void {
   const S = 24;
-  // Brick rows: 3 rows of 8px each with staggered mortar joints
-  const rowH = 8;
+
+  // Deep interior bedrock surrounded on all 4 sides by SOLID:
+  // Dead Cells signature dark atmospheric silhouette stone (zero noisy grid wallpaper!)
+  if (variant === 'deep') {
+    const deepBase = mixRgb(pal.mortar, pal.stoneDark, 0.36);
+    const deepFaint = mixRgb(pal.mortar, pal.stoneDark, 0.56);
+    for (let y = 0; y < S; y++) {
+      for (let x = 0; x < S; x++) {
+        const g = hash2(x, y, seed + 131);
+        const macro = hash2(Math.floor(x / 6), Math.floor(y / 6), seed + 19);
+        const isCrack =
+          ((x + y * 2) % 19 === 0 && g > 0.65) ||
+          ((y === 11 && x > 4 && x < 17) && macro > 0.55);
+        const rgb = isCrack
+          ? scaleRgb(pal.mortar, 0.75)
+          : scaleRgb(mixRgb(deepBase, deepFaint, macro * 0.45), 0.88 + g * 0.18);
+        const h = isCrack ? 0.18 : 0.45 + macro * 0.08 + (g - 0.5) * 0.04;
+        b.pxRgb(x, y, rgb, h);
+      }
+    }
+    b.bakeRegionNormals(1.0, true);
+    return;
+  }
+
+  // Exposed masonry edges: irregular asymmetric hand-hewn stone blocks!
+  const rowHeights = [8, 8, 8];
+  const rowOffsets = [0, 9, 4];
+  const rowSplits = [14, 10, 15];
+
   for (let y = 0; y < S; y++) {
-    const row = Math.floor(y / rowH);
-    const ly = y - row * rowH;
-    const offset = row % 2 === 0 ? 0 : 6;
-    const brickW = 12;
+    const row = Math.min(2, Math.floor(y / rowHeights[0]));
+    const ly = y - row * rowHeights[0];
+    const rowH = rowHeights[row];
+    const shiftedX = (xOff: number) => (xOff + rowOffsets[row]) % S;
+    const split = rowSplits[row];
 
     for (let x = 0; x < S; x++) {
-      const shiftedX = (x + offset) % S;
-      const colIdx = Math.floor(shiftedX / brickW);
-      const lx = shiftedX - colIdx * brickW;
+      const sx = shiftedX(x);
+      const colIdx = sx < split ? 0 : 1;
+      const lx = colIdx === 0 ? sx : sx - split;
+      const brickW = colIdx === 0 ? split : S - split;
 
       const brickSeed = seed * 31 + row * 17 + colIdx * 13;
       const grain = hash2(x, y, brickSeed);
-      const brickTint = 0.90 + hash2(colIdx, row, seed) * 0.22;
+      const brickTint = 0.86 + hash2(colIdx, row, seed) * 0.24;
 
       const isMortar = ly === 0 || lx === 0;
-      const isTopBevel = ly === 1 || ly === 2;
+      const isTopBevel = ly === 1;
       const isBotBevel = ly === rowH - 1;
       const isLeftBevel = lx === 1;
       const isRightBevel = lx === brickW - 1;
@@ -689,36 +718,33 @@ function paintBrickTile(
         rgb = pal.mortar;
         h = 0.08;
       } else {
-        const baseMix = variant === 'deep' ? 0.55 : variant === 'var' ? 0.32 : 0.15;
+        const baseMix = variant === 'var' ? 0.44 : variant === 'mid' ? 0.34 : 0.22;
         let base = mixRgb(pal.stoneBase, pal.stoneDark, baseMix);
-        base = scaleRgb(base, brickTint * (0.94 + grain * 0.12));
+        base = scaleRgb(base, brickTint * (0.93 + grain * 0.14));
 
-        // Sculpted stone dome heightfield (strong Sobel bevel response!)
+        // Sculpted stone heightfield with crisp bevel catch
         const ex = Math.min(lx, brickW - 1 - lx);
         const ey = Math.min(ly, rowH - 1 - ly);
-        const bevelFactor = Math.min(1, Math.min(ex, ey) / 2.5);
-        h = 0.35 + bevelFactor * 0.58 + (grain - 0.5) * 0.08;
+        const bevelFactor = Math.min(1, Math.min(ex, ey) / 2.2);
+        h = 0.36 + bevelFactor * 0.54 + (grain - 0.5) * 0.08;
 
         if (isTopBevel || isLeftBevel) {
-          rgb = mixRgb(base, pal.stoneHi, isTopBevel ? 0.42 : 0.25);
+          rgb = mixRgb(base, pal.stoneHi, isTopBevel ? 0.34 : 0.2);
         } else if (isBotBevel || isRightBevel) {
-          rgb = mixRgb(base, pal.stoneDark, 0.48);
+          rgb = mixRgb(base, pal.stoneDark, 0.52);
         } else {
           rgb = base;
         }
 
         // Style-specific details
         if (pal.style === 'brass' && row === 1 && (lx === 2 || lx === brickW - 2) && ly === 4) {
-          // Brass rivets
           rgb = pal.trimTop;
-          h = 0.98;
-        } else if (pal.style === 'marble' && grain > 0.84) {
-          // Subtle pale marble veining
-          rgb = mixRgb(rgb, pal.stoneHi, 0.35);
+          h = 0.96;
+        } else if (pal.style === 'marble' && grain > 0.85) {
+          rgb = mixRgb(rgb, pal.stoneHi, 0.28);
         } else if (pal.style === 'wood') {
-          // Horizontal wood plank grain
           const woodWave = Math.sin(x * 0.45 + row * 2.1) * 0.5 + 0.5;
-          rgb = mixRgb(pal.wood, pal.woodHi, woodWave * 0.38);
+          rgb = mixRgb(pal.wood, pal.woodHi, woodWave * 0.34);
           if (ly === 0 || ly === 4) {
             rgb = pal.mortar;
             h = 0.12;
@@ -726,16 +752,16 @@ function paintBrickTile(
         }
 
         // Variant cracks / weathered chips
-        if (variant === 'var' && ((x + y * 2) % 13 === 0) && grain > 0.45) {
+        if (variant === 'var' && ((x + y * 2) % 13 === 0) && grain > 0.42) {
           rgb = pal.mortar;
           h = 0.14;
         }
       }
 
       // Top floor lip / moss / carpet / brass trim
-      if (variant === 'top' && y < 5) {
+      if (variant === 'top' && y < 6) {
         if (pal.style === 'moss') {
-          const drape = 2 + Math.floor(hash2(x, 0, seed + 7) * 3.2);
+          const drape = 2 + Math.floor(hash2(x, 0, seed + 7) * 3.8);
           if (y < drape) {
             rgb = y === 0 ? pal.trimAccent : pal.trimTop;
             h = 0.88 - y * 0.06;
@@ -744,18 +770,18 @@ function paintBrickTile(
           if (y < 3) {
             rgb = y === 0 ? pal.trimAccent : pal.trimTop;
             h = 0.92;
-            if (y === 0 && (x % 5 === 1)) {
-              b.pxRgb(x, y, pal.trimAccent, 0.95, pal.glow, 180);
+            if (y === 0 && x % 5 === 1) {
+              b.pxRgb(x, y, pal.trimAccent, 0.95, pal.glow, 170);
               continue;
             }
           }
         } else {
           if (y === 0) {
-            rgb = mixRgb(pal.trimTop, [255, 255, 255], 0.18);
-            h = 0.96;
+            rgb = mixRgb(pal.trimTop, [255, 255, 255], 0.14);
+            h = 0.95;
           } else if (y <= 2) {
             rgb = pal.trimTop;
-            h = 0.88;
+            h = 0.86;
           } else if (y === 3) {
             rgb = pal.mortar;
             h = 0.16;
@@ -766,7 +792,7 @@ function paintBrickTile(
       b.pxRgb(x, y, rgb, h);
     }
   }
-  b.bakeRegionNormals(3.6, true);
+  b.bakeRegionNormals(3.1, true);
 }
 
 function paintOneWayTile(b: PixelAtlasBuilder, pal: TilesetPalette): void {
@@ -1261,13 +1287,13 @@ function paintHeroPose(
   const H = 38;
   b.alloc(key, W, H, 0.5, 1.0);
 
-  const tunic = hexRgb('#2a364a');
-  const tunicHi = hexRgb('#445875');
-  const cloak = hexRgb('#3b2236');
-  const leather = hexRgb('#6e4832');
-  const leatherHi = hexRgb('#9e6d4d');
-  const scarfRed = hexRgb('#c72638');
-  const scarfHi = hexRgb('#f04152');
+  const tunic = hexRgb('#192234');
+  const tunicHi = hexRgb('#2e405e');
+  const cloak = hexRgb('#261224');
+  const leather = hexRgb('#4d3020');
+  const leatherHi = hexRgb('#7d5236');
+  const scarfRed = hexRgb('#bd1b2e');
+  const scarfHi = hexRgb('#ed3447');
   const steel = hexRgb('#bcc8de');
   const cyanCollar = hexRgb('#4de8ff');
   const greenFlask = hexRgb('#4aff9e');
@@ -1370,25 +1396,27 @@ function paintHeroPose(
 }
 
 function paintHomunculusHeadFrames(b: PixelAtlasBuilder): void {
-  const smokeTeal = hexRgb('#1f6678');
-  const plasmaCyan = hexRgb('#38e8ff');
-  const flameAmber = hexRgb('#ff8c24');
-  const eyeGold = hexRgb('#fff7a8');
+  const smokeDark = hexRgb('#18243d');
+  const smokeTeal = hexRgb('#1d5c78');
+  const plasmaCyan = hexRgb('#33d8ff');
+  const flameAmber = hexRgb('#ff7b1c');
+  const eyeGold = hexRgb('#ffe866');
 
   for (let f = 0; f < 4; f++) {
-    b.alloc(`hero:head_flame_${f}`, 20, 22, 0.5, 0.85);
-    const sway = Math.sin((f / 4) * Math.PI * 2) * 1.8;
-    // Outer smoky dark-teal plasma plume
-    b.ellipse(10 + sway * 0.6, 10, 6.2, 7.8, smokeTeal, 0.68, 0.22, smokeTeal, 175);
-    // Upper dancing flame tip
-    b.ellipse(10 + sway * 1.4, 5.5, 3.2, 4.8, plasmaCyan, 0.78, 0.16, plasmaCyan, 240);
-    // Warm amber-orange inner plasma blaze (iconic Dead Cells dual-tone homunculus fire!)
-    b.ellipse(10 + sway * 0.4, 12.5, 4.6, 5.4, flameAmber, 0.86, 0.14, flameAmber, 255);
-    // Incandescent bright glowing single eye
-    b.ellipse(11.5, 13, 2.1, 1.8, eyeGold, 0.98, 0.02, eyeGold, 255);
+    b.alloc(`hero:head_flame_${f}`, 16, 18, 0.5, 0.88);
+    const sway = Math.sin((f / 4) * Math.PI * 2) * 1.4;
+    // Smoky dark-indigo gothic flame envelope (crisp Dead Cells homunculus silhouette!)
+    b.ellipse(8 + sway * 0.5, 9.5, 4.6, 5.8, smokeDark, 0.65, 0.25, smokeTeal, 120);
+    // Dancing cyan plasma flame tips
+    b.ellipse(8 + sway * 1.1, 4.5, 2.2, 3.6, plasmaCyan, 0.78, 0.16, plasmaCyan, 200);
+    b.pxRgb(Math.round(6 + sway), 2, plasmaCyan, 0.9, plasmaCyan, 210);
+    // Rich orange-amber inner flame core
+    b.ellipse(8 + sway * 0.3, 11, 3.2, 3.8, flameAmber, 0.86, 0.14, flameAmber, 225);
+    // Piercing fierce golden homunculus eye!
+    b.rect(9, 10, 3, 2, eyeGold, 0.98, 0, eyeGold, 255);
     // Floating stray embers
-    b.pxRgb(8 + ((f * 3) % 6), 2 + (f % 2), flameAmber, 0.9, flameAmber, 255);
-    b.pxRgb(13 - ((f * 2) % 5), 4 + ((f + 1) % 2), plasmaCyan, 0.9, plasmaCyan, 255);
+    b.pxRgb(7 + ((f * 2) % 4), 1, flameAmber, 0.9, flameAmber, 220);
+    b.pxRgb(11 - ((f * 2) % 4), 3 + (f % 2), plasmaCyan, 0.9, plasmaCyan, 210);
     b.bakeRegionNormals(2.0, false);
   }
 }
@@ -1554,120 +1582,156 @@ function paintEnemyFrame(b: PixelAtlasBuilder, spec: EnemyVisualSpec, frame: num
 // =============================================================================
 
 function paintBosses(b: PixelAtlasBuilder): void {
-  // 1. Behemoth — The Iron Concierge (64x74)
+  // 1. Behemoth — The Iron Concierge (64x74) — Hunched dark-forged iron prison juggernaut!
   for (let f = 0; f < 2; f++) {
     b.alloc(`boss:Behemoth_${f}`, 64, 74, 0.5, 1.0);
     const atk = f === 1;
-    const iron = hexRgb('#44495c');
-    const ironHi = hexRgb('#79829e');
-    const ironDark = hexRgb('#232633');
-    const molten = hexRgb('#ff5722');
-    const coreYel = hexRgb('#ffd452');
+    const ironDark = hexRgb('#1a1d28');
+    const iron = hexRgb('#32384a');
+    const ironHi = hexRgb('#5c6682');
+    const cloth = hexRgb('#471824');
+    const molten = hexRgb('#ff4414');
+    const coreYel = hexRgb('#ffba38');
 
-    // Heavy pillar legs
-    b.rect(16, 48, 12, 24, ironDark, 0.82, 2);
-    b.rect(36 + (atk ? 3 : 0), 48, 12, 24, iron, 0.86, 2);
-    // Massive hunched iron torso
-    b.ellipse(32, 34, 21, 20, iron, 0.82, 0.25);
-    b.ellipse(30, 29, 17, 13, ironHi, 0.9, 0.14);
-    // Glowing molten furnace ribcage cracks!
-    b.line(23, 27, 41, 27, molten, 3, 0.65, molten, 255);
-    b.line(25, 34, 39, 34, molten, 2.5, 0.65, molten, 245);
-    b.ellipse(32, 30, 5, 5, coreYel, 0.92, 0.08, coreYel, 255);
-    // Horned iron mask head
-    b.ellipse(34, 13, 9, 9, ironHi, 0.92, 0.12);
-    b.line(26, 9, 20, 2, ironHi, 3, 0.9);
-    b.line(42, 9, 48, 2, ironHi, 3, 0.9);
-    // Blazing crimson eye slit
-    b.rect(31, 12, 9, 3, coreYel, 0.98, 0, molten, 255);
-    // Colossal spiked gauntlet arm
-    const gx = atk ? 54 : 50;
-    const gy = atk ? 34 : 44;
-    b.line(44, 26, gx, gy, ironHi, 8, 0.9);
-    b.ellipse(gx, gy, 8, 8, ironDark, 0.94, 0.08);
-    b.ellipse(gx + 2, gy, 4, 4, molten, 0.96, 0.04, molten, 250);
-    // Chains hanging from back
-    b.line(14, 34, 8, 56, ironHi, 2.5, 0.85);
+    // Heavy armored greaves & iron sabatons (grounded solidly at y=73!)
+    b.rect(17, 50, 11, 23, ironDark, 0.8, 2);
+    b.rect(19, 54, 7, 6, ironHi, 0.88, 1);
+    b.rect(36 + (atk ? 3 : 0), 50, 11, 23, iron, 0.84, 2);
+    b.rect(38 + (atk ? 3 : 0), 54, 7, 6, ironHi, 0.9, 1);
+    // Tattered crimson prison loincloth between legs
+    b.rect(26, 46, 12, 16, cloth, 0.72, 1);
+    b.line(28, 62, 26, 68, cloth, 2, 0.65);
+    b.line(35, 62, 37, 67, cloth, 2, 0.65);
+    // Angular hunched iron breastplate (broad shoulders tapering down — NOT a sphere!)
+    b.rect(15, 21, 34, 26, ironDark, 0.82, 2);
+    b.rect(18, 23, 28, 20, iron, 0.88, 2);
+    b.rect(19, 43, 26, 4, ironHi, 0.92, 1); // iron girdle belt
+    // Jagged spiked shoulder pauldrons!
+    b.rect(9, 17, 14, 13, iron, 0.9, 2);
+    b.line(12, 17, 6, 9, ironHi, 3, 0.94);
+    b.rect(41, 17, 14, 13, ironHi, 0.92, 2);
+    b.line(51, 17, 58, 9, ironHi, 3, 0.94);
+    // Glowing molten furnace ribcage fissures inside chestplate!
+    b.line(23, 27, 40, 27, molten, 2.5, 0.55, molten, 235);
+    b.line(25, 33, 38, 33, molten, 2.0, 0.55, molten, 225);
+    b.line(27, 38, 36, 38, molten, 1.5, 0.55, molten, 210);
+    b.rect(30, 28, 4, 5, coreYel, 0.92, 0, coreYel, 240);
+    // Horned iron warden helm tucked forward
+    b.rect(26, 9, 14, 13, ironHi, 0.92, 2);
+    b.rect(28, 11, 10, 9, ironDark, 0.78);
+    b.line(27, 11, 19, 3, ironHi, 3, 0.94);
+    b.line(39, 11, 47, 3, ironHi, 3, 0.94);
+    // Fierce blazing crimson visor slit
+    b.rect(29, 14, 9, 2, coreYel, 0.98, 0, molten, 255);
+    // Colossal chained iron crusher gauntlet arm
+    const gx = atk ? 55 : 51;
+    const gy = atk ? 34 : 45;
+    b.line(47, 25, gx, gy, iron, 7, 0.88);
+    b.rect(gx - 6, gy - 6, 12, 12, ironDark, 0.94, 2);
+    b.rect(gx - 3, gy - 2, 6, 4, molten, 0.96, 0, molten, 230);
+    // Heavy iron shackles hanging off back shoulder
+    b.line(13, 29, 7, 56, ironHi, 2.5, 0.86);
     b.addOutline();
-    b.bakeRegionNormals(3.8, false);
+    b.bakeRegionNormals(3.6, false);
   }
   b.alias('boss:Behemoth', 'boss:Behemoth_0');
   b.alias('Behemoth', 'boss:Behemoth_0');
 
-  // 2. TimeKeeper — The Chrono Warden (52x58)
+  // 2. TimeKeeper — The Chrono Warden (52x58) — Agile nocturnal clockwork assassin!
   for (let f = 0; f < 2; f++) {
     b.alloc(`boss:TimeKeeper_${f}`, 52, 58, 0.5, 1.0);
     const atk = f === 1;
-    const cloak = hexRgb('#232d52');
-    const cloakHi = hexRgb('#3f528c');
-    const gold = hexRgb('#e0b145');
-    const chrono = hexRgb('#4ef5e2');
-    const white = hexRgb('#e8ffff');
+    const cloakDark = hexRgb('#151c36');
+    const cloak = hexRgb('#25315c');
+    const sashRed = hexRgb('#a82038');
+    const gold = hexRgb('#c99a38');
+    const chrono = hexRgb('#42f2e0');
 
-    // Floating bronze halo clock gear behind shoulders
-    b.ellipse(26, 18, 16, 16, gold, 0.72, 0.12, gold, 130);
-    b.ellipse(26, 18, 11, 11, hexRgb('#151d36'), 0.45, 0.05);
-    // Sweeping assassin cloak & athletic legs
-    b.line(22, 38, 16, 56, cloak, 4, 0.78);
-    b.line(30, 38, 36 + (atk ? 4 : 0), 56, cloakHi, 4, 0.82);
-    b.ellipse(26, 31, 12, 14, cloak, 0.82, 0.2);
-    b.ellipse(26, 29, 9, 10, cloakHi, 0.88, 0.14);
-    b.rect(20, 34, 12, 3, gold, 0.94);
-    // Hooded head + glowing cyan eyes
-    b.ellipse(27, 14, 7.5, 8.5, cloakHi, 0.92, 0.12);
-    b.pxRgb(29, 14, chrono, 0.98, chrono, 255);
-    b.pxRgb(31, 14, white, 0.98, chrono, 255);
-    // Twin luminous chronoblades!
-    b.line(32, 26, atk ? 50 : 46, atk ? 22 : 10, chrono, 3, 0.96, chrono, 255);
-    b.line(20, 28, 4, atk ? 20 : 40, chrono, 3, 0.96, chrono, 240);
+    // Open filigree astronomical clock halo behind shoulders
+    for (let i = 0; i < 16; i++) {
+      const ang = (i / 16) * Math.PI * 2 + f * 0.2;
+      const hx = Math.round(26 + Math.cos(ang) * 14);
+      const hy = Math.round(18 + Math.sin(ang) * 14);
+      b.pxRgb(hx, hy, gold, 0.85, gold, 110);
+      b.pxRgb(hx + 1, hy, gold, 0.85, gold, 90);
+    }
+    // Sweeping dark ninja cloak & agile boots
+    b.line(23, 37, 16, 56, cloakDark, 4, 0.78);
+    b.line(29, 37, 36 + (atk ? 4 : 0), 56, cloak, 4, 0.82);
+    b.rect(19, 22, 14, 17, cloakDark, 0.82, 2);
+    b.rect(21, 24, 10, 12, cloak, 0.88, 1);
+    b.rect(19, 34, 14, 3, sashRed, 0.92); // crimson waist sash
+    b.line(19, 36, 11, 50, sashRed, 3, 0.84); // trailing sash tail
+    // Pointed assassin hood + piercing glowing teal eyes
+    b.rect(21, 9, 11, 13, cloak, 0.9, 2);
+    b.line(21, 11, 16, 15, cloakDark, 3, 0.84);
+    b.rect(24, 13, 6, 5, cloakDark, 0.72);
+    b.pxRgb(26, 15, chrono, 0.98, chrono, 255);
+    b.pxRgb(29, 15, chrono, 0.98, chrono, 255);
+    // Twin razor-thin curved chronoblades!
+    b.line(31, 26, atk ? 50 : 47, atk ? 22 : 10, chrono, 2.5, 0.96, chrono, 220);
+    b.line(20, 28, 3, atk ? 20 : 41, chrono, 2.5, 0.96, chrono, 210);
     b.addOutline();
     b.bakeRegionNormals(3.4, false);
   }
   b.alias('boss:TimeKeeper', 'boss:TimeKeeper_0');
   b.alias('TimeKeeper', 'boss:TimeKeeper_0');
 
-  // 3. KingsHand — The Sovereign Hand (76x84)
+  // 3. KingsHand — The Sovereign Hand (76x84) — Towering dark-steel royal executioner!
   for (let f = 0; f < 2; f++) {
     b.alloc(`boss:KingsHand_${f}`, 76, 84, 0.5, 1.0);
     const atk = f === 1;
-    const plate = hexRgb('#3d5a8a');
-    const plateHi = hexRgb('#739ed9');
-    const gold = hexRgb('#f0c24b');
-    const cape = hexRgb('#a81f32');
-    const cyan = hexRgb('#6ad2ff');
+    const plateDark = hexRgb('#1c273d');
+    const plate = hexRgb('#32466b');
+    const plateHi = hexRgb('#5c7eb5');
+    const gold = hexRgb('#cfa038');
+    const capeDark = hexRgb('#691220');
+    const cape = hexRgb('#9e1b30');
+    const cyan = hexRgb('#4ed2ff');
 
-    // Tattered royal crimson cape
-    b.ellipse(26, 48, 18, 26, cape, 0.65, 0.2);
-    // Monumental armored legs
-    b.rect(24, 54, 12, 28, plate, 0.84, 2);
-    b.rect(42, 54, 12, 28, plateHi, 0.88, 2);
-    b.rect(23, 62, 14, 4, gold, 0.94);
-    b.rect(41, 62, 14, 4, gold, 0.94);
-    // Broad chestplate & spiked royal pauldrons
-    b.ellipse(38, 36, 20, 20, plate, 0.85, 0.22);
-    b.ellipse(38, 32, 16, 13, plateHi, 0.92, 0.14);
-    b.ellipse(22, 26, 10, 9, gold, 0.94, 0.12);
-    b.ellipse(54, 26, 10, 9, gold, 0.94, 0.12);
-    // Crowned Sovereign Helm
-    b.ellipse(39, 14, 9, 10, plateHi, 0.94, 0.12);
-    b.rect(31, 4, 16, 4, gold, 0.96);
-    b.rect(32, 1, 3, 4, gold, 0.98);
-    b.rect(38, 0, 3, 5, gold, 0.98);
-    b.rect(44, 1, 3, 4, gold, 0.98);
-    // Radiant cyan visor glow
-    b.rect(36, 13, 10, 3, cyan, 0.98, 0, cyan, 255);
-    // Giant Symmetrical Twin-Ended Lance!
+    // Tattered royal crimson mantle sweeping behind
+    b.rect(14, 24, 26, 50, capeDark, 0.65, 2);
+    b.rect(18, 28, 18, 42, cape, 0.72, 1);
+    b.line(16, 74, 12, 81, capeDark, 3, 0.62);
+    b.line(25, 74, 22, 82, cape, 3, 0.65);
+    // Heavy articulated armored greaves (planted solidly at y=83!)
+    b.rect(25, 54, 11, 29, plateDark, 0.84, 2);
+    b.rect(42, 54, 11, 29, plate, 0.88, 2);
+    b.rect(25, 62, 11, 3, gold, 0.94);
+    b.rect(42, 62, 11, 3, gold, 0.94);
+    // Plated battle-tassets & angular gothic cuirass (NOT a blue ball!)
+    b.rect(24, 45, 30, 12, plateDark, 0.86, 2);
+    b.rect(22, 22, 34, 24, plate, 0.88, 2);
+    b.rect(26, 25, 26, 17, plateHi, 0.92, 2);
+    b.rect(36, 24, 6, 22, gold, 0.94); // vertical gilded chest ridge
+    // Sculpted angular dark-steel pauldrons with fine gold trim (NO blown-out yellow orbs!)
+    b.rect(14, 18, 14, 13, plateDark, 0.92, 2);
+    b.rect(14, 18, 14, 2, gold, 0.96);
+    b.line(17, 18, 12, 11, plateHi, 3, 0.94);
+    b.rect(50, 18, 14, 13, plate, 0.94, 2);
+    b.rect(50, 18, 14, 2, gold, 0.96);
+    b.line(60, 18, 65, 11, plateHi, 3, 0.94);
+    // Crowned Sovereign Iron Helm
+    b.rect(31, 8, 16, 14, plateHi, 0.94, 2);
+    b.rect(33, 11, 12, 9, plateDark, 0.82);
+    b.rect(31, 5, 16, 3, gold, 0.96);
+    b.rect(32, 1, 2, 5, gold, 0.98);
+    b.rect(38, 0, 3, 6, gold, 0.98);
+    b.rect(45, 1, 2, 5, gold, 0.98);
+    // Piercing cyan visor glow (crisp surgical emissive accent!)
+    b.rect(35, 13, 9, 2, cyan, 0.98, 0, cyan, 245);
+    // Colossal Symmetrical Twin-Bladed Lance!
     if (atk) {
-      b.line(4, 38, 74, 34, gold, 4, 0.95);
-      b.line(58, 35, 74, 34, cyan, 5, 0.98, cyan, 255);
-      b.line(4, 38, 16, 37, cyan, 4, 0.96, cyan, 230);
+      b.line(4, 38, 74, 34, plateHi, 3.5, 0.94);
+      b.line(58, 35, 74, 34, cyan, 4, 0.98, cyan, 215);
+      b.line(4, 38, 17, 37, cyan, 3.5, 0.96, cyan, 195);
     } else {
-      b.line(18, 66, 66, 8, gold, 4, 0.95);
-      b.line(54, 22, 68, 6, cyan, 5, 0.98, cyan, 255);
-      b.line(14, 70, 24, 58, cyan, 4, 0.96, cyan, 220);
+      b.line(18, 68, 66, 8, plateHi, 3.5, 0.94);
+      b.line(54, 22, 68, 6, cyan, 4, 0.98, cyan, 215);
+      b.line(14, 72, 24, 60, cyan, 3.5, 0.96, cyan, 195);
     }
     b.addOutline();
-    b.bakeRegionNormals(3.8, false);
+    b.bakeRegionNormals(3.6, false);
   }
   b.alias('boss:KingsHand', 'boss:KingsHand_0');
   b.alias('KingsHand', 'boss:KingsHand_0');

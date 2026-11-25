@@ -569,6 +569,30 @@ export class WebGL2Renderer implements RendererAPI {
     }
   }
 
+  private ensureCustomAtlasLoaded(name: string): CustomGpuAtlas | null {
+    const existing = this.customGpuAtlases.get(name);
+    if (existing) return existing;
+    const loader = this.customPackLoader;
+    const gl = this.gl;
+    if (!loader || !gl || this.customLoadInFlight.has(name)) return null;
+    const manifest = loader.getManifest();
+    if (!manifest || !manifest.atlases[name]) return null;
+
+    this.customLoadInFlight.add(name);
+    void loader.loadAtlas(name).then((loaded) => {
+      this.customLoadInFlight.delete(name);
+      if (!loaded || !this.gl) return;
+      const pages: CustomGpuAtlasPage[] = [];
+      for (const p of loaded.pages) {
+        const dTex = this.uploadImageTexture(this.gl, p.diffuse);
+        const nTex = p.normal ? this.uploadImageTexture(this.gl, p.normal) : this.texFlatNormal!;
+        pages.push({ diffuseTex: dTex, normalTex: nTex, width: p.width, height: p.height });
+      }
+      this.customGpuAtlases.set(name, { loaded, pages });
+    });
+    return null;
+  }
+
   private prefetchCoreCustomAssets(): void {
     const loader = this.customPackLoader;
     const gl = this.gl;
@@ -576,22 +600,21 @@ export class WebGL2Renderer implements RendererAPI {
     const manifest = loader.getManifest();
     if (!manifest) return;
 
-    const coreAtlases = ['beheaded', 'behemoth', 'clockRoom', 'bridge', 'castle'];
+    const coreAtlases = [
+      'beheaded',
+      'behemoth',
+      'timeKeeper',
+      'HotK',
+      'collector',
+      'blacksmith',
+      'zombie',
+      'deadArcher',
+      'grenadier',
+      'zombieShield',
+      'mago360',
+    ];
     for (const name of coreAtlases) {
-      if (!manifest.atlases[name]) continue;
-      if (this.customGpuAtlases.has(name) || this.customLoadInFlight.has(name)) continue;
-      this.customLoadInFlight.add(name);
-      void loader.loadAtlas(name).then((loaded) => {
-        this.customLoadInFlight.delete(name);
-        if (!loaded || !this.gl) return;
-        const pages: CustomGpuAtlasPage[] = [];
-        for (const p of loaded.pages) {
-          const dTex = this.uploadImageTexture(this.gl, p.diffuse);
-          const nTex = p.normal ? this.uploadImageTexture(this.gl, p.normal) : this.texFlatNormal!;
-          pages.push({ diffuseTex: dTex, normalTex: nTex, width: p.width, height: p.height });
-        }
-        this.customGpuAtlases.set(name, { loaded, pages });
-      });
+      this.ensureCustomAtlasLoaded(name);
     }
 
     for (const scrollerKey of Object.keys(manifest.scrollers)) {
@@ -872,30 +895,48 @@ export class WebGL2Renderer implements RendererAPI {
   /** Attempts to draw from a loaded Owned Custom Pack atlas, returning true on hit. */
   private tryDrawCustomPackSprite(
     atlasName: string,
-    animPrefix: string,
+    animCandidates: string | readonly string[],
     frameIdx: number,
     anchorX: number,
     anchorY: number,
     flipX: number,
-    flashMix: number
+    flashMix: number,
+    scaleOverride = 0.72
   ): boolean {
     this.customHeadOx = 0;
-    this.customHeadOy = -28;
+    this.customHeadOy = -26;
     if (this.settings.artPackMode !== 'custom' || !this.customPackStatus.available) {
       return false;
     }
-    const gpuAtlas = this.customGpuAtlases.get(atlasName);
+    const gpuAtlas = this.ensureCustomAtlasLoaded(atlasName);
     if (!gpuAtlas) {
       return false;
     }
-    const frames = gpuAtlas.loaded.atlas.animations.get(animPrefix);
-    const region =
-      frames && frames.length > 0
-        ? frames[frameIdx % frames.length]
-        : gpuAtlas.loaded.atlas.regions.get(animPrefix);
-    if (!region) {
-      return false;
+
+    const candidates = typeof animCandidates === 'string' ? [animCandidates] : animCandidates;
+    let matchedName = '';
+    let frames: ReturnType<typeof gpuAtlas.loaded.atlas.animations.get> = undefined;
+    for (let i = 0; i < candidates.length; i++) {
+      const c = candidates[i];
+      const f = gpuAtlas.loaded.atlas.animations.get(c) ?? gpuAtlas.loaded.atlas.animations.get(c.toLowerCase());
+      if (f && f.length > 0) {
+        frames = f;
+        matchedName = c;
+        break;
+      }
     }
+    // Last-resort fallback: first available animation in the atlas (never draw blank!)
+    if (!frames || frames.length === 0) {
+      const first = gpuAtlas.loaded.atlas.animations.entries().next();
+      if (!first.done) {
+        matchedName = first.value[0];
+        frames = first.value[1];
+      }
+    }
+    if (!frames || frames.length === 0) return false;
+
+    const fIdx = Math.abs(frameIdx) % frames.length;
+    const region = frames[fIdx];
     const page = gpuAtlas.pages[region.pageIndex];
     if (!page) {
       return false;
@@ -908,24 +949,36 @@ export class WebGL2Renderer implements RendererAPI {
     const u1 = (region.x + region.w) / page.width;
     const v1 = (region.y + region.h) / page.height;
 
-    const scale = 0.72; // scale retail HD sprites cleanly into 480x270 logical space
+    const scale = scaleOverride;
     const dw = region.w * scale;
     const dh = region.h * scale;
-    const x0 = Math.round(anchorX - dw * 0.5);
+
+    // Ground the trimmed sprite cleanly on anchorY (feet) and center horizontally on origW!
+    const origW = region.origW > 0 ? region.origW : region.w;
+    const origH = region.origH > 0 ? region.origH : region.h;
+    const centerOffX = (region.offsetX + region.w * 0.5 - origW * 0.5) * scale * flipX;
+    const x0 = Math.round(anchorX + centerOffX - dw * 0.5);
     const y0 = Math.round(anchorY - dh);
 
     this.pushRawQuad(x0, y0, x0 + dw, y0 + dh, u0, v0, u1, v1, 1, 1, 1, 1, flipX, flashMix, 0, 1.0);
 
-    // Optional bone track offset (headBone) for anchoring glowing homunculus flame!
-    const frameKey = `${animPrefix}_${frameIdx % Math.max(1, frames?.length ?? 1)}`;
+    // Bone track lookup (`headBone` in Dead Cells beheaded_tracks.json)
+    const frameKey = `${matchedName}_${fIdx}`;
     const bones =
       gpuAtlas.loaded.tracks?.byAnimFrame.get(frameKey) ??
       gpuAtlas.loaded.tracks?.defaultBones ??
       null;
     const headBone = bones?.headBone;
     if (headBone) {
-      this.customHeadOx = headBone.x * scale * flipX;
-      this.customHeadOy = -dh + headBone.y * scale;
+      const bx = (headBone.x - origW * 0.5) * scale * flipX;
+      // Dead Cells tracks.json y is measured down from top of origH, feet near bottom of trimmed sprite
+      const footRow = region.offsetY + region.h;
+      const by = (headBone.y - footRow) * scale;
+      this.customHeadOx = Math.max(-16, Math.min(16, bx));
+      this.customHeadOy = Math.max(-44, Math.min(-10, by));
+    } else {
+      this.customHeadOx = flipX * 2;
+      this.customHeadOy = -Math.max(16, Math.min(34, dh * 0.88));
     }
     return true;
   }
@@ -978,20 +1031,19 @@ export class WebGL2Renderer implements RendererAPI {
         ? 40
         : MAX_ACTIVE_LIGHTS;
 
-    // 1. Prisoner Homunculus Flame Light (iconic flickering warm amber-cyan hero light!)
+    // 1. Prisoner Homunculus Flame Light (balanced dual-tone cyan + warm amber — zero white blowout!)
     const heroFlick = 1.0 + Math.sin(elapsedSec * 12.5) * 0.08 + Math.sin(elapsedSec * 23.0) * 0.04;
     this.addLight(
       heroX + state.player.facing * 2,
-      heroY - 26,
-      138 * heroFlick,
-      0.72,
-      0.88,
+      heroY - 24,
+      132 * heroFlick,
+      0.56,
+      0.86,
       1.0,
-      1.35 * heroFlick,
-      32
+      0.92 * heroFlick,
+      36
     );
-    // Warm amber inner glow right next to the hero collar
-    this.addLight(heroX, heroY - 24, 64, 1.0, 0.58, 0.24, 0.85 * heroFlick, 20);
+    this.addLight(heroX, heroY - 22, 58, 1.0, 0.54, 0.22, 0.48 * heroFlick, 24);
 
     // 2. Transient Combat Lights (slashes, crits, parries, dive-slam, heals)
     this.particles.emitTransientLights(this.emitDynamicLightBound);
@@ -1000,6 +1052,7 @@ export class WebGL2Renderer implements RendererAPI {
     const worldLights = state.lights;
     for (let i = 0; i < worldLights.length; i++) {
       const l = worldLights[i];
+      if (l.kind === 'homunculus') continue; // Rendered smoothly above at interpolated hero head
       const flick =
         l.flickerAmp > 0
           ? 1.0 +
@@ -1177,13 +1230,13 @@ export class WebGL2Renderer implements RendererAPI {
       const sy = l.y - camY;
       if (sx < -32 || sx > VIEWPORT_W + 32 || sy < -40 || sy > VIEWPORT_H + 40) continue;
       if (l.kind === 'brazier') {
-        this.drawSpriteKey(`prop:brazier_${flameFrame3}`, sx, sy + 14, 1, 1, 1, 1, 1, 0, 0.12, 1.0);
+        this.drawSpriteKey(`prop:brazier_${flameFrame3}`, sx, sy + 18, 1, 1, 1, 1, 1, 0, 0.10, 1.0);
       } else if (l.kind === 'torch') {
-        this.drawSpriteKey(`prop:torch_${flameFrame3}`, sx, sy + 8, 1, 1, 1, 1, 1, 0, 0.12, 1.0);
+        this.drawSpriteKey(`prop:torch_${flameFrame3}`, sx, sy + 8, 1, 1, 1, 1, 1, 0, 0.10, 1.0);
       }
     }
 
-    // 4. Foreground Solid Tiles, One-Way Ledges, Ladders, Chains, Spikes, Acid, Water
+    // 4. Foreground Auto-Tiled Solid Masonry, One-Way Ledges, Ladders, Chains, Spikes, Acid, Water
     for (let ty = minTy; ty <= maxTy; ty++) {
       const sy = Math.round(ty * TILE_SIZE - camY);
       const rowOff = ty * grid.width;
@@ -1193,15 +1246,23 @@ export class WebGL2Renderer implements RendererAPI {
         const sx = Math.round(tx * TILE_SIZE - camX);
 
         if (tile === TileKind.SOLID) {
-          const above = ty > 0 ? grid.tiles[(ty - 1) * grid.width + tx] : TileKind.SOLID;
-          const above2 = ty > 1 ? grid.tiles[(ty - 2) * grid.width + tx] : TileKind.SOLID;
-          let reg = regSolidMid;
-          if (above !== TileKind.SOLID && above !== TileKind.SECRET_WALL) {
+          const isSolid = (nx: number, ny: number): boolean => {
+            if (nx < 0 || ny < 0 || nx >= grid.width || ny >= grid.height) return true;
+            const k = grid.tiles[ny * grid.width + nx];
+            return k === TileKind.SOLID || k === TileKind.SECRET_WALL || k === TileKind.CRACKED_FLOOR;
+          };
+          const sAbove = isSolid(tx, ty - 1);
+          const sBelow = isSolid(tx, ty + 1);
+          const sLeft = isSolid(tx - 1, ty);
+          const sRight = isSolid(tx + 1, ty);
+
+          let reg = regSolidDeep;
+          if (!sAbove) {
             reg = regSolidTop;
-          } else if (above2 === TileKind.SOLID && (tileHash(tx, ty) & 7) < 5) {
+          } else if (!sBelow || !sLeft || !sRight) {
+            reg = (tileHash(tx, ty) % 4 === 0) ? regSolidVar : regSolidMid;
+          } else {
             reg = regSolidDeep;
-          } else if ((tileHash(tx, ty) % 5) === 0) {
-            reg = regSolidVar;
           }
           this.pushQuad(reg, sx, sy, TILE_SIZE, TILE_SIZE, 1, 1, 1, 1, 1, 0, 0, 1.0);
         } else if (tile === TileKind.ONE_WAY) {
@@ -1240,25 +1301,25 @@ export class WebGL2Renderer implements RendererAPI {
       }
     }
 
-    // 5. Doors, Teleporters, Chests, Shrines & Passage NPCs
+    // 5. Doors, Teleporters, Chests, Shrines & Passage NPCs (all grounded cleanly to floor!)
     for (let i = 0; i < state.doors.length; i++) {
       const d = state.doors[i];
       if (d.broken) continue;
       const sx = d.pos.x - camX;
-      const sy = d.pos.y - camY;
+      const sy = d.pos.y + d.height * 0.5 - camY;
       if (sx < -48 || sx > VIEWPORT_W + 48 || sy < -72 || sy > VIEWPORT_H + 72) continue;
       let key = 'prop:door_wood';
       if (d.kind === 'biomeExit') key = 'prop:door_exit';
       else if (d.kind === 'bossGate') key = 'prop:door_boss';
       else if (d.kind === 'timed' || d.kind === 'killStreak') key = 'prop:door_gold';
       else if (d.opened) key = 'prop:door_wood_open';
-      this.drawSpriteKey(key, sx, sy, 1, 1, 1, 1, 1, 0, d.kind === 'biomeExit' ? 0.18 : 0, 1.0);
+      this.drawSpriteKey(key, sx, sy, 1, 1, 1, 1, 1, 0, d.kind === 'biomeExit' ? 0.14 : 0, 1.0);
     }
 
     for (let i = 0; i < state.teleporters.length; i++) {
       const tp = state.teleporters[i];
       const sx = tp.pos.x - camX;
-      const sy = tp.pos.y - camY;
+      const sy = tp.pos.y + 12 - camY;
       if (sx < -40 || sx > VIEWPORT_W + 40 || sy < -64 || sy > VIEWPORT_H + 64) continue;
       this.drawSpriteKey(
         tp.activated ? 'prop:teleporter_active' : 'prop:teleporter_idle',
@@ -1270,7 +1331,7 @@ export class WebGL2Renderer implements RendererAPI {
         1,
         1,
         0,
-        tp.activated ? 0.2 : 0.05,
+        tp.activated ? 0.16 : 0.05,
         1.0
       );
     }
@@ -1278,7 +1339,7 @@ export class WebGL2Renderer implements RendererAPI {
     for (let i = 0; i < state.chests.length; i++) {
       const ch = state.chests[i];
       const sx = ch.pos.x - camX;
-      const sy = ch.pos.y - camY;
+      const sy = ch.pos.y + 12 - camY;
       if (sx < -40 || sx > VIEWPORT_W + 40 || sy < -40 || sy > VIEWPORT_H + 40) continue;
       const key =
         ch.kind === 'cursed'
@@ -1292,7 +1353,7 @@ export class WebGL2Renderer implements RendererAPI {
           : ch.opened
           ? 'prop:chest_open'
           : 'prop:chest_closed';
-      this.drawSpriteKey(key, sx, sy, 1, 1, 1, 1, 1, 0, ch.kind === 'cursed' ? 0.14 : 0, 1.0);
+      this.drawSpriteKey(key, sx, sy, 1, 1, 1, 1, 1, 0, ch.kind === 'cursed' ? 0.12 : 0, 1.0);
     }
 
     for (let i = 0; i < state.shrines.length; i++) {
@@ -1300,6 +1361,13 @@ export class WebGL2Renderer implements RendererAPI {
       const sx = sh.pos.x - camX;
       const sy = sh.pos.y - camY;
       if (sx < -52 || sx > VIEWPORT_W + 52 || sy < -64 || sy > VIEWPORT_H + 64) continue;
+      if (sh.kind === 'collector') {
+        const ok = this.tryDrawCustomPackSprite('collector', ['npcCollectorIdle', 'npcCollectorIdlePotion'], Math.floor(elapsedSec * 10), sx, sy, -1, 0, 0.72);
+        if (ok) continue;
+      } else if (sh.kind === 'forge') {
+        const ok = this.tryDrawCustomPackSprite('blacksmith', ['npcBlacksmithIdle'], Math.floor(elapsedSec * 10), sx, sy, -1, 0, 0.72);
+        if (ok) continue;
+      }
       let key = 'prop:scroll_altar';
       if (sh.kind === 'fountain') key = sh.used ? 'prop:fountain_empty' : 'prop:fountain_full';
       else if (sh.kind === 'collector') key = 'prop:npc_collector';
@@ -1307,7 +1375,7 @@ export class WebGL2Renderer implements RendererAPI {
       else if (sh.kind === 'forge') key = 'prop:npc_forge';
       else if (sh.kind === 'challengeRift') key = 'prop:challenge_rift';
       else if (sh.kind === 'loreSkeleton') key = 'prop:skeleton';
-      this.drawSpriteKey(key, sx, sy, 1, 1, 1, 1, 1, 0, 0.08, 1.0);
+      this.drawSpriteKey(key, sx, sy, 1, 1, 1, 1, 1, 0, 0.06, 1.0);
     }
 
     // 6. Turrets & Deployables
@@ -1360,21 +1428,21 @@ export class WebGL2Renderer implements RendererAPI {
             ? 'pickup:gear_bow'
             : 'pickup:gear_sword';
       }
-      this.drawSpriteKey(key, px, py - 8 + bob, 1, 1, 1, 1, 1, 0, 0.22, 0.9);
+      this.drawSpriteKey(key, px, py + 2 + bob, 1, 1, 1, 1, 1, 0, 0.18, 0.9);
     }
 
-    // 8. Enemies & All 3 Multi-Phase Bosses
+    // 8. Enemies & All 3 Multi-Phase Bosses (planted cleanly on feet = pos.y + height * 0.5!)
     for (let i = 0; i < state.enemies.length; i++) {
       const en = state.enemies[i];
       if (en.state === 'dead') continue;
       const ex = en.prevPos.x + (en.pos.x - en.prevPos.x) * interpAlpha - camX;
-      const ey = en.prevPos.y + (en.pos.y - en.prevPos.y) * interpAlpha - camY;
+      const ey = en.prevPos.y + (en.pos.y - en.prevPos.y) * interpAlpha + en.height * 0.5 - camY;
       if (ex < -96 || ex > VIEWPORT_W + 96 || ey < -96 || ey > VIEWPORT_H + 96) continue;
 
       this.drawEnemyOrBoss(en, ex, ey, elapsedSec);
     }
 
-    // 9. Prisoner (Hero) + Glowing Animated Homunculus Plasma Flame Head
+    // 9. Prisoner (Hero) + Glowing Animated Homunculus Plasma Flame Head (heroY is feet!)
     this.drawHero(state.player, heroX - camX, heroY - camY, elapsedSec);
   }
 
@@ -1395,44 +1463,107 @@ export class WebGL2Renderer implements RendererAPI {
       r = 1.05;
       g = 0.92 + pulse;
       b = 0.72;
-      emBoost = 0.12 + pulse;
+      emBoost = 0.10 + pulse;
     }
 
     for (let s = 0; s < en.statusEffects.length; s++) {
       const kind = en.statusEffects[s].kind;
       if (kind === 'freeze' || kind === 'frost') {
-        r = 0.62; g = 0.92; b = 1.15; emBoost = Math.max(emBoost, 0.2);
+        r = 0.62; g = 0.92; b = 1.15; emBoost = Math.max(emBoost, 0.16);
       } else if (kind === 'poison') {
         r = 0.72; g = 1.1; b = 0.62;
       } else if (kind === 'burn') {
-        r = 1.18; g = 0.72; b = 0.45; emBoost = Math.max(emBoost, 0.22);
+        r = 1.18; g = 0.72; b = 0.45; emBoost = Math.max(emBoost, 0.18);
       } else if (kind === 'stun') {
         r = 1.05; g = 0.95; b = 0.68;
       }
     }
 
     if (en.isBoss && en.bossId) {
+      const isAtk = en.state === 'attack' || en.state === 'windup';
       const customAtlas =
         en.bossId === 'Behemoth'
           ? 'behemoth'
           : en.bossId === 'TimeKeeper'
-          ? 'clockRoom'
-          : 'throne';
+          ? 'timeKeeper'
+          : 'HotK';
+      const anims =
+        en.bossId === 'Behemoth'
+          ? isAtk
+            ? ['behemothAtkA', 'behemothAtkB', 'behemothWalkA']
+            : Math.abs(en.vel.x) > 8
+            ? ['behemothWalkA', 'walk', 'behemothWalkIdleA']
+            : ['behemothWalkIdleA', 'behemothWalkA', 'walk']
+          : en.bossId === 'TimeKeeper'
+          ? isAtk
+            ? ['atkA', 'dash', 'cast']
+            : Math.abs(en.vel.x) > 10
+            ? ['dash', 'idle']
+            : ['idle', 'atkA']
+          : isAtk
+          ? ['atkA', 'atkB', 'atkC', 'castBomb']
+          : ['atkAIdle', 'atkCIdle', 'atkA'];
+
       const drawnCustom = this.tryDrawCustomPackSprite(
         customAtlas,
-        en.state === 'attack' ? 'atk' : 'idle',
-        Math.floor(elapsedSec * 8),
+        anims,
+        Math.floor(elapsedSec * 12),
         sx,
         sy,
         en.facing,
-        flash
+        flash,
+        en.bossId === 'KingsHand' ? 0.64 : en.bossId === 'Behemoth' ? 0.66 : 0.72
       );
       if (!drawnCustom) {
         const key = `boss:${en.bossId}_${frame}`;
-        const phasePulse = en.bossPhase >= 2 ? 0.14 : 0;
+        const phasePulse = en.bossPhase >= 2 ? 0.08 : 0;
         this.drawSpriteKey(key, sx, sy, r, g, b, 1, en.facing, flash, emBoost + phasePulse, 1.0);
       }
       return;
+    }
+
+    // Owned Custom Pack enemy atlases (with seamless per-key fallback to Built-In Krunked Art!)
+    const ENEMY_CUSTOM_ATLAS: Record<string, string> = {
+      Zombie: 'zombie',
+      Runner: 'zombie',
+      Archer: 'deadArcher',
+      Grenader: 'grenadier',
+      Shield: 'zombieShield',
+      Mage360: 'mago360',
+      Protector: 'mago360',
+      Comboter: 'comboter',
+      Ninja: 'ninja',
+      LeapingDuelyst: 'leapingDuelyst',
+      ClusterGrenader: 'grenadierCluster',
+      PirateChief: 'pirate',
+      Lancer: 'lancer',
+      Worm: 'zombieWorm',
+      BatKamikaze: 'zombieFly',
+      BatDasher: 'zombieFly',
+    };
+    const cAtlas = ENEMY_CUSTOM_ATLAS[en.defId];
+    if (cAtlas) {
+      const isAtk = en.state === 'attack' || en.state === 'windup';
+      const isMoving = Math.abs(en.vel.x) > 8;
+      const anims = isAtk
+        ? ['atkA', 'atk', 'shoot', 'cast', 'bash', 'idle']
+        : isMoving
+        ? ['run', 'walk', 'idle']
+        : ['idle', 'walk', 'run'];
+      if (
+        this.tryDrawCustomPackSprite(
+          cAtlas,
+          anims,
+          Math.floor(elapsedSec * 12 + en.uid),
+          sx,
+          sy,
+          en.facing,
+          flash,
+          en.isElite ? 0.74 : 0.66
+        )
+      ) {
+        return;
+      }
     }
 
     const key = `enemy:${en.defId}_${frame}`;
@@ -1448,81 +1579,91 @@ export class WebGL2Renderer implements RendererAPI {
     const hb = iframeBlink ? 1.15 : 1.0;
 
     let animKey = 'hero:idle_0';
-    let customAnim = 'idle';
-    let frame = Math.floor(elapsedSec * 7) % 4;
+    let customAnims: string[] = ['idle'];
+    let frame = Math.floor(elapsedSec * 12) % 46;
 
     switch (p.actionState) {
       case 'run':
-        frame = Math.floor(elapsedSec * 14) % 6;
-        animKey = `hero:run_${frame}`;
-        customAnim = 'run';
+        animKey = `hero:run_${Math.floor(elapsedSec * 14) % 6}`;
+        customAnims = ['run', 'walk'];
+        frame = Math.floor(elapsedSec * 18);
         break;
       case 'jump':
         animKey = 'hero:jump';
-        customAnim = 'jumpUp';
+        customAnims = ['jumpUp', 'jumpTransition'];
+        frame = Math.floor(elapsedSec * 14);
         break;
       case 'fall':
         animKey = 'hero:fall';
-        customAnim = 'jumpDown';
+        customAnims = ['jumpDown', 'jumpTransition'];
+        frame = Math.floor(elapsedSec * 14);
         break;
       case 'wallSlide':
       case 'mantle':
         animKey = 'hero:wall_slide';
-        customAnim = 'wallSlide';
+        customAnims = ['wallRun', 'wallIdle', 'climbA'];
+        frame = Math.floor(elapsedSec * 14);
         break;
       case 'roll':
-        frame = Math.floor(elapsedSec * 18) % 3;
-        animKey = `hero:roll_${frame}`;
-        customAnim = 'roll';
+        animKey = `hero:roll_${Math.floor(elapsedSec * 18) % 3}`;
+        customAnims = ['rolling', 'rollStart', 'rollEnd'];
+        frame = Math.floor(elapsedSec * 24);
         break;
       case 'diveSlam':
         animKey = 'hero:dive_slam';
-        customAnim = 'smash';
+        customAnims = ['jumpDown', 'rolling'];
+        frame = Math.floor(elapsedSec * 18);
         break;
-      case 'attack':
-        frame = p.comboStep % 3;
-        animKey = `hero:attack_${frame}`;
-        customAnim = 'atkA';
+      case 'attack': {
+        const step = p.comboStep % 3;
+        animKey = `hero:attack_${step}`;
+        customAnims = step === 0 ? ['atkA', 'atkB'] : step === 1 ? ['atkB', 'atkA'] : ['atkC', 'atkA'];
+        frame = Math.floor(elapsedSec * 22);
         break;
+      }
       case 'parry':
       case 'parrySuccess':
         animKey = 'hero:parry';
-        customAnim = 'parry';
+        customAnims = ['idleFight', 'atkB', 'idle'];
+        frame = Math.floor(elapsedSec * 16);
         break;
       case 'heal':
         animKey = 'hero:heal';
-        customAnim = 'drink';
+        customAnims = ['drink', 'idle'];
+        frame = Math.floor(elapsedSec * 16);
         break;
       case 'hurt':
         animKey = 'hero:hurt';
-        customAnim = 'hit';
+        customAnims = ['idleInjured', 'idle'];
+        frame = Math.floor(elapsedSec * 14);
         break;
       case 'dead':
         animKey = 'hero:dead';
-        customAnim = 'die';
+        customAnims = ['idleKnee', 'idleInjured'];
+        frame = Math.floor(elapsedSec * 10);
         break;
       default:
-        frame = Math.floor(elapsedSec * 5) % 4;
-        animKey = `hero:idle_${frame}`;
-        customAnim = 'idle';
+        animKey = `hero:idle_${Math.floor(elapsedSec * 5) % 4}`;
+        customAnims = ['idle', 'idleFight'];
+        frame = Math.floor(elapsedSec * 14);
         break;
     }
 
-    const drawnCustom = this.tryDrawCustomPackSprite('beheaded', customAnim, frame, sx, sy, p.facing, flash);
+    const drawnCustom = this.tryDrawCustomPackSprite('beheaded', customAnims, frame, sx, sy, p.facing, flash, 0.76);
     let headOx = p.facing * 2;
-    let headOy = p.actionState === 'roll' ? -15 : p.actionState === 'dead' ? -6 : -27;
+    let headOy = p.actionState === 'roll' ? -14 : p.actionState === 'dead' ? -6 : -25;
 
     if (drawnCustom) {
       headOx = this.customHeadOx;
       headOy = this.customHeadOy;
     } else {
-      this.drawSpriteKey(animKey, sx, sy, hr, hg, hb, 1, p.facing, flash, iframeBlink ? 0.2 : 0, 1.0);
+      this.drawSpriteKey(animKey, sx, sy, hr, hg, hb, 1, p.facing, flash, iframeBlink ? 0.15 : 0, 1.0);
     }
 
-    // Layered Glowing Cyan-Amber Homunculus Plasma Head (unmistakable Dead Cells silhouette!)
+    // Layered Glowing Cyan-Amber Homunculus Plasma Head (crisp Dead Cells silhouette!)
     if (p.actionState !== 'dead') {
       const flameFrame = Math.floor(elapsedSec * 14) % 4;
-      const bob = Math.sin(elapsedSec * 12) * 1.1;
+      const bob = Math.sin(elapsedSec * 12) * 0.9;
       this.drawSpriteKey(
         `hero:head_flame_${flameFrame}`,
         sx + headOx,
@@ -1532,9 +1673,9 @@ export class WebGL2Renderer implements RendererAPI {
         1,
         1,
         p.facing,
-        flash * 0.4,
-        0.55,
-        0.5
+        flash * 0.3,
+        0.35,
+        0.4
       );
     }
   }
@@ -1650,8 +1791,26 @@ export class WebGL2Renderer implements RendererAPI {
       const en = state.enemies[i];
       if (en.state === 'dead') continue;
       const ex = en.prevPos.x + (en.pos.x - en.prevPos.x) * interpAlpha - camX;
-      const ey = en.prevPos.y + (en.pos.y - en.prevPos.y) * interpAlpha - camY;
+      const ey = en.prevPos.y + (en.pos.y - en.prevPos.y) * interpAlpha + en.height * 0.5 - camY;
       if (ex < -96 || ex > VIEWPORT_W + 96 || ey < -96 || ey > VIEWPORT_H + 96) continue;
+
+      // Grounded contact shadow under grounded enemies & bosses
+      if (en.grounded) {
+        this.emitVfxQuadBound(
+          'vfx:ember',
+          ex,
+          ey - 1,
+          Math.max(14, en.width * 1.15),
+          5,
+          0.02,
+          0.02,
+          0.06,
+          0.52,
+          1,
+          0,
+          0
+        );
+      }
 
       // Concierge Lacerating Aura Ring!
       if (en.bossAuraTicks > 0) {
@@ -1825,7 +1984,9 @@ export class WebGL2Renderer implements RendererAPI {
     this.curCamY = camY;
 
     const heroX = state.player.prevPos.x + (state.player.pos.x - state.player.prevPos.x) * a;
-    const heroY = state.player.prevPos.y + (state.player.pos.y - state.player.prevPos.y) * a;
+    const heroCenterY = state.player.prevPos.y + (state.player.pos.y - state.player.prevPos.y) * a;
+    // SimState stores player.pos as AABB center; renderer sprite/VFX anchors use grounded feet Y!
+    const heroY = heroCenterY + state.player.height * 0.5;
 
     this.particles.step(state, theme.weather, elapsedSec, heroX, heroY, camX, camY);
 

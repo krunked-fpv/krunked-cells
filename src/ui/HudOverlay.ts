@@ -1070,14 +1070,14 @@ export class HudOverlay {
 
     this.bossTitleEl.textContent = info.name;
     this.bossSubEl.textContent = ` — ${info.subtitle}`;
-    this.bossPhaseEl.textContent = `PHASE ${Math.max(1, boss.bossPhase + 1)}`;
+    this.bossPhaseEl.textContent = `PHASE ${Math.max(1, boss.bossPhase)}`;
     this.bossFillEl.style.width = `${pct.toFixed(2)}%`;
     this.bossHpTextEl.textContent = `${Math.max(0, Math.ceil(boss.hp))} / ${Math.ceil(boss.maxHp)}`;
   }
 
   private updateNearbyLootAndPrompts(state: SimState, bindings: KeyBindings): void {
-    const px = state.player.pos.x + state.player.width * 0.5;
-    const py = state.player.pos.y + state.player.height * 0.5;
+    const px = state.player.pos.x;
+    const py = state.player.pos.y;
 
     // 1. Find nearest gear pickup within reach
     let nearestGear: PickupState | null = null;
