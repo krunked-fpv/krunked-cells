@@ -630,7 +630,7 @@ export class WebGL2Renderer implements RendererAPI {
 
   private uploadImageTexture(
     gl: WebGL2RenderingContext,
-    img: ImageBitmap | HTMLImageElement
+    img: ImageBitmap | HTMLImageElement | HTMLCanvasElement
   ): WebGLTexture {
     const tex = gl.createTexture();
     if (!tex) throw new Error('Failed to create custom pack texture');

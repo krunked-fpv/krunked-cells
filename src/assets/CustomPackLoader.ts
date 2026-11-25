@@ -65,7 +65,7 @@ export interface ParsedTracksData {
 }
 
 export interface CustomAtlasPageTextures {
-  diffuse: ImageBitmap | HTMLImageElement;
+  diffuse: ImageBitmap | HTMLImageElement | HTMLCanvasElement;
   normal: ImageBitmap | HTMLImageElement | null;
   width: number;
   height: number;
@@ -535,7 +535,14 @@ function buildSyntheticManifest(paths: string[]): AssetManifest {
         if (singleN) normalPages.push(singleN);
       }
       const tracksFile = lowerSet.get(`${dir}${stem}_tracks.json`.toLowerCase());
-      atlases[stem] = { atlasFile: p, pages, normalPages, tracksFile };
+      const skinFile = lowerSet.get(`${dir}${stem}_default_s.png`.toLowerCase());
+      atlases[stem] = {
+        atlasFile: p,
+        pages,
+        normalPages,
+        ...(tracksFile ? { tracksFile } : {}),
+        ...(skinFile ? { skinFile } : {}),
+      };
       entries.push({ key: stem, kind: 'atlas', relPath: p, sizeBytes: 1 });
     } else if (low.includes('scroller/') && (low.endsWith('.png') || low.endsWith('.jpg'))) {
       const segs = p.split('/');
@@ -684,6 +691,61 @@ function pickFolderViaInputFallback(): Promise<Map<string, Blob> | null> {
 // -----------------------------------------------------------------------------
 // Main CustomPackLoader Implementation
 // -----------------------------------------------------------------------------
+
+/**
+ * Decodes Dead Cells skin-LUT-encoded character/boss atlases (`*_default_s.png`)
+ * where pixel `(R, G, B <= 4, A > 0)` encodes normalized `(u = R/255, v = G/255)`
+ * coordinates into the 2D skin palette LUT. Returns a crisp full-color canvas!
+ */
+function applySkinLutToImage(
+  diffuse: ImageBitmap | HTMLImageElement,
+  skinLut: ImageBitmap | HTMLImageElement
+): HTMLCanvasElement | ImageBitmap | HTMLImageElement {
+  if (typeof document === 'undefined') return diffuse;
+  const dw = diffuse.width;
+  const dh = diffuse.height;
+  const lw = skinLut.width;
+  const lh = skinLut.height;
+  if (dw <= 0 || dh <= 0 || lw <= 0 || lh <= 0) return diffuse;
+
+  const lutCanvas = document.createElement('canvas');
+  lutCanvas.width = lw;
+  lutCanvas.height = lh;
+  const lCtx = lutCanvas.getContext('2d', { willReadFrequently: true });
+  if (!lCtx) return diffuse;
+  lCtx.drawImage(skinLut, 0, 0);
+  const lutData = lCtx.getImageData(0, 0, lw, lh).data;
+
+  const outCanvas = document.createElement('canvas');
+  outCanvas.width = dw;
+  outCanvas.height = dh;
+  const ctx = outCanvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return diffuse;
+  ctx.drawImage(diffuse, 0, 0);
+  const img = ctx.getImageData(0, 0, dw, dh);
+  const px = img.data;
+
+  const scaleX = lw / 256;
+  const scaleY = lh / 256;
+
+  for (let i = 0; i < px.length; i += 4) {
+    const a = px[i + 3];
+    if (a === 0) continue;
+    const b = px[i + 2];
+    if (b > 6) continue; // True-color pixel (not LUT-encoded)
+    const r = px[i];
+    const g = px[i + 1];
+    const lx = Math.min(lw - 1, Math.floor(r * scaleX));
+    const ly = Math.min(lh - 1, Math.floor(g * scaleY));
+    const li = (ly * lw + lx) * 4;
+    px[i] = lutData[li];
+    px[i + 1] = lutData[li + 1];
+    px[i + 2] = lutData[li + 2];
+  }
+
+  ctx.putImageData(img, 0, 0);
+  return outCanvas;
+}
 
 export class CustomPackLoader implements CustomPackAssetResolver {
   private source: CustomPackStatus['source'] = 'none';
@@ -927,22 +989,37 @@ export class CustomPackLoader implements CustomPackAssetResolver {
       ? entry.atlasFile.slice(0, entry.atlasFile.lastIndexOf('/') + 1)
       : '';
 
+    let skinLut: ImageBitmap | HTMLImageElement | null = null;
+    if (entry.skinFile) {
+      const skinBlob = await this.fetchBlob(entry.skinFile);
+      if (skinBlob) {
+        skinLut = await decodeImageBlob(skinBlob);
+      }
+    }
+
     const pages: CustomAtlasPageTextures[] = [];
     for (let i = 0; i < parsedAtlas.pages.length; i++) {
       const pageMeta = parsedAtlas.pages[i];
       const diffusePath = entry.pages[i] ?? `${dir}${pageMeta.fileName}`;
-      const normalGuess = diffusePath.replace(/\.png$/i, '_n.png');
-      const normalPath = entry.normalPages[i] ?? normalGuess;
+      // Only fetch normal map if explicitly listed in manifest.normalPages (avoids HTTP 404s!)
+      const expectedNormal = diffusePath.replace(/\.png$/i, '_n.png');
+      const normalPath =
+        entry.normalPages[i] ??
+        entry.normalPages.find((np) => np.toLowerCase() === expectedNormal.toLowerCase()) ??
+        null;
 
       const diffBlob = await this.fetchBlob(diffusePath);
       if (!diffBlob) continue;
-      const diffuse = await decodeImageBlob(diffBlob);
-      if (!diffuse) continue;
+      const rawDiffuse = await decodeImageBlob(diffBlob);
+      if (!rawDiffuse) continue;
+      const diffuse = skinLut ? applySkinLutToImage(rawDiffuse, skinLut) : rawDiffuse;
 
       let normal: ImageBitmap | HTMLImageElement | null = null;
-      const normBlob = await this.fetchBlob(normalPath);
-      if (normBlob) {
-        normal = await decodeImageBlob(normBlob);
+      if (normalPath) {
+        const normBlob = await this.fetchBlob(normalPath);
+        if (normBlob) {
+          normal = await decodeImageBlob(normBlob);
+        }
       }
 
       pages.push({

@@ -473,11 +473,19 @@ function main(): void {
         tracksFile = tracksPakPath;
       }
 
+      let skinFile: string | undefined;
+      const skinPakPath = `atlas/${atlasName}_default_s.png`;
+      if (archive.files.has(skinPakPath)) {
+        extractRaw(skinPakPath, `${atlasName}_default_s`, 'atlas');
+        skinFile = skinPakPath;
+      }
+
       atlases[atlasName] = {
         atlasFile: atlasPakPath,
         pages,
         normalPages,
         ...(tracksFile ? { tracksFile } : {}),
+        ...(skinFile ? { skinFile } : {}),
       };
     }
 

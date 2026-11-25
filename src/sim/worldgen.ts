@@ -75,15 +75,17 @@ function carveRoomBackground(
   // Indoor gothic halls: carve dramatic arched cathedral/prison windows into upper walls
   // so moonlight, distant towers, and giant clockwork gears shine dramatically inside!
   if (biomeId === 'TopClockTower') {
-    const cx = innerTx + innerTw * 0.5;
-    const cy = innerTy + innerTh * 0.45;
+    const centers = [innerTx + 12, innerTx + 27];
+    const cy = innerTy + innerTh * 0.46;
     const rad = Math.min(innerTw, innerTh) * 0.44;
     for (let y = innerTy; y < floorTy - 1; y++) {
       for (let x = innerTx + 2; x < innerTx + innerTw - 2; x++) {
-        const dx = (x + 0.5 - cx) * 0.72;
-        const dy = y + 0.5 - cy;
-        if (dx * dx + dy * dy <= rad * rad) {
-          setBgTile(grid, x, y, 0);
+        for (const cx of centers) {
+          const dx = (x + 0.5 - cx) * 0.85;
+          const dy = y + 0.5 - cy;
+          if (dx * dx + dy * dy <= rad * rad) {
+            setBgTile(grid, x, y, 0);
+          }
         }
       }
     }

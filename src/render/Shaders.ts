@@ -140,82 +140,95 @@ void main() {
   float rayFade = (1.0 - sy * 0.68) * smoothstep(0.0, 0.18, sy);
   col += mix(u_accentColor, vec3(0.85, 0.94, 1.0), 0.45) * (rayWave * rayFade * 0.32);
 
-  // Layer 1 (Far Architectural Silhouettes — 0.08x parallax)
-  float xFar = uv.x * 480.0 + u_camera.x * 0.08;
-  float farCell = floor(xFar / 44.0);
-  float farLocal = fract(xFar / 44.0);
-  float farH = 0.40 + hash11(farCell * 3.17 + float(u_themeId)) * 0.24;
+  // Layer 1 (Far Mountain Ridges & Gothic Castle Silhouettes — 0.06x parallax)
+  float xFar = uv.x * 480.0 + u_camera.x * 0.06;
+  float ridgeNoise = fbm2(vec2(xFar * 0.008 + float(u_themeId) * 3.1, 1.5));
+  float farRidge = 0.56 + (ridgeNoise - 0.5) * 0.22;
+  if (sy > farRidge) {
+    vec3 ridgeCol = mix(u_skyMid * 0.55, u_fogColor * 0.85, 0.55);
+    col = mix(col, ridgeCol, 0.85);
+  }
 
-  // Theme-tailored far silhouette profiles
-  if (u_themeId == 1 || u_themeId == 3 || u_themeId == 4 || u_themeId == 5 || u_themeId == 7 || u_themeId == 8) {
-    // Distant gothic citadel spires, cathedrals & battlements (Promenade / Ramparts / Bridge / Stilt / Castle / Throne)
-    float spire = step(abs(farLocal - 0.5), (1.0 - clamp((sy - (farH - 0.17)) / 0.19, 0.0, 1.0)) * 0.28);
-    float merlon = step(0.5, fract(xFar / 8.0)) * 0.025;
-    if (sy > farH - merlon || (sy > farH - 0.17 && spire > 0.5 && hash11(farCell + 9.0) > 0.30)) {
-      vec3 silCol = mix(u_celShadow * 0.42, u_fogColor * 0.78, 0.55);
-      // Warm distant lit castle windows
-      float wx = fract(xFar / 10.0);
-      float wy = fract(sy * 28.0);
-      float win = step(0.32, wx) * step(wx, 0.68) * step(0.24, wy) * step(wy, 0.72) * step(0.80, hash21(vec2(floor(xFar / 10.0), floor(sy * 28.0))));
-      col = mix(silCol, u_accentColor * 1.3, win * 0.9);
-    }
-  } else if (u_themeId == 6) {
-    // Clock Tower / Clock Room giant interlocking rotating bronze gears!
-    vec2 gp = vec2(mod(xFar, 180.0), sy * 270.0);
-    float g1 = gearMask(gp, vec2(52.0, 120.0), 50.0, 12.0, 0.25);
-    float g2 = gearMask(gp, vec2(126.0, 162.0), 38.0, 10.0, -0.34);
-    float g3 = gearMask(gp, vec2(150.0, 76.0), 28.0, 8.0, 0.42);
+  float farCell = floor(xFar / 52.0);
+  float farLocal = fract(xFar / 52.0);
+  float towerSeed = hash11(farCell * 7.13 + float(u_themeId) * 1.9);
+  float farH = 0.48 + towerSeed * 0.22;
+
+  if (u_themeId == 6) {
+    // Clock Tower / Clock Room: colossal interlocking rotating bronze/iron clockwork gears!
+    vec2 gp = vec2(mod(xFar * 1.4, 170.0), sy * 270.0);
+    float g1 = gearMask(gp, vec2(48.0, 118.0), 54.0, 14.0, 0.22);
+    float g2 = gearMask(gp, vec2(124.0, 162.0), 40.0, 12.0, -0.32);
+    float g3 = gearMask(gp, vec2(138.0, 74.0), 30.0, 10.0, 0.44);
     float gm = clamp(g1 + g2 + g3, 0.0, 1.0);
     if (gm > 0.5) {
-      col = mix(u_celShadow * 0.45, u_accentColor * 0.65, 0.45);
+      vec3 gearCol = mix(u_celShadow * 0.35, u_accentColor * 0.55, 0.38);
+      col = mix(col, gearCol, 0.88);
     }
   } else {
-    // Prison vaults / Sewer conduits / Passage towers
-    float battlement = step(0.5, fract(xFar / 14.0)) * 0.03;
-    if (sy > farH - battlement) {
-      col = mix(u_celShadow * 0.45, u_fogColor * 0.85, 0.5);
+    // Gothic citadel keeps, needle spires (pointing UP!) & warm lit castle windows
+    float inKeep = step(0.18, farLocal) * step(farLocal, 0.82);
+    float spireDist = abs(farLocal - 0.5);
+    float spireT = clamp((sy - (farH - 0.16)) / 0.16, 0.0, 1.0); // 0 at sharp tip, 1 at base!
+    float inSpire = step(spireDist, spireT * 0.22) * step(farH - 0.16, sy) * step(sy, farH) * step(0.42, towerSeed);
+    float merlon = step(0.5, fract(xFar / 6.0)) * 0.018 * inKeep;
+    if ((sy > farH - merlon && inKeep > 0.5) || inSpire > 0.5) {
+      vec3 silCol = mix(u_celShadow * 0.36, u_fogColor * 0.72, 0.52);
+      // Warm glowing castle slit windows
+      float wx = fract(xFar / 9.0);
+      float wy = fract(sy * 32.0);
+      float win = step(0.38, wx) * step(wx, 0.62) * step(0.28, wy) * step(wy, 0.72)
+        * step(0.84, hash21(vec2(floor(xFar / 9.0), floor(sy * 32.0))))
+        * step(farH + 0.03, sy);
+      col = mix(silCol, u_accentColor * 1.15, win * 0.85);
     }
   }
 
-  // Layer 2 (Midground Gothic Arches / Pillars / Pipes — 0.20x parallax)
-  float xMid = uv.x * 480.0 + u_camera.x * 0.20;
-  float pillarPeriod = (u_themeId == 2) ? 72.0 : 88.0;
-  float mLocal = mod(xMid, pillarPeriod);
-  float mIdx = floor(xMid / pillarPeriod);
-  float isPillar = step(mLocal, 14.0) + step(pillarPeriod - 14.0, mLocal);
-  float archDx = (mLocal - pillarPeriod * 0.5) / (pillarPeriod * 0.36);
-  float archTop = 0.26 + archDx * archDx * 0.22;
-  float isArch = step(sy, archTop);
+  // Layer 2 (Midground Dark Ruined Viaduct Arches / Rooftops rising from horizon — 0.16x parallax)
+  float xMid = uv.x * 480.0 + u_camera.x * 0.16;
+  float bayPeriod = (u_themeId == 2) ? 68.0 : 84.0;
+  float mLocal = mod(xMid, bayPeriod);
+  float mIdx = floor(xMid / bayPeriod);
+  float baySeed = hash11(mIdx * 5.71 + float(u_themeId));
+  // Grounded horizon viaduct deck with semicircular open archways underneath (NO inverted white hills!)
+  float horizonDeck = 0.68 + (baySeed - 0.5) * 0.06;
+  float archNormX = (mLocal - bayPeriod * 0.5) / (bayPeriod * 0.34);
+  float archCurve = horizonDeck + 0.08 + (1.0 - sqrt(max(0.0, 1.0 - archNormX * archNormX))) * 0.14;
+  float inArchOpening = step(abs(archNormX), 0.98) * step(archCurve, sy);
+  float inViaduct = step(horizonDeck, sy) * (1.0 - inArchOpening);
 
-  if (isPillar > 0.5 || isArch > 0.5) {
-    vec3 midCol = mix(u_celShadow * 0.36, u_fogColor * 0.65, 0.45);
-    // Rim catch from moon/accent on pillar edges
-    float edgeHighlight = step(12.0, mLocal) * step(mLocal, 14.5);
-    midCol += u_accentColor * edgeHighlight * 0.16;
-    col = mix(col, midCol, 0.88);
-  } else if (u_themeId == 0 || u_themeId == 9) {
-    // Prison / Passage faint iron bars & warm distant torch pinpoint in arches
-    float bar = step(0.86, fract(mLocal / 10.0)) * step(0.28, sy) * step(sy, 0.72);
-    col = mix(col, u_celShadow * 0.25, bar * 0.55);
-    vec2 torchP = vec2((mLocal - pillarPeriod * 0.5) / 20.0, (sy - 0.54) * 5.0);
-    float td = length(torchP);
-    float flick = 0.85 + 0.15 * sin(u_time * 9.0 + mIdx * 4.3);
-    col += u_accentColor * exp(-td * 2.4) * 0.32 * flick;
-  } else if (u_themeId == 2) {
-    // Sewer horizontal ribbed aqueduct pipe across upper midground
-    if (sy > 0.16 && sy < 0.25) {
-      float rib = step(0.82, fract(xMid / 18.0));
-      col = mix(u_celShadow * 0.4, u_accentColor * 0.32, rib * 0.45);
+  if (inViaduct > 0.5) {
+    vec3 midCol = mix(u_celShadow * 0.28, u_fogColor * 0.55, 0.45);
+    // Subtle moonlit top stone bevel along viaduct parapet
+    float topRim = step(sy, horizonDeck + 0.012);
+    midCol += mix(u_accentColor, vec3(0.8, 0.9, 1.0), 0.5) * topRim * 0.14;
+    col = mix(col, midCol, 0.92);
+  }
+
+  // Biome-specific ambient midground details
+  if (u_themeId == 2) {
+    // Sewer ribbed horizontal aqueduct conduit across upper background
+    if (sy > 0.18 && sy < 0.25) {
+      float rib = step(0.84, fract(xMid / 18.0));
+      col = mix(u_celShadow * 0.34, u_accentColor * 0.30, rib * 0.45);
     }
   } else if (u_themeId == 4) {
-    // Black Bridge distant lightning shimmer
-    float bolt = smoothstep(0.96, 1.0, sin(u_time * 1.7 + 0.4) * sin(u_time * 5.3));
-    col += vec3(0.45, 0.72, 1.0) * bolt * (1.0 - sy) * 0.28;
+    // Black Bridge distant lightning flash through storm clouds
+    float bolt = smoothstep(0.965, 1.0, sin(u_time * 1.7 + 0.4) * sin(u_time * 5.3));
+    col += vec3(0.45, 0.72, 1.0) * bolt * (1.0 - sy) * 0.32;
+  } else if (u_themeId == 0 || u_themeId == 9) {
+    // Prison / Passage faint iron window bars & distant flickering sconce ember
+    float bar = step(0.88, fract(mLocal / 11.0)) * step(0.32, sy) * step(sy, 0.72);
+    col = mix(col, u_celShadow * 0.20, bar * 0.42);
+    vec2 torchP = vec2((mLocal - bayPeriod * 0.5) / 22.0, (sy - 0.58) * 5.5);
+    float td = length(torchP);
+    float flick = 0.85 + 0.15 * sin(u_time * 9.0 + mIdx * 4.3);
+    col += u_accentColor * exp(-td * 2.6) * 0.24 * flick;
   }
 
   // Layer 3 (Atmospheric Depth Horizon Haze — keeps foreground silhouettes razor readable!)
-  float horizonMist = smoothstep(0.45, 1.0, sy);
-  col = mix(col, u_fogColor * 0.92, horizonMist * 0.58);
+  float horizonMist = smoothstep(0.52, 1.0, sy);
+  col = mix(col, u_fogColor * 0.85, horizonMist * 0.52);
 
   o_color = vec4(col, 1.0);
 }

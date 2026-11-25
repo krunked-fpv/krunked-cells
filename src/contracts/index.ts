@@ -1080,7 +1080,7 @@ export interface AssetManifest {
   version: number;
   extractedAt: string;
   sourceSha256: string;
-  atlases: Record<string, { atlasFile: string; pages: string[]; normalPages: string[]; tracksFile?: string }>;
+  atlases: Record<string, { atlasFile: string; pages: string[]; normalPages: string[]; tracksFile?: string; skinFile?: string }>;
   scrollers: Record<string, string[]>;
   gradients: Record<string, string>;
   audioSfx: Record<string, string>;
