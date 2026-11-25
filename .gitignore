@@ -1,0 +1,25 @@
+# Dependencies & build output
+node_modules/
+dist/
+.vite/
+
+# Strictly gitignored owned retail extraction cache (IP Firewall)
+.krunked-cells-assets/
+*.pak
+*.cdb
+*.hdll
+*.exe
+*.dll
+
+# Scratchpads, test artifacts, caches, logs, backups
+.tmp/
+tmp/
+scratch/
+coverage/
+*.log
+*.bak
+*.swp
+.DS_Store
+Thumbs.db
+.env
+.env.*
