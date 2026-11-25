@@ -500,6 +500,31 @@ function handleWorldInteraction(state: SimState, rng: RngAPI): void {
     }
   }
 
+  // 2.5. Directly standing in front of an unlocked Biome Exit Door wins over weapon-swap loops
+  for (let i = 0; i < state.doors.length; i++) {
+    const door = state.doors[i]!;
+    if (door.broken || door.kind !== 'biomeExit') continue;
+    const curBiome = getBiome(state.activeBiomeId);
+    if (curBiome.isBossArena && !state.bossArenaState.defeated) continue;
+    if (Math.hypot(door.pos.x - px, door.pos.y - py) <= 52) {
+      if (state.activeBiomeId === 'Passage') {
+        const dest: BiomeId = door.targetBiomeId ?? state.passageState.nextBiomes[0] ?? 'PrisonCourtyard';
+        transitionBiomeWithRng(state, dest, rng);
+        return;
+      }
+      const nextList: BiomeId[] =
+        curBiome.nextBiomes.length > 0
+          ? [...curBiome.nextBiomes]
+          : door.targetBiomeId
+            ? [door.targetBiomeId]
+            : ['PrisonCourtyard'];
+      state.passageState.fromBiome = state.activeBiomeId;
+      state.passageState.nextBiomes = nextList;
+      transitionBiomeWithRng(state, 'Passage', rng);
+      return;
+    }
+  }
+
   // 3. Gear Pickup (direct keyboard [F] fallback when not dispatched via HudOverlay)
   for (let i = 0; i < state.pickups.length; i++) {
     const pk = state.pickups[i]!;

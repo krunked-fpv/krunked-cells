@@ -816,8 +816,19 @@ function clearBossArena(
   const biomeId = state.activeBiomeId;
   const maxBossTicks = 7200; // 120s generous real combat limit
 
+  let defeatedAtTick = -1;
   for (let localTick = 0; localTick < maxBossTicks; localTick++) {
     const frame = createEmptyInputFrame();
+
+    // Auto-claim any pending scroll dropped by boss or challenge before proceeding
+    if (state.pendingScroll) {
+      const stat = state.pendingScroll.choices.includes('brutality')
+        ? 'brutality'
+        : state.pendingScroll.choices[0] ?? 'brutality';
+      frame.commands = [{ type: 'pickScroll', stat }];
+      recordAndStep(state, frame, tape, telemetry);
+      continue;
+    }
 
     // Check Victory on Throne Room
     if (state.runStatus === 'victory') {
@@ -827,11 +838,12 @@ function clearBossArena(
 
     // Check Boss Defeated in Bridge / TopClockTower -> collect loot & exit to Passage
     if (state.bossArenaState.defeated) {
-      // Collect dropped boss cells/gold for 75 ticks
+      if (defeatedAtTick < 0) defeatedAtTick = localTick;
+      // Collect dropped boss cells/gold for up to 120 ticks after defeat
       const loot = state.pickups.find(
         (pk) => !pk.collected && (pk.kind === 'cell' || pk.kind === 'gold')
       );
-      if (loot && localTick < maxBossTicks - 120) {
+      if (loot && localTick - defeatedAtTick < 120) {
         steerTowardPoint(state, loot.pos.x, loot.pos.y, frame, localTick);
         recordAndStep(state, frame, tape, telemetry);
         continue;
@@ -890,8 +902,9 @@ function clearBossArena(
     recordAndStep(state, frame, tape, telemetry);
   }
 
+  const dbgExit = state.doors.find((d) => d.kind === 'biomeExit');
   throw new Error(
-    `[Gate B] Softlock / timeout fighting boss ${bossId} in ${biomeId} after ${maxBossTicks} ticks (bossDefeated=${state.bossArenaState.defeated}, runStatus=${state.runStatus})`
+    `[Gate B] Softlock / timeout fighting boss ${bossId} in ${biomeId} after ${maxBossTicks} ticks (bossDefeated=${state.bossArenaState.defeated}, runStatus=${state.runStatus}, player=(${Math.round(state.player.pos.x)},${Math.round(state.player.pos.y)}), exit=${dbgExit ? `(${Math.round(dbgExit.pos.x)},${Math.round(dbgExit.pos.y)})` : 'none'}, pickups=${state.pickups.length}, pendingScroll=${Boolean(state.pendingScroll)})`
   );
 }
 
