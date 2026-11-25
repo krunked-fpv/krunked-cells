@@ -1277,6 +1277,7 @@ export class HudOverlay {
   private bossTrailHoldSec = 0;
   private bossIntroMaxTicks = 150;
   private lastBossSplashBossId: BossId | null = null;
+  private wasBossArenaActive = false;
 
   // Active-cast golden flash timers per slot [W1, W2, S1, S2]
   private slotFlashSec: [number, number, number, number] = [0, 0, 0, 0];
@@ -1437,6 +1438,12 @@ export class HudOverlay {
     this.toastTimer = durationSec;
   }
 
+  private clearToast(): void {
+    this.toastTimer = 0;
+    this.toastBanner.classList.remove('is-visible');
+    this.toastBanner.textContent = '';
+  }
+
   public triggerQuickLootAction(action: 'equip1' | 'equip2' | 'recycle', state: SimState): boolean {
     const pickup = this.activeNearbyPickup;
     if (pickup && pickup.gear && !pickup.collected) {
@@ -1479,6 +1486,12 @@ export class HudOverlay {
 
   public ingestEvents(events: readonly SimEvent[], state: SimState): void {
     const heroX = state.player.pos.x;
+    let pendingGoldAmount = 0;
+    let pendingGoldX = 0;
+    let pendingGoldY = 0;
+    let pendingCellCount = 0;
+    let pendingCellX = 0;
+    let pendingCellY = 0;
     for (const ev of events) {
       switch (ev.type) {
         case 'attackSwing': {
@@ -1639,30 +1652,16 @@ export class HudOverlay {
           break;
         case 'goldCollect':
           if (ev.amount >= 1) {
-            this.spawnFloater(
-              ev.x,
-              ev.y - 16,
-              `+${Math.round(ev.amount)} G`,
-              'kc-float-num is-micro is-gold-pop',
-              '#fbbf24',
-              0.72,
-              null,
-              { vy: -50, gravity: 95 }
-            );
+            pendingGoldAmount += Math.round(ev.amount);
+            pendingGoldX = ev.x;
+            pendingGoldY = ev.y;
           }
           break;
         case 'cellCollect':
           if (ev.count >= 1) {
-            this.spawnFloater(
-              ev.x,
-              ev.y - 18,
-              `+${Math.round(ev.count)} CELL`,
-              'kc-float-num is-micro is-cell-pop',
-              '#38e8ff',
-              0.76,
-              null,
-              { vy: -54, gravity: 90 }
-            );
+            pendingCellCount += Math.round(ev.count);
+            pendingCellX = ev.x;
+            pendingCellY = ev.y;
           }
           break;
         case 'statusProc': {
@@ -1727,8 +1726,11 @@ export class HudOverlay {
           );
           break;
         case 'biomeTransition':
-          // Boss arenas announce themselves via the Cinematic Boss Intro Splash & Boss Banner!
-          if (ev.to !== 'Bridge' && ev.to !== 'TopClockTower' && ev.to !== 'Throne') {
+          // Boss arenas announce themselves via the Cinematic Boss Intro Splash & Boss Banner;
+          // clear any lingering prior biome toast so it never sits under the Boss HP bar.
+          if (ev.to === 'Bridge' || ev.to === 'TopClockTower' || ev.to === 'Throne') {
+            this.clearToast();
+          } else {
             this.showToast(getBiomeDisplayName(ev.to, this.catalog), 2.8);
           }
           break;
@@ -1740,6 +1742,31 @@ export class HudOverlay {
         default:
           break;
       }
+    }
+
+    if (pendingGoldAmount >= 1) {
+      this.spawnFloater(
+        pendingGoldX,
+        pendingGoldY - 16,
+        `+${pendingGoldAmount} G`,
+        'kc-float-num is-micro is-gold-pop',
+        '#fbbf24',
+        0.72,
+        null,
+        { vx: 0, vy: -50, gravity: 95, staggerVertical: true }
+      );
+    }
+    if (pendingCellCount >= 1) {
+      this.spawnFloater(
+        pendingCellX,
+        pendingCellY - 18,
+        `+${pendingCellCount} CELL`,
+        'kc-float-num is-micro is-cell-pop',
+        '#38e8ff',
+        0.76,
+        null,
+        { vx: 0, vy: -54, gravity: 90, staggerVertical: true }
+      );
     }
 
     // Sync any simulation-emitted floating text particles (deduplicated by uid)
@@ -1820,6 +1847,8 @@ export class HudOverlay {
     this.priceTagEls.clear();
     this.hudRoot.innerHTML = '';
     this.floaters = [];
+    this.wasBossArenaActive = false;
+    this.toastTimer = 0;
   }
 
   private refreshStaticIcons(): void {
@@ -2744,6 +2773,7 @@ export class HudOverlay {
       this.bossSplashEl.classList.add('kc-hidden');
       this.lastBossUid = null;
       this.lastBossSplashBossId = null;
+      this.wasBossArenaActive = false;
       return;
     }
 
@@ -2755,7 +2785,13 @@ export class HudOverlay {
       this.bossSplashEl.classList.add('kc-hidden');
       this.lastBossUid = null;
       this.lastBossSplashBossId = null;
+      this.wasBossArenaActive = false;
       return;
+    }
+
+    if (!this.wasBossArenaActive) {
+      this.wasBossArenaActive = true;
+      this.clearToast();
     }
 
     const bossId: BossId = boss.bossId ?? arena.bossId ?? 'Behemoth';
@@ -3162,8 +3198,10 @@ export class HudOverlay {
         this.priceTagEls.set(pk.uid, el);
       }
 
-      const lx = (pk.pos.x - topLeft.x) * zoom;
-      const ly = (pk.pos.y - 26 - topLeft.y) * zoom;
+      const pkX = pk.prevPos.x + (pk.pos.x - pk.prevPos.x) * interpAlpha;
+      const pkY = pk.prevPos.y + (pk.pos.y - pk.prevPos.y) * interpAlpha;
+      const lx = (pkX - topLeft.x) * zoom;
+      const ly = (pkY - 26 - topLeft.y) * zoom;
       const visibleOnScreen = lx >= -24 && lx <= VIEWPORT_W + 24 && ly >= -20 && ly <= VIEWPORT_H + 20;
       el.classList.toggle('kc-hidden', !visibleOnScreen);
       if (!visibleOnScreen) continue;
@@ -3452,6 +3490,7 @@ export class HudOverlay {
       vy?: number;
       gravity?: number;
       punchScale?: boolean;
+      staggerVertical?: boolean;
     }
   ): void {
     if (this.floaters.length >= MAX_FLOATERS) {
@@ -3470,21 +3509,37 @@ export class HudOverlay {
 
     const id = this.nextFloaterId++;
     const jitter = ((id * 37) % 19) - 9;
+    let spawnX = opts?.staggerVertical ? worldX : worldX + jitter * 0.45;
+    let spawnY = worldY;
+
+    if (opts?.staggerVertical) {
+      for (let step = 0; step < 6; step++) {
+        const collides = this.floaters.some(
+          (f) =>
+            f.ttl > f.maxTtl - 0.45 &&
+            Math.abs(f.worldX - spawnX) < 26 &&
+            Math.abs(f.worldY - spawnY) < 13
+        );
+        if (!collides) break;
+        spawnY -= 13;
+      }
+    }
+
     let vx = opts?.vx;
     if (vx === undefined) {
       if (opts?.awayFromX !== undefined) {
         const dir = worldX >= opts.awayFromX ? 1 : -1;
         vx = dir * (22 + ((id * 17) % 16));
       } else {
-        vx = jitter * 1.8;
+        vx = opts?.staggerVertical ? 0 : jitter * 1.8;
       }
     }
 
     this.floaters.push({
       id,
       simUid,
-      worldX: worldX + jitter * 0.45,
-      worldY,
+      worldX: spawnX,
+      worldY: spawnY,
       vx,
       vy: opts?.vy ?? -68,
       gravity: opts?.gravity ?? 140,
