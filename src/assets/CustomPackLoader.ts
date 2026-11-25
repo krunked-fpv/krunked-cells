@@ -127,6 +127,7 @@ export interface ParsedTracksData {
 export interface CustomAtlasPageTextures {
   diffuse: ImageBitmap | HTMLImageElement | HTMLCanvasElement;
   normal: ImageBitmap | HTMLImageElement | null;
+  emissive?: HTMLCanvasElement | null;
   width: number;
   height: number;
 }
@@ -756,25 +757,31 @@ function pickFolderViaInputFallback(): Promise<Map<string, Blob> | null> {
 
 /**
  * Decodes Dead Cells skin-LUT-encoded character/boss atlases (`*_default_s.png`)
- * where pixel `(R, G, B <= 4, A > 0)` encodes normalized `(u = R/255, v = G/255)`
- * coordinates into the 2D skin palette LUT. Returns a crisp full-color canvas!
+ * where pixel `(R, G, B <= 6, A > 0)` encodes normalized `(u = R/255, v = G/255)`
+ * coordinates into the 2D skin palette LUT. Extracts `#ff00ff` emissive glow
+ * sentinels into a dedicated emissive mask canvas (only allocated when >= 1 glow
+ * pixel is present) and applies boss/hero contrast calibration for WebGL2 cel shading.
  */
-function applySkinLutToImage(
+export function applySkinLutToImage(
   diffuse: ImageBitmap | HTMLImageElement,
-  skinLut: ImageBitmap | HTMLImageElement
-): HTMLCanvasElement | ImageBitmap | HTMLImageElement {
-  if (typeof document === 'undefined') return diffuse;
+  skinLut: ImageBitmap | HTMLImageElement,
+  atlasName = ''
+): {
+  diffuse: HTMLCanvasElement | ImageBitmap | HTMLImageElement;
+  emissive: HTMLCanvasElement | null;
+} {
+  if (typeof document === 'undefined') return { diffuse, emissive: null };
   const dw = diffuse.width;
   const dh = diffuse.height;
   const lw = skinLut.width;
   const lh = skinLut.height;
-  if (dw <= 0 || dh <= 0 || lw <= 0 || lh <= 0) return diffuse;
+  if (dw <= 0 || dh <= 0 || lw <= 0 || lh <= 0) return { diffuse, emissive: null };
 
   const lutCanvas = document.createElement('canvas');
   lutCanvas.width = lw;
   lutCanvas.height = lh;
   const lCtx = lutCanvas.getContext('2d', { willReadFrequently: true });
-  if (!lCtx) return diffuse;
+  if (!lCtx) return { diffuse, emissive: null };
   lCtx.drawImage(skinLut, 0, 0);
   const lutData = lCtx.getImageData(0, 0, lw, lh).data;
 
@@ -782,17 +789,41 @@ function applySkinLutToImage(
   outCanvas.width = dw;
   outCanvas.height = dh;
   const ctx = outCanvas.getContext('2d', { willReadFrequently: true });
-  if (!ctx) return diffuse;
+  if (!ctx) return { diffuse, emissive: null };
   ctx.drawImage(diffuse, 0, 0);
   const img = ctx.getImageData(0, 0, dw, dh);
   const px = img.data;
 
   const scaleX = lw / 256;
   const scaleY = lh / 256;
+
   // Dead Cells uses #ff00ff in *_default_s.png as an emissive glow channel sentinel
-  const glowR = lw <= 8 ? 255 : 78;
-  const glowG = lw <= 8 ? 96 : 235;
-  const glowB = lw <= 8 ? 32 : 255;
+  const lowerName = atlasName.toLowerCase();
+  const isBossAtlas =
+    lowerName === 'behemoth' || lowerName === 'timekeeper' || lowerName === 'hotk';
+
+  let glowR = 255;
+  let glowG = 130;
+  let glowB = 52;
+  if (lowerName === 'behemoth') {
+    glowR = 255;
+    glowG = 118;
+    glowB = 36;
+  } else if (lowerName === 'timekeeper') {
+    glowR = 96;
+    glowG = 238;
+    glowB = 255;
+  } else if (lowerName === 'hotk') {
+    glowR = 84;
+    glowG = 224;
+    glowB = 255;
+  } else if (lowerName === 'beheaded') {
+    glowR = 80;
+    glowG = 235;
+    glowB = 255;
+  }
+
+  let emData: Uint8ClampedArray | null = null;
 
   for (let i = 0; i < px.length; i += 4) {
     const a = px[i + 3];
@@ -811,40 +842,65 @@ function applySkinLutToImage(
       px[i] = glowR;
       px[i + 1] = glowG;
       px[i + 2] = glowB;
+      if (!emData) {
+        emData = new Uint8ClampedArray(px.length);
+      }
+      emData[i] = glowR;
+      emData[i + 1] = glowG;
+      emData[i + 2] = glowB;
+      emData[i + 3] = 255;
     } else {
-      // Calibrate LUT values for our 64-light WebGL2 cel shader:
-      // - Preserve crisp deep shadows (<54) so dark armor folds stay rich
-      // - Apply subtle 0.88 gamma/contrast preservation on high-luminance LUT pixels (>210)
-      //   so bright tan/cream skin wraps on `beheaded` never blow out under point lights,
-      //   while keeping saturated crimson scarf, teal/navy armor, and glow vibrant.
       const lum = 0.299 * lr + 0.587 * lg + 0.114 * lb;
       const maxC = Math.max(lr, lg, lb);
       const minC = Math.min(lr, lg, lb);
       const sat = maxC > 0 ? (maxC - minC) / maxC : 0;
 
-      if (lum > 210) {
-        const hiFrac = Math.min(1, (lum - 210) / 45);
-        // Low/moderate saturation (tan/cream wraps) gets full 0.88 highlight rolloff;
-        // vivid saturated highlights stay brighter while still preventing clipping.
-        const satWeight = sat < 0.52 ? 1.0 : 0.45;
-        const preserve = 1.0 - (1.0 - 0.88) * (0.45 + 0.55 * hiFrac) * satWeight;
-        const gamma = 1.0 + 0.08 * hiFrac * satWeight;
-        lr = Math.round(Math.pow(lr / 255, gamma) * 255 * preserve);
-        lg = Math.round(Math.pow(lg / 255, gamma) * 255 * preserve);
-        lb = Math.round(Math.pow(lb / 255, gamma) * 255 * preserve);
-      } else if (lum < 54 && sat < 0.45) {
-        // Keep deep dark shadows anchored and rich
-        const shFrac = 1.0 - lum / 54;
-        const deepen = 1.0 - 0.08 * shFrac;
-        lr = Math.round(lr * deepen);
-        lg = Math.round(lg * deepen);
-        lb = Math.round(lb * deepen);
-      } else if (sat > 0.42 && lum >= 54 && lum <= 200) {
-        // Subtle vibrancy preservation for crimson scarf & teal/navy armor midtones
-        const boost = 1.04;
-        lr = Math.min(255, Math.max(0, Math.round(lum + (lr - lum) * boost)));
-        lg = Math.min(255, Math.max(0, Math.round(lum + (lg - lum) * boost)));
-        lb = Math.min(255, Math.max(0, Math.round(lum + (lb - lum) * boost)));
+      if (isBossAtlas) {
+        // Boss LUT calibration (`behemoth`, `timeKeeper`, `HotK`):
+        // Skip <54 shadow crushing; lift dark iron mid-shadows (+12% brightness, x1.10 steel sat)
+        // and gently tame pale tan skin (>175, low sat -> x0.90) so armor plates & emissives pop!
+        if (lum < 88) {
+          const lift = 1.12;
+          const satBoost = 1.10;
+          lr = Math.min(255, Math.max(0, Math.round((lum + (lr - lum) * satBoost) * lift)));
+          lg = Math.min(255, Math.max(0, Math.round((lum + (lg - lum) * satBoost) * lift)));
+          lb = Math.min(255, Math.max(0, Math.round((lum + (lb - lum) * satBoost) * lift)));
+        } else if (lum > 175 && sat < 0.55) {
+          lr = Math.round(lr * 0.90);
+          lg = Math.round(lg * 0.90);
+          lb = Math.round(lb * 0.90);
+        } else if (sat > 0.42 && lum >= 88 && lum <= 200) {
+          const boost = 1.04;
+          lr = Math.min(255, Math.max(0, Math.round(lum + (lr - lum) * boost)));
+          lg = Math.min(255, Math.max(0, Math.round(lum + (lg - lum) * boost)));
+          lb = Math.min(255, Math.max(0, Math.round(lum + (lb - lum) * boost)));
+        }
+      } else {
+        // Hero / regular LUT calibration for 64-light WebGL2 cel shader:
+        // - Preserve crisp deep shadows (<54) so dark armor folds stay rich
+        // - Apply subtle 0.88 gamma/contrast preservation on high-luminance LUT pixels (>210)
+        //   so bright tan/cream skin wraps on `beheaded` never blow out under point lights,
+        //   while keeping saturated crimson scarf, teal/navy armor, and glow vibrant.
+        if (lum > 210) {
+          const hiFrac = Math.min(1, (lum - 210) / 45);
+          const satWeight = sat < 0.52 ? 1.0 : 0.45;
+          const preserve = 1.0 - (1.0 - 0.88) * (0.45 + 0.55 * hiFrac) * satWeight;
+          const gamma = 1.0 + 0.08 * hiFrac * satWeight;
+          lr = Math.round(Math.pow(lr / 255, gamma) * 255 * preserve);
+          lg = Math.round(Math.pow(lg / 255, gamma) * 255 * preserve);
+          lb = Math.round(Math.pow(lb / 255, gamma) * 255 * preserve);
+        } else if (lum < 54 && sat < 0.45) {
+          const shFrac = 1.0 - lum / 54;
+          const deepen = 1.0 - 0.08 * shFrac;
+          lr = Math.round(lr * deepen);
+          lg = Math.round(lg * deepen);
+          lb = Math.round(lb * deepen);
+        } else if (sat > 0.42 && lum >= 54 && lum <= 200) {
+          const boost = 1.04;
+          lr = Math.min(255, Math.max(0, Math.round(lum + (lr - lum) * boost)));
+          lg = Math.min(255, Math.max(0, Math.round(lum + (lg - lum) * boost)));
+          lb = Math.min(255, Math.max(0, Math.round(lum + (lb - lum) * boost)));
+        }
       }
 
       px[i] = lr;
@@ -854,7 +910,22 @@ function applySkinLutToImage(
   }
 
   ctx.putImageData(img, 0, 0);
-  return outCanvas;
+
+  let emissive: HTMLCanvasElement | null = null;
+  if (emData) {
+    const emCanvas = document.createElement('canvas');
+    emCanvas.width = dw;
+    emCanvas.height = dh;
+    const emCtx = emCanvas.getContext('2d');
+    if (emCtx) {
+      const emImg = emCtx.createImageData(dw, dh);
+      emImg.data.set(emData);
+      emCtx.putImageData(emImg, 0, 0);
+      emissive = emCanvas;
+    }
+  }
+
+  return { diffuse: outCanvas, emissive };
 }
 
 export class CustomPackLoader implements CustomPackAssetResolver {
@@ -1135,9 +1206,13 @@ export class CustomPackLoader implements CustomPackAssetResolver {
       if (!diffBlob) continue;
       const rawDiffuse = await decodeImageBlob(diffBlob);
       if (!rawDiffuse) continue;
-      let diffuse: ImageBitmap | HTMLImageElement | HTMLCanvasElement = skinLut
-        ? applySkinLutToImage(rawDiffuse, skinLut)
-        : rawDiffuse;
+      let diffuse: ImageBitmap | HTMLImageElement | HTMLCanvasElement = rawDiffuse;
+      let emissive: HTMLCanvasElement | null = null;
+      if (skinLut) {
+        const lutDecoded = applySkinLutToImage(rawDiffuse, skinLut, name);
+        diffuse = lutDecoded.diffuse;
+        emissive = lutDecoded.emissive;
+      }
       // Dead Cells biome atlases (e.g. castle chains/trims) occasionally embed raw #ff00ff
       // engine glow/mask sentinel pixels; remap them cleanly to metallic shadow/gold!
       if (!skinLut && typeof document !== 'undefined' && BIOME_ATLAS_SET.has(name)) {
@@ -1155,6 +1230,7 @@ export class CustomPackLoader implements CustomPackAssetResolver {
       pages.push({
         diffuse,
         normal,
+        emissive,
         width: diffuse.width || pageMeta.width,
         height: diffuse.height || pageMeta.height,
       });
