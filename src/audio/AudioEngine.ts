@@ -373,11 +373,77 @@ export class AudioEngine implements AudioEngineAPI {
     const manifest = this.customPackResolver.getManifest();
     if (!manifest?.audioSfx) return false;
 
-    // Match potential custom SFX keys
-    const candidateKeys: string[] = [event.type];
-    if (event.type === 'attackSwing') candidateKeys.unshift(event.weaponId, 'sword');
-    if (event.type === 'skillCast') candidateKeys.unshift(event.skillId);
-    if (event.type === 'footstep') candidateKeys.unshift(`footstep_${event.surface}`);
+    // Match logical Custom Pack SFX keys cleanly for every weapon, skill, shield & explosion
+    let candidateKeys: string[] = [event.type];
+    switch (event.type) {
+      case 'attackSwing': {
+        const w = event.weaponId;
+        if (w === 'BroadSword') candidateKeys = [w, 'broadsword', 'sword', 'attackSwing'];
+        else if (w === 'StunMace') candidateKeys = [w, 'mace', 'broadsword', 'attackSwing'];
+        else if (w === 'DualDaggers' || w === 'BackStabber' || w === 'QuickSword') {
+          candidateKeys = [w, 'dagger', 'sword', 'attackSwing'];
+        } else if (w === 'ImpaleSpear') candidateKeys = [w, 'spear', 'sword', 'attackSwing'];
+        else if (w === 'Rapier') candidateKeys = [w, 'rapier', 'dagger', 'attackSwing'];
+        else if (w === 'Whip') candidateKeys = [w, 'whip', 'attackSwing'];
+        else if (w === 'FrostBow') candidateKeys = [w, 'iceBow', 'bow', 'attackSwing'];
+        else if (w === 'CloseCombatBow' || w === 'FastBow') candidateKeys = [w, 'bow', 'attackSwing'];
+        else if (w === 'ThrowingKnife') candidateKeys = [w, 'knife', 'dagger', 'attackSwing'];
+        else if (w === 'Fireball') candidateKeys = [w, 'fireball', 'attackSwing'];
+        else if (w.includes('Shield')) candidateKeys = [w, 'shield', 'attackSwing'];
+        else candidateKeys = [w, 'sword', 'attackSwing'];
+        break;
+      }
+      case 'parryStart':
+        candidateKeys = ['parryStart'];
+        break;
+      case 'shieldBlock':
+        candidateKeys = ['shieldBlock', 'shield'];
+        break;
+      case 'explosion':
+        if (event.element === 'fire') {
+          candidateKeys = ['grenadeFire', 'grenadeExplode', 'explosion'];
+        } else if (event.element === 'ice') {
+          candidateKeys = ['grenadeIce', 'grenadeExplode', 'explosion'];
+        } else {
+          candidateKeys = ['grenadeExplode', 'explosion'];
+        }
+        break;
+      case 'flaskEmpty':
+        candidateKeys = ['flaskEmpty', 'error', 'ui_error'];
+        break;
+      case 'skillCast': {
+        const sid = event.skillId;
+        if (sid === 'SinewSlicer' || sid === 'HeavyTurret' || sid === 'WolfTrap') {
+          candidateKeys = [sid, 'turretDeploy', 'skillCast'];
+        } else if (sid === 'WaveOfDenial') {
+          candidateKeys = [sid, 'waveOfDenial', 'skillCast'];
+        } else if (sid === 'Phaser') {
+          candidateKeys = [sid, 'teleport', 'skillCast'];
+        } else if (sid === 'KnifeDance') {
+          candidateKeys = [sid, 'knife', 'skillCast'];
+        } else if (sid === 'Tonic') {
+          candidateKeys = [sid, 'flaskDrink', 'skillCast'];
+        } else if (sid === 'CorruptedPower') {
+          candidateKeys = [sid, 'curseTriggered', 'skillCast'];
+        } else {
+          candidateKeys = [sid, 'skillCast'];
+        }
+        break;
+      }
+      case 'footstep':
+        candidateKeys =
+          event.surface === 'wood'
+            ? ['footstepWood', 'footstep_wood', 'footstep']
+            : event.surface === 'water'
+              ? ['footstepWater', 'footstep_water', 'footstep']
+              : ['footstep'];
+        break;
+      case 'jump':
+        candidateKeys = event.isAirJump ? ['airJump', 'jump'] : ['jump'];
+        break;
+      default:
+        break;
+    }
 
     let relPath: string | null = null;
     let sfxKey: string = event.type;
