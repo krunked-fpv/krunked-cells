@@ -29,3 +29,8 @@ export {
   type CustomAtlasPageTextures,
   type LoadedCustomAtlas,
 } from './CustomPackLoader';
+
+export {
+  getBuiltinItemIconUrl,
+  getItemIconUrl,
+} from './ItemIcons';

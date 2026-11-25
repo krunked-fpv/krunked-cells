@@ -498,6 +498,7 @@ export interface PlayerState {
   parryWindowTicks: number;
   parryCooldownTicks: number;
   afterParryCritTicks: number;
+  shieldBlocking?: boolean;
   coyoteTicks: number;
   jumpBufferTicks: number;
   airJumpsLeft: number;
@@ -796,6 +797,10 @@ export type SimEvent =
   | { type: 'critImpact'; x: number; y: number; damage: number; weaponId: string }
   | { type: 'parrySuccess'; x: number; y: number; reflected: boolean }
   | { type: 'parryFail'; x: number; y: number }
+  | { type: 'parryStart'; x: number; y: number; facing: 1 | -1 }
+  | { type: 'shieldBlock'; x: number; y: number; reducedDamage: number }
+  | { type: 'explosion'; x: number; y: number; radius: number; color: string; element: 'fire' | 'ice' | 'physical' | 'cluster' }
+  | { type: 'flaskEmpty'; x: number; y: number; reason: 'empty' | 'fullHp' }
   | { type: 'dodgeRoll'; x: number; y: number; facing: 1 | -1 }
   | { type: 'diveSlamImpact'; x: number; y: number; radius: number; power: number }
   | { type: 'doorSmash'; x: number; y: number }
@@ -1076,6 +1081,12 @@ export interface AssetManifestEntry {
   sizeBytes: number;
 }
 
+export interface CardIconRect {
+  x: number;
+  y: number;
+  size: number;
+}
+
 export interface AssetManifest {
   version: number;
   extractedAt: string;
@@ -1085,6 +1096,7 @@ export interface AssetManifest {
   gradients: Record<string, string>;
   audioSfx: Record<string, string>;
   audioMusic: Record<string, { intro?: string; loop: string }>;
+  cardIcons?: Record<string, CardIconRect>;
   entries: AssetManifestEntry[];
 }
 
@@ -1113,6 +1125,9 @@ export interface CustomPackAssetResolver {
   fetchBlob(relPath: string): Promise<Blob | null>;
   fetchText(relPath: string): Promise<string | null>;
   getManifest(): AssetManifest | null;
+  getCardIconDataUrl?(itemId: string): string | null;
+  getTitleBackdropDataUrl?(): string | null;
+  preloadUiAssets?(): Promise<boolean>;
 }
 
 export interface AudioEngineAPI {
