@@ -4,9 +4,11 @@ import {
   type GearInstance,
   type GearQuality,
   type ItemColor,
+  type MetaSnapshot,
   type RngAPI,
   type ScrollStat,
   type SimState,
+  type WeaponKind,
 } from '../contracts';
 import {
   AFFIXES,
@@ -22,6 +24,11 @@ import {
 } from '../data';
 
 const SCROLL_STATS: readonly ScrollStat[] = ['brutality', 'tactics', 'survival'];
+const PIERCE_ELIGIBLE_SKILLS: ReadonlySet<string> = new Set([
+  'SinewSlicer',
+  'HeavyTurret',
+  'KnifeDance',
+]);
 
 export function getScrollDamageMultiplier(
   scrolls: Record<ScrollStat, number>,
@@ -58,6 +65,29 @@ export function computePlayerMaxHp(scrolls: Record<ScrollStat, number>): number 
   return Math.max(100, Math.round(hp));
 }
 
+export function applyGearScrollDelta(
+  state: SimState,
+  gear: GearInstance | null,
+  sign: 1 | -1
+): void {
+  if (!gear || !gear.bonusScrolls) return;
+  for (let i = 0; i < SCROLL_STATS.length; i++) {
+    const stat = SCROLL_STATS[i]!;
+    const delta = gear.bonusScrolls[stat] ?? 0;
+    if (delta > 0) {
+      state.player.scrolls[stat] = Math.max(1, state.player.scrolls[stat] + sign * delta);
+    }
+  }
+  const prevMax = state.player.maxHp;
+  const nextMax = computePlayerMaxHp(state.player.scrolls);
+  state.player.maxHp = nextMax;
+  if (nextMax > prevMax) {
+    state.player.hp = Math.min(nextMax, state.player.hp + (nextMax - prevMax));
+  } else {
+    state.player.hp = Math.min(nextMax, state.player.hp);
+  }
+}
+
 export function getQualityLevelBonus(quality: GearQuality): number {
   switch (quality) {
     case 'base':
@@ -88,10 +118,10 @@ export function getEffectiveGearColor(
         : undefined;
 
   if (defColors && defColors.length > 1 && defColors.includes(gear.color)) {
-    let best: ScrollStat = defColors[0];
+    let best: ScrollStat = defColors[0]!;
     for (let i = 1; i < defColors.length; i++) {
-      if (scrolls[defColors[i]] > scrolls[best]) {
-        best = defColors[i];
+      if (scrolls[defColors[i]!] > scrolls[best]) {
+        best = defColors[i]!;
       }
     }
     return best;
@@ -115,10 +145,63 @@ export function computeGearDamage(
   return Math.max(1, Math.round(basePower * levelMult * scrollMult));
 }
 
+function isAffixEligible(
+  affixId: string,
+  slotKind?: 'weapon' | 'skill' | 'amulet',
+  weaponKind?: WeaponKind,
+  defId?: string
+): boolean {
+  if (!slotKind) return true;
+
+  if (affixId === 'pierce_first') {
+    if (slotKind === 'weapon') {
+      return weaponKind === 'ranged';
+    }
+    if (slotKind === 'skill') {
+      return Boolean(defId && PIERCE_ELIGIBLE_SKILLS.has(defId));
+    }
+    return false;
+  }
+
+  if (affixId === 'breaks_shields') {
+    return slotKind === 'weapon' && (weaponKind === 'melee' || weaponKind === 'ranged');
+  }
+
+  if (affixId === 'flame_trail') {
+    return slotKind === 'amulet' || slotKind === 'skill';
+  }
+
+  if (affixId === 'double_dmg') {
+    return slotKind === 'weapon' && weaponKind !== 'shield';
+  }
+
+  if (slotKind === 'amulet') {
+    return (
+      affixId === 'flame_trail' ||
+      affixId === 'gold_bonus' ||
+      affixId === 'cell_bonus' ||
+      affixId === 'explode_toxic' ||
+      affixId === 'spread_oil' ||
+      affixId === 'apply_burn' ||
+      affixId === 'apply_poison' ||
+      affixId === 'apply_bleed'
+    );
+  }
+
+  if (slotKind === 'weapon' && weaponKind === 'shield') {
+    return affixId !== 'pierce_first' && affixId !== 'double_dmg' && affixId !== 'breaks_shields';
+  }
+
+  return true;
+}
+
 export function rollAffixes(
   rng: RngAPI,
   count: number,
-  excludeIds?: readonly string[]
+  excludeIds?: readonly string[],
+  slotKind?: 'weapon' | 'skill' | 'amulet',
+  weaponKind?: WeaponKind,
+  defId?: string
 ): string[] {
   const chosen: string[] = [];
   const excluded = new Set(excludeIds ?? []);
@@ -126,8 +209,12 @@ export function rollAffixes(
   for (let n = 0; n < count; n++) {
     let totalWeight = 0;
     for (let i = 0; i < AFFIXES.length; i++) {
-      const a = AFFIXES[i];
-      if (!excluded.has(a.id) && !chosen.includes(a.id)) {
+      const a = AFFIXES[i]!;
+      if (
+        !excluded.has(a.id) &&
+        !chosen.includes(a.id) &&
+        isAffixEligible(a.id, slotKind, weaponKind, defId)
+      ) {
         totalWeight += a.weight;
       }
     }
@@ -135,8 +222,14 @@ export function rollAffixes(
 
     let roll = rng.rangeFloat(0, totalWeight);
     for (let i = 0; i < AFFIXES.length; i++) {
-      const a = AFFIXES[i];
-      if (excluded.has(a.id) || chosen.includes(a.id)) continue;
+      const a = AFFIXES[i]!;
+      if (
+        excluded.has(a.id) ||
+        chosen.includes(a.id) ||
+        !isAffixEligible(a.id, slotKind, weaponKind, defId)
+      ) {
+        continue;
+      }
       roll -= a.weight;
       if (roll <= 0) {
         chosen.push(a.id);
@@ -148,12 +241,27 @@ export function rollAffixes(
   return chosen;
 }
 
-function rollQuality(rng: RngAPI, bossCells: number, level: number, forceLegendary?: boolean): GearQuality {
+function rollQuality(
+  rng: RngAPI,
+  bossCells: number,
+  level: number,
+  forceLegendary?: boolean,
+  meta?: MetaSnapshot
+): GearQuality {
   if (forceLegendary) return 'L';
   const r = rng.nextFloat();
+  const forgePlusPct = Math.max(0, Math.min(1, (meta?.legendaryForgePlus ?? 0) / 100));
+  const forgePlusPlusPct = Math.max(0, Math.min(1, (meta?.legendaryForgePlusPlus ?? 0) / 100));
+
   const sChance = Math.min(0.45, bossCells * 0.08 + Math.max(0, level - 5) * 0.02);
-  const ppChance = Math.min(0.4, 0.08 + bossCells * 0.07 + level * 0.025);
-  const pChance = Math.min(0.45, 0.25 + bossCells * 0.05 + level * 0.02);
+  const ppChance = Math.min(
+    0.75,
+    Math.max(forgePlusPlusPct, 0.08 + bossCells * 0.07 + level * 0.025)
+  );
+  const pChance = Math.min(
+    0.95,
+    Math.max(forgePlusPct, 0.25 + bossCells * 0.05 + level * 0.02)
+  );
   const lChance = level >= 4 ? 0.025 : 0.01;
 
   if (r < lChance) return 'L';
@@ -191,7 +299,7 @@ export function rollGearInstance(
   const biome = getBiome(state.activeBiomeId);
   const baseLvl = level > 0 ? Math.floor(level) : Math.max(1, biome.depthTier);
   const finalLevel = Math.max(1, baseLvl + diff.extraLootLevel);
-  const quality = rollQuality(rng, state.bossStemCells, finalLevel, forceLegendary);
+  const quality = rollQuality(rng, state.bossStemCells, finalLevel, forceLegendary, state.metaSnapshot);
   const unlockedSet = new Set(state.metaSnapshot.unlockedBlueprints);
 
   if (slotKind === 'amulet') {
@@ -212,7 +320,7 @@ export function rollGearInstance(
       level: finalLevel,
       quality,
       color: quality === 'L' ? 'colorless' : primaryStat,
-      affixes: rollAffixes(rng, 2),
+      affixes: rollAffixes(rng, 2, undefined, 'amulet'),
       bonusScrolls,
       dmgReductionPct,
       cooldownTicks: 0,
@@ -236,15 +344,15 @@ export function rollGearInstance(
         ? 'colorless'
         : preferredColor && skillDef.colors.includes(preferredColor)
           ? preferredColor
-          : skillDef.colors[0];
+          : skillDef.colors[0]!;
 
     const bonusScrolls: Partial<Record<ScrollStat, number>> | undefined =
       quality === '++'
-        ? { [skillDef.colors[0]]: 1 }
+        ? { [skillDef.colors[0]!]: 1 }
         : quality === 'S'
-          ? { [skillDef.colors[0]]: 2 }
+          ? { [skillDef.colors[0]!]: 2 }
           : quality === 'L'
-            ? { [preferredColor ?? skillDef.colors[0]]: 1 }
+            ? { [preferredColor ?? skillDef.colors[0]!]: 1 }
             : undefined;
 
     return {
@@ -254,7 +362,14 @@ export function rollGearInstance(
       level: finalLevel,
       quality,
       color: itemColor,
-      affixes: rollAffixes(rng, getAffixCountForQuality(quality)),
+      affixes: rollAffixes(
+        rng,
+        getAffixCountForQuality(quality),
+        undefined,
+        'skill',
+        undefined,
+        skillDef.id
+      ),
       bonusScrolls,
       cooldownTicks: 0,
     };
@@ -277,15 +392,15 @@ export function rollGearInstance(
       ? 'colorless'
       : preferredColor && weaponDef.colors.includes(preferredColor)
         ? preferredColor
-        : weaponDef.colors[0];
+        : weaponDef.colors[0]!;
 
   const bonusScrolls: Partial<Record<ScrollStat, number>> | undefined =
     quality === '++'
-      ? { [weaponDef.colors[0]]: 1 }
+      ? { [weaponDef.colors[0]!]: 1 }
       : quality === 'S'
-        ? { [weaponDef.colors[0]]: 2 }
+        ? { [weaponDef.colors[0]!]: 2 }
         : quality === 'L'
-          ? { [preferredColor ?? weaponDef.colors[0]]: 1 }
+          ? { [preferredColor ?? weaponDef.colors[0]!]: 1 }
           : undefined;
 
   return {
@@ -295,7 +410,14 @@ export function rollGearInstance(
     level: finalLevel,
     quality,
     color: itemColor,
-    affixes: rollAffixes(rng, getAffixCountForQuality(quality)),
+    affixes: rollAffixes(
+      rng,
+      getAffixCountForQuality(quality),
+      undefined,
+      'weapon',
+      weaponDef.kind,
+      weaponDef.id
+    ),
     bonusScrolls,
     ammo: weaponDef.ammoCapacity,
     maxAmmo: weaponDef.ammoCapacity,
@@ -378,11 +500,36 @@ export function hasLoadoutAffixKind(
     const g = slots[i];
     if (!g) continue;
     for (let j = 0; j < g.affixes.length; j++) {
-      const def = AFFIX_MAP[g.affixes[j]];
+      const def = AFFIX_MAP[g.affixes[j]!];
       if (def && def.kind === kind) return true;
     }
   }
   return false;
+}
+
+export function getLoadoutDamageTakenMultiplier(state: SimState): number {
+  let mult = 1.0;
+  const slots = [
+    state.player.loadout.weapon1,
+    state.player.loadout.weapon2,
+    state.player.loadout.skill1,
+    state.player.loadout.skill2,
+    state.player.loadout.amulet,
+  ];
+  let saw20 = false;
+  let sawDouble = false;
+  for (let i = 0; i < slots.length; i++) {
+    const g = slots[i];
+    if (!g) continue;
+    for (let j = 0; j < g.affixes.length; j++) {
+      const id = g.affixes[j]!;
+      if (id === 'double_dmg') sawDouble = true;
+      else if (id === 'dmg_dealt_taken') saw20 = true;
+    }
+  }
+  if (sawDouble) mult *= 2.0;
+  if (saw20) mult *= 1.2;
+  return mult;
 }
 
 export function onEnemyKilledForCurseAndStreak(
@@ -401,8 +548,22 @@ export function onEnemyKilledForCurseAndStreak(
     state.maxKillStreak = player.killStreak;
   }
 
-  // Speed kill-streak buff: 8 kills triggers +25% movement speed for 8s, subsequent kills refresh
+  if (biome.killStreakDoorTarget > 0 && player.killStreak === biome.killStreakDoorTarget) {
+    state.events.push({
+      type: 'perfectKillStreak',
+      count: player.killStreak,
+    });
+  }
+
+  // 5BC Malaise clear on enemy / elite / boss kill
+  if (diff.malaiseEnabled && (player.malaise ?? 0) > 0) {
+    const clearAmt = enemy.isBoss ? 50 : enemy.isElite ? 10 : 2;
+    player.malaise = Math.max(0, (player.malaise ?? 0) - clearAmt);
+  }
+
+  // Speed kill-streak buff: 8 kills within 10s decay window triggers speed boost for 8s
   player.speedKillCount += 1;
+  player.speedComboDecayTicks = 600;
   if (player.speedKillCount >= 8 || player.speedBuffTicks > 0) {
     player.speedBuffTicks = Math.max(player.speedBuffTicks, 480);
   }
@@ -588,8 +749,9 @@ export function applyMutationOnKill(
   }
   if (wasMelee && hasMutation(state, 'Predator')) {
     const dur = 180 + player.scrolls.brutality * 10;
+    const stealthDur = 120 + player.scrolls.brutality * 6;
     player.speedBuffTicks = Math.max(player.speedBuffTicks, dur);
-    player.iframeTicks = Math.max(player.iframeTicks, 24);
+    player.stealthTicks = Math.max(player.stealthTicks ?? 0, stealthDur);
   }
   if (hasMutation(state, 'Necromancy')) {
     const capHp = Math.round(player.maxHp * 0.5);
@@ -604,12 +766,17 @@ export function applyMutationOnKill(
   }
 }
 
-export function applyMutationOnParry(state: SimState): void {
+export function applyMutationOnParry(state: SimState, isProjectile = false): void {
   const player = state.player;
-  if (hasMutation(state, 'WhatDoesntKillMe')) {
+  if (
+    !isProjectile &&
+    hasMutation(state, 'WhatDoesntKillMe') &&
+    (player.wdlmCooldownTicks ?? 0) <= 0
+  ) {
     const pct = 0.04 + 0.003 * player.scrolls.survival;
     const heal = Math.max(2, Math.round(player.maxHp * pct));
     player.hp = Math.min(player.maxHp, player.hp + heal);
+    player.wdlmCooldownTicks = 240;
   }
   if (hasMutation(state, 'InstinctOfTheMaster')) {
     if (player.loadout.skill1 && player.loadout.skill1.cooldownTicks > 0) {
@@ -633,10 +800,8 @@ export function getMutationDamageMultiplier(
     mult *= 1 + 0.25 + 0.04 * Math.max(0, player.scrolls.brutality - 1);
   }
 
-  if (player.hitFlashTicks > 0 || player.rallyHp > 0) {
-    if (hasMutation(state, 'Vengeance')) {
-      mult *= 1 + 0.4 + 0.03 * Math.max(0, player.scrolls.brutality - 1);
-    }
+  if ((player.vengeanceTicks ?? 0) > 0 && hasMutation(state, 'Vengeance')) {
+    mult *= 1 + 0.4 + 0.03 * Math.max(0, player.scrolls.brutality - 1);
   }
 
   if (hasMutation(state, 'Support')) {

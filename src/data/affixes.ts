@@ -133,6 +133,34 @@ export const AFFIXES: readonly AffixDef[] = [
     multiplier: 1.25,
     weight: 4,
   },
+  // High-impact Star (★) Dead Cells affixes
+  {
+    id: 'breaks_shields',
+    label: '★ Ignores and breaks enemy shields',
+    kind: 'pierce',
+    multiplier: 1,
+    weight: 3,
+  },
+  {
+    id: 'spread_oil',
+    label: '★ Spreads inflammable oil on hit',
+    kind: 'applyStatus',
+    applyStatus: 'oil',
+    weight: 4,
+  },
+  {
+    id: 'freeze_death',
+    label: '★ Victims freeze nearby enemies on death',
+    kind: 'explodeToxic',
+    weight: 3,
+  },
+  {
+    id: 'double_dmg',
+    label: '★ +100% damage dealt, +100% damage taken',
+    kind: 'dmgDealtTaken',
+    multiplier: 2.0,
+    weight: 2,
+  },
 ];
 
 export const AFFIX_MAP: Readonly<Record<string, AffixDef>> = AFFIXES.reduce(

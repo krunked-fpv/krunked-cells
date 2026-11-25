@@ -256,18 +256,25 @@ describe('Abilities Parity & Combat Feel Contracts', () => {
       expect(state.events.some((e) => e.type === 'parryStart')).toBe(true);
     });
 
-    it('activates shieldBlocking when holding shield, cuts incoming damage ~75%, emits shieldBlock, and clears on release', () => {
+    it('activates shieldBlocking after 16t hold, cuts frontal damage ~75%, ignores floor hazards, emits shieldBlock, and clears on release', () => {
       const state = createAbilitiesSandbox(5002);
       const rng = createRng(5002);
 
-      // Hold weapon2Held while idle (parryWindowTicks === 0)
-      stepCollect(state, 2, () => ({ weapon2Held: true }));
+      // Holding for fewer than 16 ticks does not enter hold-block yet
+      stepCollect(state, 5, () => ({ weapon2Held: true }));
+      expect(state.player.shieldBlocking).toBe(false);
+
+      // Holding for >= 16 ticks enters frontal hold-block
+      stepCollect(state, 12, () => ({ weapon2Held: true }));
       expect(state.player.shieldBlocking).toBe(true);
 
       state.player.iframeTicks = 0;
+      state.player.onHitShieldTicks = 0;
       const hpBefore = state.player.hp;
       state.events = [];
-      const damaged = damagePlayer(state, 40, 'Zombie', rng);
+      const damaged = damagePlayer(state, 40, 'Zombie', rng, false, {
+        attackerX: state.player.pos.x + 20,
+      });
 
       expect(damaged).toBe(true);
       expect(hpBefore - state.player.hp).toBeLessThanOrEqual(12);

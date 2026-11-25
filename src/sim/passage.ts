@@ -5,6 +5,7 @@ import {
   type GearQuality,
   type MetaBlueprintDef,
   type RngAPI,
+  type ScrollStat,
   type SimCommand,
   type SimState,
 } from '../contracts';
@@ -18,6 +19,7 @@ import {
   getDifficulty,
 } from '../data';
 import {
+  applyGearScrollDelta,
   getAffixCountForQuality,
   rollAffixes,
   rollGearInstance,
@@ -86,31 +88,34 @@ function spawnBonusDoorRewards(
   labelPrefix: string,
   rng: RngAPI
 ): void {
-  const gear = rollGearInstance(
-    state,
-    rng,
-    rng.chance(0.65) ? 'weapon' : 'skill',
-    Math.max(2, level + 1)
-  );
-  state.pickups.push({
-    uid: state.nextUid++,
-    kind: 'gear',
-    pos: { x, y: y - 10 },
-    prevPos: { x, y: y - 10 },
-    vel: { x: 0, y: 0 },
-    value: 0,
-    gear,
-    label: `${labelPrefix} Reward`,
-    magnetTicks: 0,
-    collected: false,
-    bobPhase: 0,
-  });
+  // Authentic Dead Cells 3-Choice Gear Altar behind bonus doors (picking 1 consumes the other 2!)
+  const choiceGroupId = state.nextUid++;
+  const colors: readonly ScrollStat[] = ['brutality', 'tactics', 'survival'];
+  for (let i = 0; i < 3; i++) {
+    const slotKind = i === 2 ? 'skill' : 'weapon';
+    const gear = rollGearInstance(state, rng, slotKind, Math.max(2, level + 1), colors[i]);
+    const px = x + (i - 1) * 24;
+    state.pickups.push({
+      uid: state.nextUid++,
+      kind: 'gear',
+      pos: { x: px, y: y - 10 },
+      prevPos: { x: px, y: y - 10 },
+      vel: { x: 0, y: 0 },
+      value: 0,
+      gear,
+      label: `${labelPrefix} Choice ${i + 1}`,
+      magnetTicks: 0,
+      collected: false,
+      bobPhase: i * 0.9,
+      choiceGroupId,
+    });
+  }
 
   state.pickups.push({
     uid: state.nextUid++,
     kind: 'cell',
-    pos: { x: x + 22, y: y - 8 },
-    prevPos: { x: x + 22, y: y - 8 },
+    pos: { x: x + 36, y: y - 8 },
+    prevPos: { x: x + 36, y: y - 8 },
     vel: { x: 0, y: 0 },
     value: 20,
     label: '+20 Cells',
@@ -122,14 +127,86 @@ function spawnBonusDoorRewards(
   state.pickups.push({
     uid: state.nextUid++,
     kind: 'gold',
-    pos: { x: x - 22, y: y - 8 },
-    prevPos: { x: x - 22, y: y - 8 },
+    pos: { x: x - 36, y: y - 8 },
+    prevPos: { x: x - 36, y: y - 8 },
     vel: { x: 0, y: 0 },
     value: 250 + level * 75,
     magnetTicks: 0,
     collected: false,
     bobPhase: 2.4,
   });
+}
+
+function spawnFlawlessBossRewards(
+  state: SimState,
+  x: number,
+  y: number,
+  level: number,
+  rng: RngAPI
+): void {
+  const legGear = rollGearInstance(
+    state,
+    rng,
+    rng.chance(0.7) ? 'weapon' : 'skill',
+    Math.max(3, level + 2),
+    undefined,
+    true
+  );
+  state.pickups.push({
+    uid: state.nextUid++,
+    kind: 'gear',
+    pos: { x, y: y - 10 },
+    prevPos: { x, y: y - 10 },
+    vel: { x: 0, y: 0 },
+    value: 0,
+    gear: legGear,
+    label: `Flawless Legendary ${legGear.defId}`,
+    magnetTicks: 0,
+    collected: false,
+    bobPhase: 0,
+  });
+
+  state.pickups.push({
+    uid: state.nextUid++,
+    kind: 'cell',
+    pos: { x: x + 22, y: y - 8 },
+    prevPos: { x: x + 22, y: y - 8 },
+    vel: { x: 0, y: 0 },
+    value: 25,
+    label: '+25 Cells',
+    magnetTicks: 0,
+    collected: false,
+    bobPhase: 1.1,
+  });
+
+  state.pickups.push({
+    uid: state.nextUid++,
+    kind: 'gold',
+    pos: { x: x - 22, y: y - 8 },
+    prevPos: { x: x - 22, y: y - 8 },
+    vel: { x: 0, y: 0 },
+    value: 500,
+    magnetTicks: 0,
+    collected: false,
+    bobPhase: 2.2,
+  });
+}
+
+function ensureFountainCounters(state: SimState): {
+  fountainLeft: number;
+  singleLeft: number;
+} {
+  const diff = getDifficulty(state.bossStemCells);
+  if (state.fountainRefillsLeft === undefined) {
+    state.fountainRefillsLeft = diff.fountainRefills;
+  }
+  if (state.singleFlaskRefillsLeft === undefined) {
+    state.singleFlaskRefillsLeft = diff.singleFlaskRefills;
+  }
+  return {
+    fountainLeft: state.fountainRefillsLeft,
+    singleLeft: state.singleFlaskRefillsLeft,
+  };
 }
 
 export function enterPassageRoom(
@@ -139,7 +216,7 @@ export function enterPassageRoom(
   rng: RngAPI
 ): void {
   const prevDef = getBiome(fromBiome);
-  const diff = getDifficulty(state.bossStemCells);
+  const { fountainLeft, singleLeft } = ensureFountainCounters(state);
 
   const timedTargetTicks =
     prevDef.timedDoorMinutes > 0 ? prevDef.timedDoorMinutes * 60 * 60 : 0;
@@ -149,6 +226,13 @@ export function enterPassageRoom(
   const killStreakTarget = prevDef.killStreakDoorTarget;
   const killStreakDoorOpen =
     killStreakTarget > 0 && state.player.killStreak >= killStreakTarget;
+
+  // Flawless Boss Door (0 hits taken in Bridge / TopClockTower)
+  const flawlessBossDoorOpen = Boolean(
+    prevDef.isBossArena &&
+      state.bossArenaState.defeated &&
+      state.bossArenaState.playerTookHit !== true
+  );
 
   // Clear combat & biome transient entities
   state.enemies = [];
@@ -165,6 +249,7 @@ export function enterPassageRoom(
   state.bossArenaState.active = false;
   state.bossArenaState.bossId = null;
   state.bossArenaState.bossUid = null;
+  state.bossArenaState.playerTookHit = false;
 
   state.activeBiomeId = 'Passage';
   if (!state.biomesVisited.includes('Passage')) {
@@ -185,6 +270,8 @@ export function enterPassageRoom(
     fountainUsed: false,
     activeNpc: 'none',
     reforgeCount: 0,
+    flawlessBossDoorOpen,
+    flawlessBossDoorClaimed: flawlessBossDoorOpen,
   };
 
   // Determine Passage safe room floor baseline
@@ -194,20 +281,22 @@ export function enterPassageRoom(
     ? (passageRoom.ty + passageRoom.th - 2) * TILE_SIZE
     : Math.max(8 * TILE_SIZE, state.player.pos.y);
 
-  // Lay out NPC shrines along the safe room
+  // Lay out NPC shrines along the safe room (reflecting remaining BC refill limits!)
   const fountainLabel =
-    diff.fountainRefills > 0
-      ? 'Health Fountain (Full Heal & Flask)'
-      : diff.singleFlaskRefills > 0
-        ? 'Flask Dispenser (+1 Charge)'
-        : 'Shattered Health Fountain (4BC+)';
+    fountainLeft > 0
+      ? state.bossStemCells === 0
+        ? 'Health Fountain (Full Heal & Flask)'
+        : `Health Fountain (${fountainLeft} Full Refill${fountainLeft === 1 ? '' : 's'} Left)`
+      : singleLeft > 0
+        ? `Flask Dispenser (+1 Charge, ${singleLeft} Left)`
+        : 'Shattered Health Fountain';
 
   state.shrines.push(
     {
       uid: state.nextUid++,
       pos: { x: baseX + 72, y: floorY },
       kind: 'fountain',
-      used: diff.fountainRefills <= 0 && diff.singleFlaskRefills <= 0,
+      used: fountainLeft <= 0 && singleLeft <= 0,
       label: fountainLabel,
     },
     {
@@ -229,11 +318,11 @@ export function enterPassageRoom(
       pos: { x: baseX + 360, y: floorY },
       kind: 'forge',
       used: false,
-      label: 'Minor Forge',
+      label: prevDef.isBossArena ? 'Minor & Legendary Forge' : 'Minor Forge',
     }
   );
 
-  // Timed Door (e.g. 2:00 after PrisonStart, 8:00 after Promenade/Sewers)
+  // Timed Door (2:00 after PrisonStart, 8:00 after Promenade/Sewers, 15:00 after Black Bridge)
   if (timedTargetTicks > 0) {
     const timedX = baseX + 456;
     state.doors.push({
@@ -251,7 +340,7 @@ export function enterPassageRoom(
     }
   }
 
-  // 30 / 60 Kill-Streak No-Hit Door
+  // 30 / 60 Kill-Streak No-Hit Door (regular biomes) OR Flawless Boss Door (post-boss)
   if (killStreakTarget > 0) {
     const streakX = baseX + 528;
     state.doors.push({
@@ -274,11 +363,26 @@ export function enterPassageRoom(
         rng
       );
     }
+  } else if (prevDef.isBossArena) {
+    const flawlessX = baseX + 528;
+    state.doors.push({
+      uid: state.nextUid++,
+      pos: { x: flawlessX, y: floorY },
+      width: 24,
+      height: 44,
+      kind: 'killStreak',
+      opened: flawlessBossDoorOpen,
+      broken: false,
+      label: 'Flawless Boss Door (No-Hit)',
+    });
+    if (flawlessBossDoorOpen) {
+      spawnFlawlessBossRewards(state, flawlessX, floorY, prevDef.depthTier, rng);
+    }
   }
 
   // Next Biome Exit Doors
   for (let i = 0; i < nextBiomes.length; i++) {
-    const targetId = nextBiomes[i];
+    const targetId = nextBiomes[i]!;
     const targetDef = getBiome(targetId);
     state.doors.push({
       uid: state.nextUid++,
@@ -321,7 +425,7 @@ export function handlePassageCommand(
       const currentTier = getBlueprintCurrentTier(state, bp);
       if (currentTier >= bp.maxTier) return false;
 
-      const tierCost = bp.costs[currentTier] ?? bp.costs[bp.costs.length - 1];
+      const tierCost = bp.costs[currentTier] ?? bp.costs[bp.costs.length - 1]!;
       const currentProgress = state.metaSnapshot.blueprintProgress[bp.id] ?? 0;
       const remaining = Math.max(0, tierCost - currentProgress);
       const requested = Math.max(1, Math.floor(cmd.amount));
@@ -384,6 +488,31 @@ export function handlePassageCommand(
       return true;
     }
 
+    case 'legendaryForgeInvest': {
+      const prevDef = getBiome(passage.fromBiome);
+      if (!prevDef.isBossArena) return false;
+      const requested = Math.max(1, Math.floor(cmd.amount));
+      if (cmd.tier === 'plus') {
+        const cur = state.metaSnapshot.legendaryForgePlus ?? 0;
+        const remaining = Math.max(0, 100 - cur);
+        const spend = Math.min(player.cells, requested, remaining);
+        if (spend <= 0) return false;
+        player.cells -= spend;
+        state.metaSnapshot.legendaryForgePlus = Math.min(100, cur + spend);
+        return true;
+      } else {
+        const plusCur = state.metaSnapshot.legendaryForgePlus ?? 0;
+        if (plusCur < 100) return false;
+        const cur = state.metaSnapshot.legendaryForgePlusPlus ?? 0;
+        const remaining = Math.max(0, 100 - cur);
+        const spend = Math.min(player.cells, requested, remaining);
+        if (spend <= 0) return false;
+        player.cells -= spend;
+        state.metaSnapshot.legendaryForgePlusPlus = Math.min(100, cur + spend);
+        return true;
+      }
+    }
+
     case 'pickMutation': {
       if (!MUTATION_MAP[cmd.mutationId]) return false;
       if (player.mutations.includes(cmd.mutationId)) return false;
@@ -422,15 +551,28 @@ export function handlePassageCommand(
       const cost = getForgeUpgradeCost(gear);
       if (player.gold < cost) return false;
       player.gold -= cost;
-      gear.quality = nextQuality;
-      gear.affixes = rollAffixes(rng, getAffixCountForQuality(nextQuality));
 
-      const statKey = gear.color === 'colorless' ? 'brutality' : gear.color;
+      // Remove old bonusScrolls delta before applying upgraded bonusScrolls!
+      applyGearScrollDelta(state, gear, -1);
+
+      gear.quality = nextQuality;
+      const weaponKind = gear.slotKind === 'weapon' ? WEAPON_MAP[gear.defId]?.kind : undefined;
+      gear.affixes = rollAffixes(
+        rng,
+        getAffixCountForQuality(nextQuality),
+        undefined,
+        gear.slotKind,
+        weaponKind,
+        gear.defId
+      );
+
+      const statKey: ScrollStat = gear.color === 'colorless' ? 'brutality' : gear.color;
       if (nextQuality === '++') {
         gear.bonusScrolls = { [statKey]: 1 };
       } else if (nextQuality === 'S') {
         gear.bonusScrolls = { [statKey]: 2 };
       }
+      applyGearScrollDelta(state, gear, 1);
       return true;
     }
 
@@ -442,19 +584,28 @@ export function handlePassageCommand(
 
       player.gold -= cost;
       passage.reforgeCount += 1;
-      gear.affixes = rollAffixes(rng, getAffixCountForQuality(gear.quality));
+      const weaponKind = gear.slotKind === 'weapon' ? WEAPON_MAP[gear.defId]?.kind : undefined;
+      gear.affixes = rollAffixes(
+        rng,
+        getAffixCountForQuality(gear.quality),
+        undefined,
+        gear.slotKind,
+        weaponKind,
+        gear.defId
+      );
       return true;
     }
 
     case 'useFountain': {
       if (passage.fountainUsed) return false;
-      const diff = getDifficulty(state.bossStemCells);
+      const { fountainLeft, singleLeft } = ensureFountainCounters(state);
 
-      if (diff.fountainRefills > 0) {
+      if (fountainLeft > 0) {
         const healed = Math.max(0, player.maxHp - player.hp);
         player.hp = player.maxHp;
         player.rallyHp = 0;
         player.flaskCharges = player.maxFlaskCharges;
+        state.fountainRefillsLeft = Math.max(0, fountainLeft - 1);
         passage.fountainUsed = true;
         const fountainShrine = state.shrines.find((s) => s.kind === 'fountain');
         if (fountainShrine) fountainShrine.used = true;
@@ -467,12 +618,13 @@ export function handlePassageCommand(
         return true;
       }
 
-      if (diff.singleFlaskRefills > 0) {
+      if (singleLeft > 0) {
         const healAmt = Math.round(player.maxHp * 0.3);
         const beforeHp = player.hp;
         player.hp = Math.min(player.maxHp, player.hp + healAmt);
         player.rallyHp = 0;
         player.flaskCharges = Math.min(player.maxFlaskCharges, player.flaskCharges + 1);
+        state.singleFlaskRefillsLeft = Math.max(0, singleLeft - 1);
         passage.fountainUsed = true;
         const fountainShrine = state.shrines.find((s) => s.kind === 'fountain');
         if (fountainShrine) fountainShrine.used = true;

@@ -1,4 +1,4 @@
-import type { StatusEffect, StatusKind } from '../contracts';
+import type { EnemyState, StatusEffect, StatusKind } from '../contracts';
 import { AFFIX_MAP } from '../data';
 
 const DOT_KINDS: ReadonlySet<StatusKind> = new Set(['bleed', 'poison', 'burn', 'electrify']);
@@ -9,14 +9,35 @@ const MAX_STACKS: Readonly<Partial<Record<StatusKind, number>>> = {
   burn: 3,
   electrify: 3,
   frost: 3,
+  slow: 5,
 };
+
+const BOSS_CC_SCALE: readonly number[] = [0.55, 0.28, 0.12, 0];
+const ELITE_CC_SCALE: readonly number[] = [0.75, 0.5, 0.25, 0];
+
+export function computeBossCcDuration(enemy: EnemyState, baseTicks: number): number {
+  const safeBase = Math.max(0, Math.round(baseTicks));
+  if (safeBase <= 0) return 0;
+  if (!enemy.isBoss && !enemy.isElite) {
+    return safeBase;
+  }
+
+  const stacks = enemy.ccResistStacks ?? 0;
+  const table = enemy.isBoss ? BOSS_CC_SCALE : ELITE_CC_SCALE;
+  const mult = table[Math.min(stacks, table.length - 1)] ?? 0;
+  enemy.ccResistStacks = stacks + 1;
+  enemy.ccResistResetTicks = 360;
+  if (mult <= 0) return 0;
+  return Math.max(1, Math.round(safeBase * mult));
+}
 
 export function applyStatus(
   effects: StatusEffect[],
   kind: StatusKind,
   ticks: number,
   dps = 0,
-  sourceId = 0
+  sourceId = 0,
+  onBleedBurst?: (burstDmg: number) => void
 ): StatusEffect {
   const safeTicks = Math.max(1, Math.round(ticks));
   const existing = effects.find((e) => e.kind === kind && e.ticksLeft > 0);
@@ -36,6 +57,22 @@ export function applyStatus(
       existing.ticksLeft = 0;
       applyStatus(effects, 'freeze', 90, 0, sourceId);
     }
+    // 5-stack Bleed Hemorrhage Burst: immediately detonate remaining bleed damage & reset stacks!
+    if (kind === 'bleed' && existing.stacks >= 5 && onBleedBurst) {
+      const effectiveDps = Math.max(1, existing.dps);
+      const burstDmg = Math.max(
+        1,
+        Math.round(effectiveDps * (existing.ticksLeft / 60) * 1.15 * 2.5)
+      );
+      existing.ticksLeft = 0;
+      existing.stacks = 0;
+      const idx = effects.indexOf(existing);
+      if (idx >= 0) {
+        effects.splice(idx, 1);
+      }
+      onBleedBurst(burstDmg);
+      return existing;
+    }
     return existing;
   }
 
@@ -50,9 +87,20 @@ export function applyStatus(
   return created;
 }
 
+export function removeStatus(effects: StatusEffect[], kind: StatusKind): boolean {
+  let removed = false;
+  for (let i = effects.length - 1; i >= 0; i--) {
+    if (effects[i]!.kind === kind) {
+      effects.splice(i, 1);
+      removed = true;
+    }
+  }
+  return removed;
+}
+
 export function hasStatus(effects: readonly StatusEffect[], kind: StatusKind): boolean {
   for (let i = 0; i < effects.length; i++) {
-    const e = effects[i];
+    const e = effects[i]!;
     if (e.kind === kind && e.ticksLeft > 0) {
       return true;
     }
@@ -62,7 +110,7 @@ export function hasStatus(effects: readonly StatusEffect[], kind: StatusKind): b
 
 export function getStatusStacks(effects: readonly StatusEffect[], kind: StatusKind): number {
   for (let i = 0; i < effects.length; i++) {
-    const e = effects[i];
+    const e = effects[i]!;
     if (e.kind === kind && e.ticksLeft > 0) {
       return e.stacks;
     }
@@ -73,7 +121,7 @@ export function getStatusStacks(effects: readonly StatusEffect[], kind: StatusKi
 export function clearNegativeStatuses(effects: StatusEffect[]): void {
   const keep: ReadonlySet<StatusKind> = new Set(['speed', 'shield', 'corrupted']);
   for (let i = effects.length - 1; i >= 0; i--) {
-    if (!keep.has(effects[i].kind)) {
+    if (!keep.has(effects[i]!.kind)) {
       effects.splice(i, 1);
     }
   }
@@ -90,7 +138,7 @@ export function tickEntityStatuses(
   let applyThawSlow = false;
 
   for (let i = effects.length - 1; i >= 0; i--) {
-    const effect = effects[i];
+    const effect = effects[i]!;
     if (effect.ticksLeft <= 0) {
       effects.splice(i, 1);
       continue;
@@ -107,7 +155,7 @@ export function tickEntityStatuses(
         tickDmg *= 2.0;
       }
 
-      // 5-stack bleed hemorrhage burst
+      // 5-stack bleed bonus fallback if somehow accumulated without burst handler
       if (effect.kind === 'bleed' && effect.stacks >= 5) {
         tickDmg *= 1.5;
       }
@@ -129,7 +177,7 @@ export function tickEntityStatuses(
   }
 
   if (applyThawSlow && !hasStatus(effects, 'slow')) {
-    applyStatus(effects, 'slow', 90, 0, 0);
+    applyStatus(effects, 'slow', 63, 0, 0);
   }
 }
 
@@ -144,7 +192,7 @@ export function computeSynergyMultiplier(
   const targetHasBurn = hasStatus(targetEffects, 'burn');
 
   for (let i = 0; i < affixes.length; i++) {
-    const def = AFFIX_MAP[affixes[i]];
+    const def = AFFIX_MAP[affixes[i]!];
     if (!def) continue;
 
     if (def.kind === 'bonusDmg' && def.targetStatus && def.multiplier) {
