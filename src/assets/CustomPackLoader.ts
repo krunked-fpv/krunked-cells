@@ -30,51 +30,126 @@ const BIOME_ATLAS_SET = new Set([
   'common',
 ]);
 
+function isMagentaSentinel(r: number, g: number, b: number): boolean {
+  return r > 185 && b > 155 && g < 65 && r + b > g * 6 + 260;
+}
+
+function getAtlasGlowColor(atlasName: string): { r: number; g: number; b: number; emAlpha: number } {
+  const low = atlasName.toLowerCase();
+  if (low === 'behemoth') return { r: 255, g: 82, b: 22, emAlpha: 255 };
+  if (low === 'timekeeper') return { r: 96, g: 238, b: 255, emAlpha: 240 };
+  if (low === 'hotk') return { r: 52, g: 162, b: 214, emAlpha: 170 };
+  if (low === 'beheaded') return { r: 80, g: 235, b: 255, emAlpha: 255 };
+  if (low === 'grenadier' || low === 'grenadiercluster') {
+    return { r: 255, g: 124, b: 32, emAlpha: 225 };
+  }
+  if (low === 'mago360' || low === 'collector') {
+    return { r: 88, g: 222, b: 255, emAlpha: 225 };
+  }
+  if (low === 'zombie' || low === 'zombiefly' || low === 'zombieshield') {
+    return { r: 224, g: 76, b: 44, emAlpha: 220 };
+  }
+  if (low === 'lancer' || low === 'comboter' || low === 'ninja' || low === 'leapingduelyst' || low === 'pirate') {
+    return { r: 255, g: 112, b: 40, emAlpha: 225 };
+  }
+  if (BIOME_ATLAS_SET.has(atlasName)) {
+    return { r: 224, g: 158, b: 56, emAlpha: 165 };
+  }
+  return { r: 255, g: 148, b: 52, emAlpha: 215 };
+}
+
 /**
- * Replaces raw Dead Cells `#ff00ff` engine mask/glow sentinel pixels found on
- * non-skin biome sheets (e.g., High Peak Castle golden chains & brackets) with
- * clean metallic bronze/iron shading so zero harsh magenta outlines ever bleed.
+ * Strips/converts raw Dead Cells `#ff00ff` engine mask/glow sentinel pixels across
+ * ALL non-LUT atlases (biomes, enemies, NPCs, turrets, props, and VFX). Routes
+ * glow sentinels cleanly into the emissive mask and replaces diffuse pixels with
+ * calibrated glow or gilded bronze tones so zero raw `#ff00ff` ever leaks.
  */
-function sanitizeBiomeMagentaPixels(
-  src: ImageBitmap | HTMLImageElement | HTMLCanvasElement
-): HTMLCanvasElement | ImageBitmap | HTMLImageElement {
-  if (typeof document === 'undefined') return src;
+function sanitizeMagentaSentinels(
+  src: ImageBitmap | HTMLImageElement | HTMLCanvasElement,
+  atlasName: string
+): {
+  diffuse: HTMLCanvasElement | ImageBitmap | HTMLImageElement;
+  emissive: HTMLCanvasElement | null;
+} {
+  if (typeof document === 'undefined') return { diffuse: src, emissive: null };
   const w = src.width;
   const h = src.height;
-  if (w <= 0 || h <= 0) return src;
+  if (w <= 0 || h <= 0) return { diffuse: src, emissive: null };
   const canvas = document.createElement('canvas');
   canvas.width = w;
   canvas.height = h;
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  if (!ctx) return src;
+  if (!ctx) return { diffuse: src, emissive: null };
   ctx.drawImage(src, 0, 0);
   const img = ctx.getImageData(0, 0, w, h);
   const px = img.data;
+  const isBiome = BIOME_ATLAS_SET.has(atlasName);
+  const glow = getAtlasGlowColor(atlasName);
   let dirty = false;
+  let emData: Uint8ClampedArray | null = null;
+
   for (let i = 0; i < px.length; i += 4) {
     const a = px[i + 3];
     if (a < 8) continue;
     const r = px[i];
     const g = px[i + 1];
     const b = px[i + 2];
-    // Pure magenta or near-magenta sentinel pixels (high R & B, very low G)
-    if (r > 185 && b > 155 && g < 65 && r + b > g * 6 + 260) {
-      // Replace with rich dark gilded bronze/iron tone matching castle & dungeon metalwork
-      const lum = (r + b) * 0.5;
+    if (!isMagentaSentinel(r, g, b)) continue;
+
+    const lum = (r + b) * 0.5;
+    if (isBiome) {
+      // Biome props/chains/doors: replace sentinel magenta with rich gilded bronze/amber
+      // (keeping chain links opaque & solid while routing bright glow runes to emissive)
       if (lum > 235) {
-        // Pure #ff00ff highlight/outline sentinel -> make transparent so chain silhouettes stay crisp
-        px[i + 3] = 0;
+        px[i] = 196;
+        px[i + 1] = 144;
+        px[i + 2] = 62;
+        if (!emData) emData = new Uint8ClampedArray(px.length);
+        emData[i] = glow.r;
+        emData[i + 1] = glow.g;
+        emData[i + 2] = glow.b;
+        emData[i + 3] = Math.round((a / 255) * 140);
       } else {
-        px[i] = Math.round(r * 0.42);
-        px[i + 1] = Math.round(r * 0.30);
+        px[i] = Math.round(r * 0.45);
+        px[i + 1] = Math.round(r * 0.32);
         px[i + 2] = Math.round(b * 0.16);
       }
-      dirty = true;
+    } else {
+      // Entity / NPC / FX / UI atlases: route #ff00ff glow sentinels to emissive mask
+      // and replace diffuse with calibrated glow color (never neon #ff00ff!)
+      const strength = Math.min(1, lum / 245);
+      px[i] = Math.round(glow.r * (0.45 + 0.55 * strength));
+      px[i + 1] = Math.round(glow.g * (0.45 + 0.55 * strength));
+      px[i + 2] = Math.round(glow.b * (0.45 + 0.55 * strength));
+      if (lum > 205) {
+        if (!emData) emData = new Uint8ClampedArray(px.length);
+        emData[i] = glow.r;
+        emData[i + 1] = glow.g;
+        emData[i + 2] = glow.b;
+        emData[i + 3] = Math.round((a / 255) * glow.emAlpha * strength);
+      }
+    }
+    dirty = true;
+  }
+
+  if (!dirty) return { diffuse: src, emissive: null };
+  ctx.putImageData(img, 0, 0);
+
+  let emissive: HTMLCanvasElement | null = null;
+  if (emData) {
+    const emCanvas = document.createElement('canvas');
+    emCanvas.width = w;
+    emCanvas.height = h;
+    const emCtx = emCanvas.getContext('2d');
+    if (emCtx) {
+      const emImg = emCtx.createImageData(w, h);
+      emImg.data.set(emData);
+      emCtx.putImageData(emImg, 0, 0);
+      emissive = emCanvas;
     }
   }
-  if (!dirty) return src;
-  ctx.putImageData(img, 0, 0);
-  return canvas;
+
+  return { diffuse: canvas, emissive };
 }
 
 // -----------------------------------------------------------------------------
@@ -799,75 +874,111 @@ export function applySkinLutToImage(
 
   // Dead Cells uses #ff00ff in *_default_s.png as an emissive glow channel sentinel
   const lowerName = atlasName.toLowerCase();
-  const isBossAtlas =
-    lowerName === 'behemoth' || lowerName === 'timekeeper' || lowerName === 'hotk';
-
-  let glowR = 255;
-  let glowG = 130;
-  let glowB = 52;
-  if (lowerName === 'behemoth') {
-    glowR = 255;
-    glowG = 118;
-    glowB = 36;
-  } else if (lowerName === 'timekeeper') {
-    glowR = 96;
-    glowG = 238;
-    glowB = 255;
-  } else if (lowerName === 'hotk') {
-    glowR = 84;
-    glowG = 224;
-    glowB = 255;
-  } else if (lowerName === 'beheaded') {
-    glowR = 80;
-    glowG = 235;
-    glowB = 255;
-  }
+  const isBehemoth = lowerName === 'behemoth';
+  const isHotK = lowerName === 'hotk';
+  const isBossAtlas = isBehemoth || lowerName === 'timekeeper' || isHotK;
+  const glow = getAtlasGlowColor(atlasName);
 
   let emData: Uint8ClampedArray | null = null;
 
   for (let i = 0; i < px.length; i += 4) {
     const a = px[i + 3];
     if (a === 0) continue;
-    const b = px[i + 2];
-    if (b > 6) continue; // True-color pixel (not LUT-encoded)
     const r = px[i];
     const g = px[i + 1];
+    const b = px[i + 2];
+    if (b > 6) {
+      // Even on true-color pixels in LUT atlases, never allow raw #ff00ff to leak
+      if (isMagentaSentinel(r, g, b)) {
+        px[i] = glow.r;
+        px[i + 1] = glow.g;
+        px[i + 2] = glow.b;
+        if (!emData) emData = new Uint8ClampedArray(px.length);
+        emData[i] = glow.r;
+        emData[i + 1] = glow.g;
+        emData[i + 2] = glow.b;
+        emData[i + 3] = glow.emAlpha;
+      }
+      continue;
+    }
     const lx = Math.min(lw - 1, Math.floor(r * scaleX));
     const ly = Math.min(lh - 1, Math.floor(g * scaleY));
     const li = (ly * lw + lx) * 4;
     let lr = lutData[li];
     let lg = lutData[li + 1];
     let lb = lutData[li + 2];
-    if (lr > 245 && lg < 12 && lb > 245) {
-      px[i] = glowR;
-      px[i + 1] = glowG;
-      px[i + 2] = glowB;
+    if (isMagentaSentinel(lr, lg, lb)) {
+      px[i] = glow.r;
+      px[i + 1] = glow.g;
+      px[i + 2] = glow.b;
       if (!emData) {
         emData = new Uint8ClampedArray(px.length);
       }
-      emData[i] = glowR;
-      emData[i + 1] = glowG;
-      emData[i + 2] = glowB;
-      emData[i + 3] = 255;
+      emData[i] = glow.r;
+      emData[i + 1] = glow.g;
+      emData[i + 2] = glow.b;
+      emData[i + 3] = glow.emAlpha;
     } else {
       const lum = 0.299 * lr + 0.587 * lg + 0.114 * lb;
       const maxC = Math.max(lr, lg, lb);
       const minC = Math.min(lr, lg, lb);
       const sat = maxC > 0 ? (maxC - minC) / maxC : 0;
 
-      if (isBossAtlas) {
-        // Boss LUT calibration (`behemoth`, `timeKeeper`, `HotK`):
-        // Skip <54 shadow crushing; lift dark iron mid-shadows (+12% brightness, x1.10 steel sat)
-        // and gently tame pale tan skin (>175, low sat -> x0.90) so armor plates & emissives pop!
+      if (isBehemoth) {
+        // Concierge (`behemoth`): ground pale grey/tan armor into heavy dark charcoal-iron
+        // so his molten ember eye, horn edge, and burning fists blaze in crisp contrast!
+        if (lum < 92) {
+          const darken = 0.84;
+          const satBoost = 1.15;
+          lr = Math.min(255, Math.max(0, Math.round((lum + (lr - lum) * satBoost) * darken)));
+          lg = Math.min(255, Math.max(0, Math.round((lum + (lg - lum) * satBoost) * darken)));
+          lb = Math.min(255, Math.max(0, Math.round((lum + (lb - lum) * satBoost) * darken)));
+        } else if (lr > lg * 1.18 && lum > 135) {
+          // Tame pale yellow-tan flesh/horn wraps `(218,152,98)` into scarred dark bronze
+          lr = Math.round(lr * 0.68);
+          lg = Math.round(lg * 0.62);
+          lb = Math.round(lb * 0.58);
+        } else {
+          // Tame pale grey-steel shoulder plates `(137,167,180)` into tempered slate steel
+          lr = Math.round(lr * 0.66);
+          lg = Math.round(lg * 0.68);
+          lb = Math.round(lb * 0.72);
+        }
+      } else if (isHotK) {
+        // Hand of the King (`HotK`): tame raw neon-yellow `(255,245,0)` into antique
+        // royal gold, keep royal navy/steel plates deep & high-contrast, and avoid washout!
+        if (lum > 145 && lr > 195 && lg > 135 && lb < 75) {
+          // Antique royal gold trim instead of raw neon yellow
+          lr = Math.round(lr * 0.80);
+          lg = Math.round(lg * 0.70);
+          lb = Math.min(255, Math.round(lb * 0.85 + 22));
+        } else if (lum > 175 && sat < 0.55) {
+          lr = Math.round(lr * 0.82);
+          lg = Math.round(lg * 0.84);
+          lb = Math.round(lb * 0.88);
+        } else if (lum < 88) {
+          // Preserve deep royal navy/iron shadows with crisp steel contrast
+          const satBoost = 1.08;
+          lr = Math.min(255, Math.max(0, Math.round((lum + (lr - lum) * satBoost) * 0.94)));
+          lg = Math.min(255, Math.max(0, Math.round((lum + (lg - lum) * satBoost) * 0.95)));
+          lb = Math.min(255, Math.max(0, Math.round((lum + (lb - lum) * satBoost) * 0.98)));
+        } else if (sat > 0.42 && lum <= 200) {
+          const boost = 1.04;
+          lr = Math.min(255, Math.max(0, Math.round(lum + (lr - lum) * boost)));
+          lg = Math.min(255, Math.max(0, Math.round(lum + (lg - lum) * boost)));
+          lb = Math.min(255, Math.max(0, Math.round(lum + (lb - lum) * boost)));
+        }
+      } else if (isBossAtlas) {
+        // Other bosses (`timeKeeper`): preserve crisp steel armor & tame blown-out highlights
         if (lum < 88) {
-          const lift = 1.12;
+          const lift = 1.04;
           const satBoost = 1.10;
           lr = Math.min(255, Math.max(0, Math.round((lum + (lr - lum) * satBoost) * lift)));
           lg = Math.min(255, Math.max(0, Math.round((lum + (lg - lum) * satBoost) * lift)));
           lb = Math.min(255, Math.max(0, Math.round((lum + (lb - lum) * satBoost) * lift)));
         } else if (lum > 175 && sat < 0.55) {
-          lr = Math.round(lr * 0.90);
-          lg = Math.round(lg * 0.90);
+          lr = Math.round(lr * 0.88);
+          lg = Math.round(lg * 0.88);
           lb = Math.round(lb * 0.90);
         } else if (sat > 0.42 && lum >= 88 && lum <= 200) {
           const boost = 1.04;
@@ -1212,11 +1323,11 @@ export class CustomPackLoader implements CustomPackAssetResolver {
         const lutDecoded = applySkinLutToImage(rawDiffuse, skinLut, name);
         diffuse = lutDecoded.diffuse;
         emissive = lutDecoded.emissive;
-      }
-      // Dead Cells biome atlases (e.g. castle chains/trims) occasionally embed raw #ff00ff
-      // engine glow/mask sentinel pixels; remap them cleanly to metallic shadow/gold!
-      if (!skinLut && typeof document !== 'undefined' && BIOME_ATLAS_SET.has(name)) {
-        diffuse = sanitizeBiomeMagentaPixels(diffuse);
+      } else if (typeof document !== 'undefined') {
+        // Strip/convert raw #ff00ff sentinels across ALL non-LUT atlases (biome, enemy, NPC, FX)
+        const sanitized = sanitizeMagentaSentinels(diffuse, name);
+        diffuse = sanitized.diffuse;
+        emissive = sanitized.emissive;
       }
 
       let normal: ImageBitmap | HTMLImageElement | null = null;

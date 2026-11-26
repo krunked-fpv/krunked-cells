@@ -290,6 +290,8 @@ export class AtmosphereParticles {
   private readonly scarfBPrevX = new Float32Array(SCARF_B_NODES);
   private readonly scarfBPrevY = new Float32Array(SCARF_B_NODES);
   private scarfInit = false;
+  private lastScarfAnchorX = 0;
+  private lastScarfAnchorY = 0;
   private speedEmberAccum = 0;
 
   // 128-slot Persistent Ground Decal Ring Buffer (cleared automatically on biome change!)
@@ -1470,20 +1472,26 @@ export class AtmosphereParticles {
     turbAmp: number,
     phaseOff: number,
     elapsedSec: number,
-    dt: number
+    dt: number,
+    trailFacingBias = 0
   ): void {
     const dt2 = dt * dt;
+    const maxStep = segLen * 2.2;
     xs[0] = anchorX;
     ys[0] = anchorY;
     prevXs[0] = anchorX;
     prevYs[0] = anchorY;
 
-    // 1. Verlet integration with velocity damping
+    // 1. Verlet integration with velocity damping & per-frame step clamp (prevents chest-snap!)
     for (let i = 1; i < count; i++) {
       const cx = xs[i];
       const cy = ys[i];
-      const vx = (cx - prevXs[i]) * 0.88;
-      const vy = (cy - prevYs[i]) * 0.88;
+      let vx = (cx - prevXs[i]) * 0.86;
+      let vy = (cy - prevYs[i]) * 0.86;
+      if (vx > maxStep) vx = maxStep;
+      else if (vx < -maxStep) vx = -maxStep;
+      if (vy > maxStep) vy = maxStep;
+      else if (vy < -maxStep) vy = -maxStep;
       prevXs[i] = cx;
       prevYs[i] = cy;
 
@@ -1494,11 +1502,18 @@ export class AtmosphereParticles {
       ys[i] = cy + vy + ay * dt2;
     }
 
-    // 2. 3 distance-constraint relaxation iterations for organic whip tension
+    // 2. 3 distance-constraint relaxation iterations + trailing-side guard when moving
     for (let iter = 0; iter < 3; iter++) {
       xs[0] = anchorX;
       ys[0] = anchorY;
       for (let i = 1; i < count; i++) {
+        if (trailFacingBias !== 0) {
+          const frontExcess = (xs[i] - anchorX) * trailFacingBias - 1.0;
+          if (frontExcess > 0) {
+            xs[i] -= trailFacingBias * frontExcess * 0.42;
+            prevXs[i] = xs[i] + trailFacingBias * 0.4;
+          }
+        }
         const dx = xs[i] - xs[i - 1];
         const dy = ys[i] - ys[i - 1];
         const dist = Math.hypot(dx, dy) || 0.0001;
@@ -1566,16 +1581,42 @@ export class AtmosphereParticles {
 
     if (
       !this.scarfInit ||
-      Math.hypot(this.scarfAX[0] - anchorX, this.scarfAY[0] - anchorY) > 64
+      Math.hypot(this.scarfAX[0] - anchorX, this.scarfAY[0] - anchorY) > 48
     ) {
       this.resetScarf(anchorX, anchorY, p.facing);
+    } else {
+      const jumpDx = anchorX - this.lastScarfAnchorX;
+      const jumpDy = anchorY - this.lastScarfAnchorY;
+      if (Math.hypot(jumpDx, jumpDy) > 10) {
+        const shiftX = jumpDx * 0.75;
+        const shiftY = jumpDy * 0.75;
+        for (let i = 0; i < SCARF_A_NODES; i++) {
+          this.scarfAX[i] += shiftX;
+          this.scarfAY[i] += shiftY;
+          this.scarfAPrevX[i] = this.scarfAX[i];
+          this.scarfAPrevY[i] = this.scarfAY[i];
+        }
+        for (let i = 0; i < SCARF_B_NODES; i++) {
+          this.scarfBX[i] += shiftX;
+          this.scarfBY[i] += shiftY;
+          this.scarfBPrevX[i] = this.scarfBX[i];
+          this.scarfBPrevY[i] = this.scarfBY[i];
+        }
+      }
     }
+    this.lastScarfAnchorX = anchorX;
+    this.lastScarfAnchorY = anchorY;
 
+    const isMovingHoriz = Math.abs(p.vel.x) > 16;
     const rollWhipX = isRoll ? Math.cos(elapsedSec * 24.0) * 140 : 0;
     const rollWhipY = isRoll ? Math.sin(elapsedSec * 24.0) * 110 : 0;
     const baseWindX =
-      -p.facing * 95 - p.vel.x * 0.85 + rollWhipX + (p.speedBuffTicks > 0 ? -p.facing * 90 : 0);
+      -p.facing * (isMovingHoriz ? 240 : 95) -
+      p.vel.x * 1.25 +
+      rollWhipX +
+      (p.speedBuffTicks > 0 ? -p.facing * 90 : 0);
     const baseGravY = isDive ? -290 : 72 + rollWhipY;
+    const trailBias = !isRoll && isMovingHoriz ? p.facing : 0;
 
     this.stepVerletRibbon(
       this.scarfAX,
@@ -1591,7 +1632,8 @@ export class AtmosphereParticles {
       68,
       0.0,
       elapsedSec,
-      dt
+      dt,
+      trailBias
     );
     this.stepVerletRibbon(
       this.scarfBX,
@@ -1607,7 +1649,8 @@ export class AtmosphereParticles {
       82,
       1.75,
       elapsedSec,
-      dt
+      dt,
+      trailBias
     );
 
     // Speed-buff wind embers trailing off primary scarf tips (nodes 9-10)!

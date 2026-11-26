@@ -230,17 +230,20 @@ function buildBiomeAtlasCache(loaded: LoadedCustomAtlas): BiomeAtlasCache {
     seen.add(reg);
     const name = reg.name;
 
+    const isFloorSize = (r: LibGdxRegion): boolean =>
+      (r.w === 24 || r.w === 48) && (r.h === 24 || r.h === 47 || r.h === 48);
+
     if (RE_BACK_WALL.test(name) && reg.w === 24 && reg.h === 24) {
       backWalls.push(reg);
-    } else if (RE_FLOOR_STAMP.test(name) && reg.w === 24 && reg.h === 24) {
+    } else if (RE_FLOOR_STAMP.test(name) && isFloorSize(reg)) {
       floorStamps.push(reg);
-    } else if (RE_FLOOR_STAMP_LEFT.test(name) && reg.w === 24 && reg.h === 24) {
+    } else if (RE_FLOOR_STAMP_LEFT.test(name) && isFloorSize(reg)) {
       floorStampLeft.push(reg);
       altFloorStamps.push(reg);
-    } else if (RE_FLOOR_STAMP_RIGHT.test(name) && reg.w === 24 && reg.h === 24) {
+    } else if (RE_FLOOR_STAMP_RIGHT.test(name) && isFloorSize(reg)) {
       floorStampRight.push(reg);
       altFloorStamps.push(reg);
-    } else if (RE_FLOOR_STAMP_LR.test(name) && reg.w === 24 && reg.h === 24) {
+    } else if (RE_FLOOR_STAMP_LR.test(name) && isFloorSize(reg)) {
       floorStampLeftRight.push(reg);
       altFloorStamps.push(reg);
     } else if (RE_ALT_FLOOR_STAMP.test(name) && reg.w === 24 && reg.h === 24) {
@@ -273,7 +276,8 @@ function buildBiomeAtlasCache(loaded: LoadedCustomAtlas): BiomeAtlasCache {
     } else if (name === 'unstablePlatform_0') {
       fallbackOneWays.push(reg);
     }
-    if (name === 'chain_0' || name === 'chainTile') {
+    // Reject wide pipe-like regions (e.g. sewer chain_0 23x24) so shafts always render crisp chains!
+    if ((name === 'chainTile' || name === 'chain_0') && reg.w <= 16) {
       chains.push(reg);
     }
     if (RE_ARCH_REGION.test(name) && reg.w <= 220 && reg.h <= 260) {
@@ -341,17 +345,14 @@ function buildBiomeAtlasCache(loaded: LoadedCustomAtlas): BiomeAtlasCache {
       : stoneOneWays.length > 0
       ? stoneOneWays
       : fallbackOneWays;
-  chains.sort((a, b) => (a.name === 'chain_0' ? -1 : b.name === 'chain_0' ? 1 : byName(a, b)));
+  chains.sort((a, b) => (a.name === 'chainTile' ? -1 : b.name === 'chainTile' ? 1 : byName(a, b)));
   exitDoors.sort((a, b) =>
     a.name === 'exitDoor' ? -1 : b.name === 'exitDoor' ? 1 : byName(a, b)
   );
 
-  // Bridge & Throne atlases use stoneWall / floorStampLeft/Right / backWalls as 24x24 solid stonework
+  // Keep floorStamps strictly for top floor trims; backWalls provide opaque 24x24 masonry fill
   if (floorStamps.length === 0 && altFloorStamps.length > 0) {
     for (let i = 0; i < altFloorStamps.length; i++) floorStamps.push(altFloorStamps[i]);
-  }
-  if (floorStamps.length < 2 && backWalls.length > 0) {
-    for (let i = 0; i < backWalls.length; i++) floorStamps.push(backWalls[i]);
   }
 
   const regs = loaded.atlas.regions;
@@ -1701,6 +1702,31 @@ export class WebGL2Renderer implements RendererAPI {
     this.quadCount++;
   }
 
+  private pushCustomRegionTopSlice(
+    gpuAtlas: CustomGpuAtlas,
+    reg: LibGdxRegion,
+    x: number,
+    y: number,
+    w: number,
+    sliceH: number,
+    r = 1,
+    g = 1,
+    b = 1,
+    a = 1,
+    normalStrength = 1.0
+  ): void {
+    const page = gpuAtlas.pages[reg.pageIndex];
+    if (!page) return;
+    this.ensureTextures(page.diffuseTex, page.normalTex, page.emissiveTex ?? this.texBlackEmissive!);
+    const uw = Math.min(reg.w, TILE_SIZE);
+    const vh = Math.min(reg.h, sliceH);
+    const u0 = reg.x / page.width;
+    const v0 = reg.y / page.height;
+    const u1 = (reg.x + uw) / page.width;
+    const v1 = (reg.y + vh) / page.height;
+    this.pushRawQuad(x, y, x + w, y + vh, u0, v0, u1, v1, r, g, b, a, 1, 0, 0, normalStrength);
+  }
+
   private pushCustomRegionSliceX(
     gpuAtlas: CustomGpuAtlas,
     reg: LibGdxRegion,
@@ -2117,18 +2143,18 @@ export class WebGL2Renderer implements RendererAPI {
         const isBehemoth = en.bossId === 'Behemoth';
         const isTK = en.bossId === 'TimeKeeper';
         const r = isBehemoth ? 1.0 : isTK ? 0.32 : 0.42;
-        const g = isBehemoth ? 0.38 : isTK ? 0.96 : 0.82;
-        const b = isBehemoth ? 0.18 : isTK ? 0.88 : 1.0;
-        this.addLight(ex, ey - en.height * 0.5, en.bossAuraTicks > 0 ? 160 : 122, r, g, b, 1.55, 36);
+        const g = isBehemoth ? 0.42 : isTK ? 0.96 : 0.82;
+        const b = isBehemoth ? 0.22 : isTK ? 0.88 : 1.0;
+        this.addLight(ex, ey - en.height * 0.5, en.bossAuraTicks > 0 ? 155 : 116, r, g, b, 1.18, 36);
         // Subtle dramatic overhead steel/rim fill so boss armor silhouettes pop cleanly against dark arenas!
         this.addLight(
           ex + en.facing * 10,
           ey - en.height * 0.72,
-          96,
-          isBehemoth ? 0.72 : 0.65,
-          isBehemoth ? 0.78 : 0.88,
+          90,
+          isBehemoth ? 0.68 : 0.65,
+          isBehemoth ? 0.76 : 0.88,
           1.0,
-          0.62,
+          0.44,
           44
         );
       } else if (en.isElite) {
@@ -2777,16 +2803,28 @@ export class WebGL2Renderer implements RendererAPI {
       }
     }
 
-    // 4. Foreground Auto-Tiled Solid Masonry, Ground/Ceiling Caps, FloorJunk, One-Ways, Ladders, Chains, Hazards
-    const useCustomSolid = Boolean(biomeAtlas && bCache && bCache.floorStamps.length > 0);
-    const hasCustomGround = Boolean(biomeAtlas && bCache && bCache.groundCaps.length > 0);
-    const hasCustomCeiling = Boolean(biomeAtlas && bCache && bCache.ceilingCaps.length > 0);
+    // 4. Foreground Auto-Tiled Solid Masonry, Top Rim Stamps, FloorJunk, One-Ways, Ladders, Chains, Hazards
+    const hasCustomBackWalls = Boolean(biomeAtlas && bCache && bCache.backWalls.length > 0);
+    const hasCustomFloorStamps = Boolean(biomeAtlas && bCache && bCache.floorStamps.length > 0);
+    const useCustomSolid = Boolean(
+      biomeAtlas && bCache && (hasCustomBackWalls || hasCustomFloorStamps)
+    );
     const hasCustomFloorJunk =
       state.activeBiomeId !== 'Passage' &&
       Boolean(biomeAtlas && bCache && bCache.floorJunk.length > 0);
     const hasCustomOneWay = Boolean(biomeAtlas && bCache && bCache.oneWays.length > 0);
     const hasCustomChain = Boolean(biomeAtlas && bCache && bCache.chains.length > 0);
     const hasCustomLadder = Boolean(commonAtlas && cCache?.ladder);
+
+    // Per-biome foreground masonry tints applied to opaque 24x24 backWall bricks so
+    // buried & exposed SOLID tiles are 100% opaque, legible, and distinct from BG_WALL!
+    const activeBiome = state.activeBiomeId;
+    const fgExpR = activeBiome === 'Castle' ? 0.58 : activeBiome === 'Throne' ? 1.06 : activeBiome === 'Sewer' ? 1.18 : 0.88;
+    const fgExpG = activeBiome === 'Castle' ? 0.60 : activeBiome === 'Throne' ? 1.08 : activeBiome === 'Sewer' ? 1.30 : 0.92;
+    const fgExpB = activeBiome === 'Castle' ? 0.72 : activeBiome === 'Throne' ? 1.26 : activeBiome === 'Sewer' ? 1.06 : 0.98;
+    const fgBurR = activeBiome === 'Castle' ? 0.32 : activeBiome === 'Throne' ? 0.58 : activeBiome === 'Sewer' ? 0.68 : 0.48;
+    const fgBurG = activeBiome === 'Castle' ? 0.35 : activeBiome === 'Throne' ? 0.62 : activeBiome === 'Sewer' ? 0.76 : 0.52;
+    const fgBurB = activeBiome === 'Castle' ? 0.45 : activeBiome === 'Throne' ? 0.78 : activeBiome === 'Sewer' ? 0.64 : 0.58;
     const hasBuiltinMossCap =
       !useCustomSolid &&
       Boolean(this.atlas.regions['prop:moss_cap']) &&
@@ -2818,133 +2856,97 @@ export class WebGL2Renderer implements RendererAPI {
           const h = tileHash(tx, ty);
 
           if (useCustomSolid) {
-            const fsList = bCache!.floorStamps;
-            let stamp = fsList[h % fsList.length];
-            if (sAbove && sBelow && sLeft && sRight) {
-              // Deep dark silhouette bedrock inside buried interiors (stays in same GPU batch!)
+            const isBuried = sAbove && sBelow && sLeft && sRight;
+            // 1. Always render a 100% opaque 24x24 masonry fill underneath (ZERO black stripes!)
+            if (hasCustomBackWalls) {
+              const bw = bCache!.backWalls[h % bCache!.backWalls.length];
+              const edgeBoost = !isBuried && sAbove ? 1.08 : 1.0;
+              const cr = (isBuried ? fgBurR : fgExpR) * edgeBoost;
+              const cg = (isBuried ? fgBurG : fgExpG) * edgeBoost;
+              const cb = (isBuried ? fgBurB : fgExpB) * edgeBoost;
               this.pushCustomRegion(
                 biomeAtlas!,
-                stamp,
+                bw,
                 sx,
                 sy,
                 TILE_SIZE,
                 TILE_SIZE,
-                0.18,
-                0.20,
-                0.27,
+                cr,
+                cg,
+                cb,
                 1,
                 1,
                 0,
                 0,
-                0.35
+                isBuried ? 0.42 : 1.0
               );
             } else {
-              // Edge-matched Dead Cells masonry stamps (`floorStampLeft/Right/LeftRight`)!
-              if (!sLeft && !sRight && bCache!.floorStampLeftRight.length > 0) {
-                stamp = bCache!.floorStampLeftRight[h % bCache!.floorStampLeftRight.length];
-              } else if (!sLeft && bCache!.floorStampLeft.length > 0) {
-                stamp = bCache!.floorStampLeft[h % bCache!.floorStampLeft.length];
-              } else if (!sRight && bCache!.floorStampRight.length > 0) {
-                stamp = bCache!.floorStampRight[h % bCache!.floorStampRight.length];
-              }
+              // Atlases without backWall_* (e.g. clockTower/clockRoom) fall back to built-in masonry
+              let baseReg = regSolidDeep;
+              if (!sAbove) baseReg = regSolidTop0;
+              else if (!sBelow) baseReg = regSolidCeil0;
+              else if (!sLeft) baseReg = regEdgeLeft;
+              else if (!sRight) baseReg = regEdgeRight;
+              this.pushQuad(baseReg, sx, sy, TILE_SIZE, TILE_SIZE, 1, 1, 1, 1, 1, 0, 0, isBuried ? 0.45 : 1.0);
+            }
 
-              // Exposed solid terrain: real Dead Cells floorStamp + real *_n.png normal map!
-              this.pushCustomRegion(
-                biomeAtlas!,
-                stamp,
-                sx,
-                sy,
-                TILE_SIZE,
-                TILE_SIZE,
-                1,
-                1,
-                1,
-                1,
-                1,
-                0,
-                0,
-                1.0
-              );
-
-              // Exposed top corner caps (`ground_left`/`ground_right`) + ground caps!
-              if (!sAbove) {
-                let cap: LibGdxRegion | null = null;
-                if (!sLeft && bCache!.groundLeft.length > 0) {
-                  cap = bCache!.groundLeft[h % bCache!.groundLeft.length];
-                } else if (!sRight && bCache!.groundRight.length > 0) {
-                  cap = bCache!.groundRight[h % bCache!.groundRight.length];
-                } else if (hasCustomGround) {
-                  cap = bCache!.groundCaps[h % bCache!.groundCaps.length];
+            // 2. ONLY on top exposed surfaces (!sAbove): overlay the top 10px rim of floorStamp
+            //    so Dead Cells floor trim caps the opaque brick fill without black lower bands!
+            if (!sAbove) {
+              if (hasCustomFloorStamps) {
+                const fsList = bCache!.floorStamps;
+                let stamp = fsList[h % fsList.length];
+                if (!sLeft && !sRight && bCache!.floorStampLeftRight.length > 0) {
+                  stamp = bCache!.floorStampLeftRight[h % bCache!.floorStampLeftRight.length];
+                } else if (!sLeft && bCache!.floorStampLeft.length > 0) {
+                  stamp = bCache!.floorStampLeft[h % bCache!.floorStampLeft.length];
+                } else if (!sRight && bCache!.floorStampRight.length > 0) {
+                  stamp = bCache!.floorStampRight[h % bCache!.floorStampRight.length];
                 }
-                if (cap) {
-                  this.pushCustomRegion(
-                    biomeAtlas!,
-                    cap,
-                    sx,
-                    sy,
-                    TILE_SIZE,
-                    Math.min(8, cap.h),
-                    1,
-                    1,
-                    1,
-                    1,
-                    1,
-                    0,
-                    0,
-                    1.0
-                  );
-                }
-                // Overhanging biome foliage (`groundFoliage_0..1`) on exposed top edges!
-                if (
-                  bCache!.groundFoliage.length > 0 &&
-                  ty > 0 &&
-                  grid.tiles[(ty - 1) * grid.width + tx] === TileKind.EMPTY &&
-                  h % 3 === 0
-                ) {
-                  const fol = bCache!.groundFoliage[(h >>> 2) % bCache!.groundFoliage.length];
-                  const fh = Math.min(12, fol.h);
-                  this.pushCustomRegion(
-                    biomeAtlas!,
-                    fol,
-                    sx,
-                    sy - 1,
-                    TILE_SIZE,
-                    fh,
-                    1,
-                    1,
-                    1,
-                    1,
-                    (h & 1) === 0 ? 1 : -1,
-                    0,
-                    0,
-                    0.95
-                  );
-                }
-              }
-              if (!sBelow && hasCustomCeiling) {
-                const ccList = bCache!.ceilingCaps;
-                const cap = ccList[h % ccList.length];
-                const ch = Math.min(6, cap.h);
-                this.pushCustomRegion(
+                this.pushCustomRegionTopSlice(
                   biomeAtlas!,
-                  cap,
+                  stamp,
                   sx,
-                  sy + TILE_SIZE - ch,
+                  sy,
                   TILE_SIZE,
-                  ch,
+                  10,
                   1,
                   1,
                   1,
                   1,
-                  1,
-                  0,
-                  0,
                   1.0
                 );
               }
+
+              // Overhanging biome foliage (`groundFoliage_0..1`) on exposed top edges!
+              if (
+                bCache!.groundFoliage.length > 0 &&
+                ty > 0 &&
+                grid.tiles[(ty - 1) * grid.width + tx] === TileKind.EMPTY &&
+                h % 3 === 0
+              ) {
+                const fol = bCache!.groundFoliage[(h >>> 2) % bCache!.groundFoliage.length];
+                const fh = Math.min(12, fol.h);
+                this.pushCustomRegion(
+                  biomeAtlas!,
+                  fol,
+                  sx,
+                  sy - 1,
+                  TILE_SIZE,
+                  fh,
+                  1,
+                  1,
+                  1,
+                  1,
+                  (h & 1) === 0 ? 1 : -1,
+                  0,
+                  0,
+                  0.95
+                );
+              }
+
               // Deterministic Dead Cells floorJunk props (skulls, rubble, crates, mushrooms) standing cleanly on exposed floors!
               if (
-                !sAbove &&
                 hasCustomFloorJunk &&
                 ty > 0 &&
                 grid.tiles[(ty - 1) * grid.width + tx] === TileKind.EMPTY &&
@@ -3135,11 +3137,18 @@ export class WebGL2Renderer implements RendererAPI {
             this.pushQuad(regLadder, sx, sy, TILE_SIZE, TILE_SIZE, 1, 1, 1, 1, 1, 0, 0, 0.9);
           }
         } else if (tile === TileKind.CHAIN) {
-          if (hasCustomChain) {
-            const ch = bCache!.chains[0];
-            const cw = Math.min(TILE_SIZE, ch.w);
+          const fallbackChainAtlas =
+            !hasCustomChain && useCustomWorld ? this.ensureCustomAtlasLoaded('prison') : null;
+          const chainAtlas = hasCustomChain
+            ? biomeAtlas!
+            : fallbackChainAtlas && fallbackChainAtlas.cache.chains.length > 0
+            ? fallbackChainAtlas
+            : null;
+          if (chainAtlas) {
+            const ch = chainAtlas.cache.chains[0];
+            const cw = Math.min(14, ch.w);
             this.pushCustomRegion(
-              biomeAtlas!,
+              chainAtlas,
               ch,
               Math.round(sx + (TILE_SIZE - cw) * 0.5),
               sy,
@@ -3160,18 +3169,18 @@ export class WebGL2Renderer implements RendererAPI {
         } else if (tile === TileKind.SPIKES) {
           this.pushQuad(regSpikes, sx, sy, TILE_SIZE, TILE_SIZE, 1, 1, 1, 1, 1, 0, 0, 1.0);
         } else if (tile === TileKind.CRACKED_FLOOR) {
-          if (useCustomSolid) {
-            const stamp = bCache!.floorStamps[tileHash(tx, ty) % bCache!.floorStamps.length];
+          if (useCustomSolid && hasCustomBackWalls) {
+            const bw = bCache!.backWalls[tileHash(tx, ty) % bCache!.backWalls.length];
             this.pushCustomRegion(
               biomeAtlas!,
-              stamp,
+              bw,
               sx,
               sy,
               TILE_SIZE,
               TILE_SIZE,
-              0.88,
-              0.94,
-              1.1,
+              fgExpR * 0.95,
+              fgExpG * 1.02,
+              fgExpB * 1.15,
               1,
               1,
               0.08,
@@ -3182,18 +3191,18 @@ export class WebGL2Renderer implements RendererAPI {
             this.pushQuad(regCracked, sx, sy, TILE_SIZE, TILE_SIZE, 1, 1, 1, 1, 1, 0, 0.1, 1.0);
           }
         } else if (tile === TileKind.SECRET_WALL) {
-          if (useCustomSolid) {
-            const stamp = bCache!.floorStamps[tileHash(tx, ty) % bCache!.floorStamps.length];
+          if (useCustomSolid && hasCustomBackWalls) {
+            const bw = bCache!.backWalls[tileHash(tx, ty) % bCache!.backWalls.length];
             this.pushCustomRegion(
               biomeAtlas!,
-              stamp,
+              bw,
               sx,
               sy,
               TILE_SIZE,
               TILE_SIZE,
-              0.94,
-              0.96,
-              1.08,
+              fgExpR * 1.02,
+              fgExpG * 1.04,
+              fgExpB * 1.12,
               1,
               1,
               0.05,
@@ -3733,7 +3742,7 @@ export class WebGL2Renderer implements RendererAPI {
         g,
         b,
         1,
-        emBoost + phasePulse * 0.5
+        emBoost + phasePulse * 0.5 + (en.bossId === 'Behemoth' ? 0.04 : 0)
       );
       if (!drawnCustom) {
         // Built-In Mode: True multi-pose boss combat animation via `en.state` & `en.bossAttackId`!
@@ -4335,44 +4344,7 @@ export class WebGL2Renderer implements RendererAPI {
       );
     }
 
-    // 1.6. World-Space Gold Price Badges Above Shop Wares (zero alloc pixel digits!)
-    for (let i = 0; i < state.pickups.length; i++) {
-      const pk = state.pickups[i];
-      if (pk.collected || !pk.priceGold || pk.priceGold <= 0) continue;
-      const px = pk.prevPos.x + (pk.pos.x - pk.prevPos.x) * interpAlpha - camX;
-      const py = pk.prevPos.y + (pk.pos.y - pk.prevPos.y) * interpAlpha - camY;
-      if (px < -30 || px > VIEWPORT_W + 30 || py < -30 || py > VIEWPORT_H + 30) continue;
-      const canAfford = p.gold >= pk.priceGold;
-      const tagY = Math.round(py - 16);
-      const digits = pk.priceGold >= 1000 ? 4 : pk.priceGold >= 100 ? 3 : pk.priceGold >= 10 ? 2 : 1;
-      const pillW = digits * 6 + 10;
-      this.emitVfxQuadBound('vfx:white_px', px, tagY, pillW, 10, 0.04, 0.04, 0.08, 0.78, 1, 0, 0);
-      this.emitVfxQuadBound(
-        'vfx:coin_0',
-        px - pillW * 0.5 + 4,
-        tagY,
-        6,
-        6,
-        canAfford ? 1.0 : 0.75,
-        canAfford ? 0.92 : 0.4,
-        canAfford ? 0.45 : 0.4,
-        0.95,
-        1,
-        0,
-        0.65
-      );
-      this.drawWorldDigits(
-        pk.priceGold,
-        px + 3,
-        tagY,
-        canAfford ? 1.0 : 1.0,
-        canAfford ? 0.88 : 0.34,
-        canAfford ? 0.36 : 0.38,
-        0.98,
-        0.82,
-        0.95
-      );
-    }
+    // 1.6. Shop ware prices are rendered by HudOverlay (`kc-world-price-tag`) so world coin sprites never overlap price digits!
 
     // 2. Dynamic Hazards (Burning Oil, Toxic Cloud, Shockwaves)
     for (let i = 0; i < state.hazards.length; i++) {
