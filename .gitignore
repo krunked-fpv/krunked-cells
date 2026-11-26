@@ -25,3 +25,4 @@ Thumbs.db
 .env.*
 *.md
 !README.md
+dna/
