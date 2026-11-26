@@ -1,4 +1,6 @@
 import './styles.css';
+import './styles-gamepad.css';
+import './styles-touch.css';
 import { GameApp } from './app';
 
 let activeApp: GameApp | null = null;

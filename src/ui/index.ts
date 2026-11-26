@@ -1,4 +1,6 @@
 export { UIManager, type UICallbacks, type UIContainers } from './UIManager';
+export { ControllerNav } from './ControllerNav';
+export { TouchControls, type TouchControlsCallbacks } from './TouchControls';
 export {
   HudOverlay,
   ALL_BIOME_IDS,
@@ -26,9 +28,14 @@ export {
   getQualityCssClass,
   getScrollDamageMultiplier,
   getScrollDamagePct,
+  renderControllerBadgeHtml,
+  renderGamepadIconSvg,
+  renderTouchStickIconSvg,
+  resolveBadgeClasses,
   type AffixSynergyInfo,
   type CatalogLookup,
   type GearDpsSummary,
+  type GlyphAction,
   type HudCallbacks,
 } from './HudOverlay';
 export { Minimap, type MinimapCallbacks } from './Minimap';

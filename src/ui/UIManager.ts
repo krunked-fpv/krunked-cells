@@ -6,15 +6,21 @@
 // =============================================================================
 
 import {
+  ActiveInputSnapshot,
   ArtPackMode,
   AudioSettings,
   BiomeId,
   BossId,
+  ControllerSettings,
   CustomPackAssetResolver,
   CustomPackStatus,
   DEFAULT_AUDIO_SETTINGS,
+  DEFAULT_CONTROLLER_SETTINGS,
   DEFAULT_KEY_BINDINGS,
   DEFAULT_RENDER_SETTINGS,
+  GamepadConnectionInfo,
+  GamepadGlyphStyle,
+  GamepadLayoutPreset,
   KeyBindings,
   LightingQuality,
   MAX_BOSS_CELLS,
@@ -27,10 +33,13 @@ import {
   SimEvent,
   SimState,
   TargetFps,
+  TouchControlsMode,
+  UiNavAction,
   createDefaultMetaSnapshot,
 } from '../contracts';
 import { getBuiltinTitleBackdropDataUrl } from '../assets';
 import { CameraOriginMode, InputManager, KeyAction } from '../input';
+import { ControllerNav } from './ControllerNav';
 import { DevDrawer } from './DevDrawer';
 import {
   CatalogLookup,
@@ -41,11 +50,15 @@ import {
   formatTimer,
   getBiomeDisplayName,
   getScrollDamagePct,
+  renderControllerBadgeHtml,
+  renderGamepadIconSvg,
   renderItemIconHtml,
+  renderTouchStickIconSvg,
   renderUiGlyphSvg,
 } from './HudOverlay';
 import { Minimap } from './Minimap';
 import { PassageModal } from './PassageModal';
+import { TouchControls } from './TouchControls';
 
 export interface UICallbacks {
   onNewRun(seed: number, bossCells: number): void;
@@ -59,6 +72,8 @@ export interface UICallbacks {
   onUpdateAudioSettings(patch: Partial<AudioSettings>): void;
   onUpdateKeyBindings(bindings: KeyBindings): void;
   onResetKeyBindings(): void;
+  onUpdateControllerSettings?(patch: Partial<ControllerSettings>): void;
+  onTestRumble?(): void;
   onLoadCustomPackFolder(): Promise<CustomPackStatus | void> | void;
   onToggleArtPackMode(mode?: ArtPackMode): ArtPackMode | void;
   onPlayUiClick?(kind?: 'select' | 'confirm' | 'cancel' | 'error'): void;
@@ -106,11 +121,14 @@ export class UIManager {
   private hudRoot: HTMLElement | null;
   private uiRoot: HTMLElement | null;
   private canvas: HTMLCanvasElement | null;
+  private stageEl: HTMLElement | null = null;
 
   private hud: HudOverlay | null = null;
   private minimap: Minimap | null = null;
   private passageModal: PassageModal | null = null;
   private devDrawer: DevDrawer | null = null;
+  private controllerNav: ControllerNav;
+  private touchControls: TouchControls | null = null;
 
   // Managed modal layers inside #ui-root
   private titleLayer: HTMLDivElement | null = null;
@@ -123,6 +141,11 @@ export class UIManager {
   private renderSettings: RenderSettings = { ...DEFAULT_RENDER_SETTINGS };
   private audioSettings: AudioSettings = { ...DEFAULT_AUDIO_SETTINGS };
   private keyBindings: KeyBindings = { ...DEFAULT_KEY_BINDINGS };
+  private controllerSettings: ControllerSettings = { ...DEFAULT_CONTROLLER_SETTINGS };
+  private lastInputSnapshot: ActiveInputSnapshot | null = null;
+  private lastTouchVisible = false;
+  private lastTouchSettingsSig = '';
+  private lastActiveNavContainer: HTMLElement | null = null;
   private customPackStatus: CustomPackStatus = {
     available: false,
     source: 'none',
@@ -155,6 +178,7 @@ export class UIManager {
   constructor(callbacks: UICallbacks, catalog?: CatalogLookup, containers?: UIContainers) {
     this.callbacks = callbacks;
     this.catalog = catalog;
+    this.controllerNav = new ControllerNav();
 
     if (typeof document === 'undefined') {
       this.hudRoot = null;
@@ -167,6 +191,10 @@ export class UIManager {
     this.uiRoot = containers?.uiRoot ?? document.getElementById('ui-root');
     this.canvas =
       containers?.canvas ?? (document.getElementById('game-canvas') as HTMLCanvasElement | null);
+    this.stageEl =
+      document.getElementById('viewport-stage') ??
+      this.hudRoot?.parentElement ??
+      this.hudRoot;
 
     if (this.hudRoot && this.uiRoot) {
       this.hud = new HudOverlay(
@@ -224,6 +252,17 @@ export class UIManager {
         },
         this.catalog
       );
+
+      const touchHost = this.stageEl ?? this.hudRoot.parentElement ?? this.hudRoot;
+      if (touchHost) {
+        this.touchControls = new TouchControls(touchHost, {
+          onMoveStick: (x, y) => this.inputManager?.setVirtualMoveStick(x, y),
+          onAimStick: (x, y, active) => this.inputManager?.setVirtualAimStick(x, y, active),
+          onActionChange: (action, held) => this.inputManager?.setVirtualActionHeld(action, held),
+          onTouchActivity: () => this.inputManager?.notifyTouchActivity(),
+        });
+        this.touchControls.setVisible(false);
+      }
     }
   }
 
@@ -272,11 +311,17 @@ export class UIManager {
     keyBindings: KeyBindings,
     customPackStatus?: CustomPackStatus,
     saveData?: Partial<SaveData>,
-    backendName?: 'webgl2' | 'canvas2d-fallback'
+    backendName?: 'webgl2' | 'canvas2d-fallback',
+    controllerSettings?: ControllerSettings
   ): void {
     this.renderSettings = { ...renderSettings };
     this.audioSettings = { ...audioSettings };
     this.keyBindings = { ...keyBindings };
+    if (controllerSettings) {
+      this.controllerSettings = { ...DEFAULT_CONTROLLER_SETTINGS, ...controllerSettings };
+    } else if (saveData?.controllerSettings) {
+      this.controllerSettings = { ...DEFAULT_CONTROLLER_SETTINGS, ...saveData.controllerSettings };
+    }
     if (customPackStatus) this.customPackStatus = { ...customPackStatus };
     const effectiveMode: ArtPackMode =
       this.customPackStatus.available && this.renderSettings.artPackMode === 'custom'
@@ -302,6 +347,7 @@ export class UIManager {
 
     this.lastTitleSig = '';
     this.lastOptionsSig = '';
+    this.lastTouchSettingsSig = '';
   }
 
   public ingestEvents(events: readonly SimEvent[], state: SimState): void {
@@ -404,16 +450,116 @@ export class UIManager {
     return this.hud?.triggerQuickLootAction(action, s) ?? false;
   }
 
-  public update(state: SimState, perf?: PerfStats, interpAlpha = 1): void {
+  public handleGamepadConnectionChange(info: GamepadConnectionInfo, connected: boolean): void {
+    const msg = connected
+      ? `${info.displayName.toUpperCase()} CONNECTED`
+      : 'CONTROLLER DISCONNECTED';
+    this.showToast(msg, 2.6);
+    if (this.inputManager) {
+      this.lastInputSnapshot = this.inputManager.getActiveInputSnapshot();
+    }
+    this.lastTitleSig = '';
+    this.lastOptionsSig = '';
+    this.lastScrollSig = '';
+    this.lastPauseSig = '';
+  }
+
+  public handleUiNavAction(action: UiNavAction, state: SimState): boolean {
+    if (action === 'cancel') {
+      if (this.handleEscapeKey(state)) {
+        this.syncActiveNavFocus(state, true);
+        return true;
+      }
+      if (this.seedDrawerOpen && state.runStatus === 'title') {
+        this.callbacks.onPlayUiClick?.('cancel');
+        this.seedDrawerOpen = false;
+        this.lastTitleSig = '';
+        this.updateTitleScreen(state);
+        this.syncActiveNavFocus(state, true);
+        return true;
+      }
+      return false;
+    }
+
+    if (action === 'pause') {
+      if (
+        this.optionsOpen ||
+        this.minimap?.isExpanded() ||
+        this.passageModal?.isOpen() ||
+        state.runStatus === 'paused'
+      ) {
+        const handled = this.handleEscapeKey(state);
+        this.syncActiveNavFocus(state, true);
+        return handled;
+      }
+      return false;
+    }
+
+    if (action === 'map') {
+      if (this.minimap?.isExpanded()) {
+        this.callbacks.onPlayUiClick?.('cancel');
+        this.minimap.toggleExpanded(false);
+        this.syncActiveNavFocus(state, false);
+        return true;
+      }
+      return false;
+    }
+
+    if (action === 'tabPrev' || action === 'tabNext') {
+      if (this.passageModal?.isOpen() && !this.optionsOpen && !this.minimap?.isExpanded()) {
+        const cycled = this.passageModal.cycleTab(action === 'tabNext' ? 1 : -1);
+        if (cycled) {
+          this.controllerNav.syncFocus(this.passageModal.getModalElement(), true);
+        }
+        return cycled;
+      }
+      if (
+        this.isScrollModalOpen(state) &&
+        !this.optionsOpen &&
+        !this.minimap?.isExpanded() &&
+        this.scrollLayer &&
+        !this.scrollLayer.classList.contains('kc-hidden')
+      ) {
+        const dir: UiNavAction = action === 'tabNext' ? 'right' : 'left';
+        const moved = this.controllerNav.handleAction(dir, this.scrollLayer);
+        if (moved) this.callbacks.onPlayUiClick?.('select');
+        return moved;
+      }
+      return false;
+    }
+
+    const container = this.getTopActiveNavContainer(state);
+    if (!container) return false;
+
+    const handled = this.controllerNav.handleAction(action, container);
+    if (handled && action !== 'confirm') {
+      this.callbacks.onPlayUiClick?.('select');
+    }
+    return handled;
+  }
+
+  public update(
+    state: SimState,
+    perf?: PerfStats,
+    interpAlpha = 1,
+    inputSnapshot?: ActiveInputSnapshot
+  ): void {
     this.lastSimState = state;
     this.metaSnapshot = state.metaSnapshot;
+    const snapshot =
+      inputSnapshot ?? this.inputManager?.getActiveInputSnapshot() ?? this.lastInputSnapshot ?? undefined;
+    this.lastInputSnapshot = snapshot ?? null;
 
     const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
     const dtSec = this.lastFrameMs > 0 ? Math.min(0.1, Math.max(0.001, (now - this.lastFrameMs) / 1000)) : 1 / 60;
     this.lastFrameMs = now;
 
-    this.hud?.update(state, this.keyBindings, dtSec, interpAlpha);
+    const layoutPreset = this.controllerSettings.layoutPreset;
+    this.hud?.setLayoutPreset(layoutPreset);
+    this.hud?.update(state, this.keyBindings, dtSec, interpAlpha, snapshot);
+    this.minimap?.setInputSnapshot(snapshot ?? null, this.keyBindings, layoutPreset);
     this.minimap?.update(state, dtSec);
+    this.passageModal?.setInputSnapshot(snapshot ?? null, layoutPreset);
     this.passageModal?.update(state);
     this.devDrawer?.update(state, perf, this.backendName);
 
@@ -422,10 +568,59 @@ export class UIManager {
     this.updatePauseMenu(state);
     this.updateSummaryModal(state);
     this.updateOptionsModal();
+
+    // Keep controller focus synchronized with the top-most visible menu/modal
+    this.syncActiveNavFocus(state, snapshot?.mode === 'gamepad');
+
+    // Mount & toggle translucent TouchControls strictly when touch is active in gameplay
+    const showTouch = Boolean(
+      snapshot?.touchVisible &&
+        (state.runStatus === 'playing' || state.runStatus === 'passage') &&
+        !this.isAnyModalBlockingGameplay(state)
+    );
+
+    const touchSettingsSig = `${this.controllerSettings.touchOpacity.toFixed(2)}:${this.controllerSettings.touchScale.toFixed(2)}:${this.controllerSettings.touchMode}:${Boolean(snapshot?.isTeslaBrowser)}`;
+    if (touchSettingsSig !== this.lastTouchSettingsSig) {
+      this.lastTouchSettingsSig = touchSettingsSig;
+      this.touchControls?.applySettings(this.controllerSettings, snapshot?.isTeslaBrowser);
+    }
+
+    if (showTouch !== this.lastTouchVisible) {
+      this.lastTouchVisible = showTouch;
+      this.touchControls?.setVisible(showTouch);
+      if (!showTouch) {
+        this.inputManager?.clearVirtualInputs();
+      }
+    } else if (!showTouch) {
+      this.touchControls?.setVisible(false);
+    }
+
+    if (showTouch) {
+      this.touchControls?.updateState(state, this.hud?.hasActiveInteractable() ?? false);
+    }
+
+    if (this.stageEl) {
+      const mode = snapshot?.mode ?? 'keyboard';
+      this.stageEl.classList.toggle('kc-touch-active', showTouch);
+      this.stageEl.classList.toggle('kc-input-gamepad', mode === 'gamepad');
+      this.stageEl.classList.toggle('kc-input-touch', mode === 'touch');
+      this.stageEl.classList.toggle('kc-input-keyboard', mode === 'keyboard');
+    }
   }
 
   public dispose(): void {
     this.cancelRebindCapture();
+    this.controllerNav.dispose();
+    this.touchControls?.dispose();
+    this.touchControls = null;
+    if (this.stageEl) {
+      this.stageEl.classList.remove(
+        'kc-touch-active',
+        'kc-input-gamepad',
+        'kc-input-touch',
+        'kc-input-keyboard'
+      );
+    }
     this.hud?.dispose();
     this.minimap?.dispose();
     this.passageModal?.dispose();
@@ -435,6 +630,53 @@ export class UIManager {
     this.pauseLayer?.remove();
     this.summaryLayer?.remove();
     this.optionsLayer?.remove();
+  }
+
+  private getTopActiveNavContainer(state: SimState): HTMLElement | null {
+    if (this.optionsOpen && this.optionsLayer && !this.optionsLayer.classList.contains('kc-hidden')) {
+      return this.optionsLayer;
+    }
+    if (this.minimap?.isExpanded()) {
+      return this.minimap.getModalElement();
+    }
+    if (this.passageModal?.isOpen()) {
+      return this.passageModal.getModalElement();
+    }
+    if (this.isScrollModalOpen(state) && this.scrollLayer && !this.scrollLayer.classList.contains('kc-hidden')) {
+      return this.scrollLayer;
+    }
+    if (state.runStatus === 'paused' && this.pauseLayer && !this.pauseLayer.classList.contains('kc-hidden')) {
+      return this.pauseLayer;
+    }
+    if (
+      (state.runStatus === 'dead' || state.runStatus === 'victory') &&
+      this.summaryLayer &&
+      !this.summaryLayer.classList.contains('kc-hidden')
+    ) {
+      return this.summaryLayer;
+    }
+    if (state.runStatus === 'title' && this.titleLayer && !this.titleLayer.classList.contains('kc-hidden')) {
+      return this.titleLayer;
+    }
+    return null;
+  }
+
+  private syncActiveNavFocus(state: SimState, isGamepadMode: boolean): void {
+    const container = this.getTopActiveNavContainer(state);
+    if (!container) {
+      this.lastActiveNavContainer = null;
+      this.controllerNav.clearFocus();
+      return;
+    }
+
+    const switchedContainer = container !== this.lastActiveNavContainer;
+    this.lastActiveNavContainer = container;
+
+    if (isGamepadMode) {
+      this.controllerNav.syncFocus(container, true);
+    } else if (switchedContainer || this.lastInputSnapshot?.mode === 'touch') {
+      this.controllerNav.clearFocus();
+    }
   }
 
   private createLayer(parent: HTMLElement, className: string): HTMLDivElement {
@@ -448,6 +690,65 @@ export class UIManager {
   // 1. Dead Cells-Grade Full-Bleed Title Screen (Frameless Gothic Overlay)
   // ===========================================================================
 
+  private getTitleControlsWhisper(snapshot: ActiveInputSnapshot | null): string {
+    const mode = snapshot?.mode ?? 'keyboard';
+    const glyphFamily = snapshot?.glyphFamily ?? 'keyboard';
+
+    if (mode === 'touch') {
+      return 'LEFT STICK MOVE · RIGHT STICK AIM · TAP ACTION DECK';
+    }
+    if (mode === 'gamepad') {
+      if (glyphFamily === 'playstation') {
+        return 'L-STICK/DPAD MOVE · ✕ JUMP · ○ ROLL · □/△ ATK · L1/R1 SKILLS · L2 HEAL · R2 USE · SHARE MAP';
+      }
+      if (glyphFamily === 'nintendo') {
+        return 'L-STICK/DPAD MOVE · B JUMP · A ROLL · Y/X ATK · L/R SKILLS · ZL HEAL · ZR USE · - MAP';
+      }
+      if (glyphFamily === 'tesla' || snapshot?.isTeslaBrowser) {
+        return 'L-STICK/DPAD MOVE · A JUMP · B ROLL · X/Y ATK · LB/RB SKILLS · LT HEAL · RT USE · TESLA PAD';
+      }
+      return 'L-STICK/DPAD MOVE · A JUMP · B ROLL · X/Y ATK · LB/RB SKILLS · LT HEAL · RT USE · VIEW MAP';
+    }
+    return 'WASD · SPACE · SHIFT · LMB/RMB · Q/E · R · TAB · F9';
+  }
+
+  private renderTitleInputPillHtml(snapshot: ActiveInputSnapshot | null): string {
+    if (!snapshot) return '';
+    if (snapshot.gamepad?.connected) {
+      const gp = snapshot.gamepad;
+      const isTesla = gp.isTeslaBrowser || gp.family === 'tesla';
+      const pillCls = isTesla ? 'is-tesla' : 'is-gamepad';
+      const accent = isTesla ? '#38e8ff' : '#4ade80';
+      const iconHtml = renderGamepadIconSvg(14, accent);
+      const rawName = gp.displayName.toUpperCase();
+      const label =
+        isTesla && !rawName.includes('TESLA')
+          ? `TESLA · ${rawName} READY`
+          : `${rawName} READY`;
+      return `
+        <div class="kc-title-input-pill ${pillCls}" data-el="title-input-pill">
+          <span class="kc-input-dot ${pillCls}"></span>
+          ${iconHtml}
+          <span>${escapeHtml(label)}</span>
+        </div>
+      `;
+    }
+    if (snapshot.touchSensed) {
+      const iconHtml = renderTouchStickIconSvg(14, '#fbbf24');
+      const label = snapshot.isTeslaBrowser
+        ? 'TESLA TOUCH CONTROLS READY'
+        : 'TOUCH CONTROLS READY';
+      return `
+        <div class="kc-title-input-pill is-touch" data-el="title-input-pill">
+          <span class="kc-input-dot is-touch"></span>
+          ${iconHtml}
+          <span>${escapeHtml(label)}</span>
+        </div>
+      `;
+    }
+    return '';
+  }
+
   private updateTitleScreen(state: SimState): void {
     if (!this.titleLayer) return;
     const show = state.runStatus === 'title' && !this.optionsOpen;
@@ -459,7 +760,13 @@ export class UIManager {
       ? this.customPackResolver?.getTitleBackdropDataUrl?.() ?? null
       : getBuiltinTitleBackdropDataUrl();
 
-    const sig = `bc${this.selectedBossCells}/${this.metaSnapshot.bossCellsUnlocked}|cont${this.hasActiveRun}|art${this.artPackMode}|url${titleArtUrl ? (isCustom ? 2 : 1) : 0}|pack${this.customPackStatus.available}:${this.customPackStatus.atlasCount}:${this.customPackStatus.audioCount}|seed${this.customSeed}:${this.seedDrawerOpen}`;
+    const snap = this.lastInputSnapshot;
+    const gpKey = snap?.gamepad?.connected
+      ? `${snap.gamepad.displayName}:${snap.gamepad.family}:${snap.gamepad.isTeslaBrowser}`
+      : 'none';
+    const inputSig = `${snap?.mode ?? 'keyboard'}:${snap?.glyphFamily ?? 'keyboard'}:${snap?.touchSensed ? 1 : 0}:${snap?.isTeslaBrowser ? 1 : 0}:${gpKey}`;
+
+    const sig = `bc${this.selectedBossCells}/${this.metaSnapshot.bossCellsUnlocked}|cont${this.hasActiveRun}|art${this.artPackMode}|url${titleArtUrl ? (isCustom ? 2 : 1) : 0}|pack${this.customPackStatus.available}:${this.customPackStatus.atlasCount}:${this.customPackStatus.audioCount}|seed${this.customSeed}:${this.seedDrawerOpen}|in:${inputSig}`;
     if (sig === this.lastTitleSig) return;
     this.lastTitleSig = sig;
 
@@ -564,7 +871,7 @@ export class UIManager {
           <button type="button" class="kc-menu-item" data-act="options">
             ${menuPointerSvg}
             <span class="kc-menu-label">OPTIONS</span>
-            <span class="kc-menu-hint">VIDEO · AUDIO · KEYS</span>
+            <span class="kc-menu-hint">VIDEO · AUDIO · INPUT</span>
           </button>
         </nav>
       </div>
@@ -590,7 +897,8 @@ export class UIManager {
       </div>
 
       <div class="kc-title-bottom-right">
-        <div class="kc-title-keys-whisper">WASD · SPACE · SHIFT · LMB/RMB · Q/E · R · TAB · F9</div>
+        ${this.renderTitleInputPillHtml(snap)}
+        <div class="kc-title-keys-whisper">${escapeHtml(this.getTitleControlsWhisper(snap))}</div>
         <div class="kc-seed-chip-wrap ${this.seedDrawerOpen ? 'is-open' : ''}">
           ${
             this.seedDrawerOpen
@@ -687,7 +995,9 @@ export class UIManager {
       return;
     }
 
-    const sig = `${pending.pickupUid}:${pending.choices.join(',')}:${state.player.scrolls.brutality}:${state.player.scrolls.tactics}:${state.player.scrolls.survival}:${this.artPackMode}`;
+    const mode = this.lastInputSnapshot?.mode ?? 'keyboard';
+    const glyphFamily = this.lastInputSnapshot?.glyphFamily ?? 'keyboard';
+    const sig = `${pending.pickupUid}:${pending.choices.join(',')}:${state.player.scrolls.brutality}:${state.player.scrolls.tactics}:${state.player.scrolls.survival}:${this.artPackMode}:${mode}:${glyphFamily}`;
     if (sig === this.lastScrollSig) return;
     this.lastScrollSig = sig;
 
@@ -697,6 +1007,7 @@ export class UIManager {
       survival: { title: 'Survival', role: 'Shields, Heavy & Max HP', iconId: 'ScrollSurvival' },
     };
 
+    const romanIndex = ['I', 'II', 'III'];
     const cardsHtml = pending.choices
       .map((stat, idx) => {
         const curr = state.player.scrolls[stat];
@@ -711,10 +1022,17 @@ export class UIManager {
           alt: meta.title,
         });
 
+        const capHtml =
+          mode === 'gamepad'
+            ? `<span class="kc-keycap">${romanIndex[idx] ?? String(idx + 1)}</span>`
+            : mode === 'touch'
+              ? ''
+              : `<span class="kc-keycap">[${idx + 1}]</span>`;
+
         return `
-          <button type="button" class="kc-scroll-pillar kc-color-${stat}" data-scroll-stat="${stat}">
+          <button type="button" class="kc-scroll-pillar kc-color-${stat}" data-scroll-stat="${stat}" ${idx === 0 ? 'data-gp-autofocus="true"' : ''}>
             <div class="kc-scroll-pillar-cap">
-              <span class="kc-keycap">[${idx + 1}]</span>
+              ${capHtml}
             </div>
             <div class="kc-scroll-pillar-emblem">
               <span class="kc-scroll-pillar-halo"></span>
@@ -732,11 +1050,18 @@ export class UIManager {
       })
       .join('');
 
+    const subtitleHtml =
+      mode === 'gamepad'
+        ? `Choose an attribute pillar — D-Pad + ${renderControllerBadgeHtml('confirm', this.lastInputSnapshot, this.keyBindings, { layoutPreset: this.controllerSettings.layoutPreset })}`
+        : mode === 'touch'
+          ? 'Tap an attribute pillar'
+          : 'Choose an attribute pillar — Press [1], [2], or [3]';
+
     this.scrollLayer.innerHTML = `
       <div class="kc-scroll-modal">
         <div class="kc-scroll-modal-head">
           <h2 class="kc-modal-title">${escapeHtml(pending.title || 'Scroll of Power')}</h2>
-          <p class="kc-modal-subtitle">Choose an attribute pillar — Press [1], [2], or [3]</p>
+          <p class="kc-modal-subtitle">${subtitleHtml}</p>
         </div>
         <div class="kc-scroll-pillars">${cardsHtml}</div>
       </div>
@@ -749,6 +1074,10 @@ export class UIManager {
         this.callbacks.onDispatchCommand({ type: 'pickScroll', stat });
       });
     });
+
+    if (mode === 'gamepad') {
+      this.controllerNav.syncFocus(this.scrollLayer, true);
+    }
   }
 
   // ===========================================================================
@@ -764,9 +1093,18 @@ export class UIManager {
       return;
     }
 
-    const sig = `${state.activeBiomeId}:${state.bossStemCells}:${state.runKills}:${Math.floor(state.player.runTimerTicks / 60)}`;
+    const mode = this.lastInputSnapshot?.mode ?? 'keyboard';
+    const glyphFamily = this.lastInputSnapshot?.glyphFamily ?? 'keyboard';
+    const sig = `${state.activeBiomeId}:${state.bossStemCells}:${state.runKills}:${Math.floor(state.player.runTimerTicks / 60)}:${mode}:${glyphFamily}`;
     if (sig === this.lastPauseSig) return;
     this.lastPauseSig = sig;
+
+    const resumeLabel =
+      mode === 'gamepad'
+        ? `Resume${renderControllerBadgeHtml('cancel', this.lastInputSnapshot, this.keyBindings, { extraClass: 'is-inline-after', layoutPreset: this.controllerSettings.layoutPreset })}`
+        : mode === 'touch'
+          ? 'Resume'
+          : 'Resume [Esc]';
 
     this.pauseLayer.innerHTML = `
       <div class="kc-pause-card kc-iron-panel">
@@ -774,7 +1112,7 @@ export class UIManager {
         <div style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted)">
           ${escapeHtml(getBiomeDisplayName(state.activeBiomeId, this.catalog))} · ${state.bossStemCells}BC · ${formatTimer(state.player.runTimerTicks)} · ${state.runKills} Kills
         </div>
-        <button class="kc-btn kc-btn-primary" data-act="resume">Resume [Esc]</button>
+        <button class="kc-btn kc-btn-primary" data-act="resume">${resumeLabel}</button>
         <button class="kc-btn" data-act="options">Options</button>
         <button class="kc-btn" data-act="restart">Restart Run</button>
         <button class="kc-btn" data-act="title">Return to Title</button>
@@ -800,8 +1138,88 @@ export class UIManager {
   }
 
   // ===========================================================================
-  // 4. Options Modal (Graphics, Art Pack, Seed, Audio, Keybinds)
+  // 4. Options Modal (Graphics, Art Pack, Seed, Audio, Controller & Touch, Keybinds)
   // ===========================================================================
+
+  private applyControllerSettingsPatch(
+    patch: Partial<ControllerSettings>,
+    rerender = true
+  ): void {
+    this.controllerSettings = {
+      ...this.controllerSettings,
+      ...patch,
+    };
+    if (this.callbacks.onUpdateControllerSettings) {
+      this.callbacks.onUpdateControllerSettings(patch);
+    } else {
+      this.inputManager?.setControllerSettings(this.controllerSettings);
+    }
+    this.lastTouchSettingsSig = '';
+    this.touchControls?.applySettings(
+      this.controllerSettings,
+      this.lastInputSnapshot?.isTeslaBrowser
+    );
+    this.lastTitleSig = '';
+    if (rerender) {
+      this.lastOptionsSig = '';
+      this.updateOptionsModal();
+      if (this.lastInputSnapshot?.mode === 'gamepad' && this.optionsLayer) {
+        this.controllerNav.syncFocus(this.optionsLayer, false);
+      }
+    }
+  }
+
+  private renderControllerStatusCardHtml(): string {
+    const snap = this.lastInputSnapshot;
+    const gp = snap?.gamepad;
+    if (gp?.connected) {
+      const isTesla = gp.isTeslaBrowser || gp.family === 'tesla';
+      const dotCls = isTesla ? 'is-tesla' : 'is-gamepad';
+      const iconHtml = renderGamepadIconSvg(20, isTesla ? '#38e8ff' : '#4ade80');
+      const mappingLabel = gp.mapping === 'standard' ? 'STANDARD MAPPING' : 'CUSTOM HID';
+      const familyLabel = gp.family.toUpperCase();
+      return `
+        <div class="kc-controller-status-card is-connected" data-el="controller-status">
+          <div class="kc-controller-status-main">
+            <div class="kc-controller-status-icon">${iconHtml}</div>
+            <div class="kc-controller-status-text">
+              <div class="kc-controller-status-title">
+                <span class="kc-input-dot ${dotCls}"></span>
+                <span>${escapeHtml(gp.displayName)}</span>
+              </div>
+              <div class="kc-controller-status-sub">Port #${gp.index + 1} · Active Gamepad Ready</div>
+            </div>
+          </div>
+          <div class="kc-opt-meta-pills">
+            <span class="kc-opt-meta-pill is-emerald">${escapeHtml(familyLabel)}</span>
+            <span class="kc-opt-meta-pill">${escapeHtml(mappingLabel)}</span>
+            ${isTesla ? '<span class="kc-opt-meta-pill is-cyan">TESLA BROWSER</span>' : ''}
+            <span class="kc-opt-meta-pill ${gp.hasRumble ? 'is-amber' : ''}">${gp.hasRumble ? 'RUMBLE READY' : 'NO RUMBLE'}</span>
+          </div>
+        </div>
+      `;
+    }
+
+    const iconHtml = renderGamepadIconSvg(20, '#988da8');
+    return `
+      <div class="kc-controller-status-card is-disconnected" data-el="controller-status">
+        <div class="kc-controller-status-main">
+          <div class="kc-controller-status-icon">${iconHtml}</div>
+          <div class="kc-controller-status-text">
+            <div class="kc-controller-status-title">
+              <span class="kc-input-dot is-disconnected"></span>
+              <span>No Gamepad Detected</span>
+            </div>
+            <div class="kc-controller-status-sub">Press any button on your controller to connect</div>
+          </div>
+        </div>
+        <div class="kc-opt-meta-pills">
+          ${snap?.isTeslaBrowser ? '<span class="kc-opt-meta-pill is-cyan">TESLA BROWSER</span>' : ''}
+          ${snap?.touchSensed ? '<span class="kc-opt-meta-pill is-amber">TOUCH SENSED</span>' : ''}
+        </div>
+      </div>
+    `;
+  }
 
   private updateOptionsModal(): void {
     if (!this.optionsLayer) return;
@@ -813,9 +1231,21 @@ export class UIManager {
 
     const r = this.renderSettings;
     const a = this.audioSettings;
-    const sig = `${r.targetFps}:${r.snapToSimRate}:${r.lightingQuality}:${r.bloomEnabled}:${r.screenShakeScale.toFixed(2)}:${this.artPackMode}|${a.masterVolume.toFixed(2)}:${a.musicVolume.toFixed(2)}:${a.sfxVolume.toFixed(2)}:${a.muted}|${JSON.stringify(this.keyBindings)}|cap:${this.capturingKeyAction ?? ''}|seed:${this.customSeed}`;
+    const c = this.controllerSettings;
+    const snap = this.lastInputSnapshot;
+    const gp = snap?.gamepad;
+    const gpSig = gp?.connected
+      ? `${gp.index}:${gp.displayName}:${gp.family}:${gp.mapping}:${gp.isTeslaBrowser}:${gp.hasRumble}`
+      : 'none';
+    const mode = snap?.mode ?? 'keyboard';
+    const glyphFamily = snap?.glyphFamily ?? 'keyboard';
+
+    const sig = `${r.targetFps}:${r.snapToSimRate}:${r.lightingQuality}:${r.bloomEnabled}:${r.screenShakeScale.toFixed(2)}:${this.artPackMode}|${a.masterVolume.toFixed(2)}:${a.musicVolume.toFixed(2)}:${a.sfxVolume.toFixed(2)}:${a.muted}|c:${c.layoutPreset}:${c.glyphStyle}:${c.deadzone.toFixed(2)}:${c.rumbleEnabled}:${c.rumbleIntensity.toFixed(2)}:${c.autoPauseOnDisconnect}:${c.touchMode}:${c.touchOpacity.toFixed(2)}:${c.touchScale.toFixed(2)}|gp:${gpSig}|in:${mode}:${glyphFamily}:${snap?.touchSensed ? 1 : 0}:${snap?.isTeslaBrowser ? 1 : 0}|${JSON.stringify(this.keyBindings)}|cap:${this.capturingKeyAction ?? ''}|seed:${this.customSeed}`;
     if (sig === this.lastOptionsSig) return;
     this.lastOptionsSig = sig;
+
+    const prevBodyScrollTop =
+      this.optionsLayer.querySelector('.kc-options-body')?.scrollTop ?? 0;
 
     const fpsBtns = ([30, 60, 120] as TargetFps[])
       .map(
@@ -828,6 +1258,46 @@ export class UIManager {
       .map(
         (q) =>
           `<button class="kc-seg-btn ${r.lightingQuality === q ? 'is-active' : ''}" data-light="${q}">${q.toUpperCase()}</button>`
+      )
+      .join('');
+
+    const layoutBtns = (
+      [
+        { value: 'standard', label: 'Standard' },
+        { value: 'classic', label: 'Classic' },
+        { value: 'nintendo', label: 'Nintendo' },
+      ] as ReadonlyArray<{ value: GamepadLayoutPreset; label: string }>
+    )
+      .map(
+        (item) =>
+          `<button class="kc-seg-btn ${c.layoutPreset === item.value ? 'is-active' : ''}" data-gp-layout="${item.value}">${item.label}</button>`
+      )
+      .join('');
+
+    const glyphBtns = (
+      [
+        { value: 'auto', label: 'Auto' },
+        { value: 'xbox', label: 'Xbox' },
+        { value: 'playstation', label: 'PlayStation' },
+        { value: 'nintendo', label: 'Nintendo' },
+      ] as ReadonlyArray<{ value: GamepadGlyphStyle; label: string }>
+    )
+      .map(
+        (item) =>
+          `<button class="kc-seg-btn ${c.glyphStyle === item.value ? 'is-active' : ''}" data-gp-glyph="${item.value}">${item.label}</button>`
+      )
+      .join('');
+
+    const touchModeBtns = (
+      [
+        { value: 'auto', label: 'Auto (Touch Only)' },
+        { value: 'always', label: 'Always On' },
+        { value: 'off', label: 'Off' },
+      ] as ReadonlyArray<{ value: TouchControlsMode; label: string }>
+    )
+      .map(
+        (item) =>
+          `<button class="kc-seg-btn ${c.touchMode === item.value ? 'is-active' : ''}" data-touch-mode="${item.value}">${item.label}</button>`
       )
       .join('');
 
@@ -844,12 +1314,23 @@ export class UIManager {
     }).join('');
 
     const diceIcon = renderUiGlyphSvg('dice', 13, '#fbbf24');
+    const doneBtnLabel =
+      mode === 'gamepad'
+        ? `Done${renderControllerBadgeHtml('cancel', snap, this.keyBindings, { extraClass: 'is-inline-after', layoutPreset: c.layoutPreset })}`
+        : mode === 'touch'
+          ? 'Done'
+          : 'Done [Esc]';
+
+    const deadzonePct = Math.round(c.deadzone * 100);
+    const rumblePct = Math.round(c.rumbleIntensity * 100);
+    const touchOpacityPct = Math.round(c.touchOpacity * 100);
+    const touchScalePct = Math.round(c.touchScale * 100);
 
     this.optionsLayer.innerHTML = `
       <div class="kc-options-modal kc-iron-panel">
         <div style="display:flex;justify-content:space-between;align-items:center">
           <h2 class="kc-modal-title" style="font-size:19px">Options</h2>
-          <button class="kc-btn kc-btn-sm" data-act="close">Done [Esc]</button>
+          <button class="kc-btn kc-btn-sm" data-act="close">${doneBtnLabel}</button>
         </div>
         <div class="kc-options-body">
           <section class="kc-opt-section">
@@ -913,6 +1394,51 @@ export class UIManager {
             </div>
           </section>
 
+          <section class="kc-opt-section kc-opt-controller" data-section="controller-touch">
+            <h3>Controller & Touch</h3>
+            ${this.renderControllerStatusCardHtml()}
+            <div class="kc-opt-row">
+              <span>Button Layout</span>
+              <div class="kc-seg-group">${layoutBtns}</div>
+            </div>
+            <div class="kc-opt-row">
+              <span>Button Prompts</span>
+              <div class="kc-seg-group">${glyphBtns}</div>
+            </div>
+            <div class="kc-opt-row">
+              <span>Stick Deadzone (<strong data-el="deadzone-val">${deadzonePct}%</strong>)</span>
+              <input class="kc-range" data-range="deadzone" type="range" min="8" max="50" step="1" value="${deadzonePct}" />
+            </div>
+            <div class="kc-opt-row">
+              <span>Rumble / Vibration</span>
+              <div class="kc-opt-sub-controls">
+                <button class="kc-seg-btn ${c.rumbleEnabled ? 'is-active' : ''}" data-act="rumble-toggle">${c.rumbleEnabled ? 'ON' : 'OFF'}</button>
+                <button class="kc-btn kc-btn-sm kc-btn-cyan" data-act="test-rumble">Test Rumble</button>
+              </div>
+            </div>
+            <div class="kc-opt-row">
+              <span>Rumble Intensity (<strong data-el="rumble-intensity-val">${rumblePct}%</strong>)</span>
+              <input class="kc-range" data-range="rumble-intensity" type="range" min="0" max="100" step="5" value="${rumblePct}" ${c.rumbleEnabled ? '' : 'disabled'} />
+            </div>
+            <div class="kc-opt-row">
+              <span>Auto-Pause on Disconnect</span>
+              <button class="kc-seg-btn ${c.autoPauseOnDisconnect ? 'is-active' : ''}" data-act="auto-pause-dc">${c.autoPauseOnDisconnect ? 'ON' : 'OFF'}</button>
+            </div>
+            <div class="kc-opt-divider" aria-hidden="true"></div>
+            <div class="kc-opt-row">
+              <span>Touch Controls</span>
+              <div class="kc-seg-group">${touchModeBtns}</div>
+            </div>
+            <div class="kc-opt-row">
+              <span>Touch Stick Opacity (<strong data-el="touch-opacity-val">${touchOpacityPct}%</strong>)</span>
+              <input class="kc-range" data-range="touch-opacity" type="range" min="20" max="85" step="5" value="${touchOpacityPct}" />
+            </div>
+            <div class="kc-opt-row">
+              <span>Touch Controls Scale (<strong data-el="touch-scale-val">${touchScalePct}%</strong>)</span>
+              <input class="kc-range" data-range="touch-scale" type="range" min="75" max="135" step="5" value="${touchScalePct}" />
+            </div>
+          </section>
+
           <section class="kc-opt-section">
             <div style="display:flex;justify-content:space-between;align-items:center">
               <h3>Controls & Keybinds</h3>
@@ -923,6 +1449,11 @@ export class UIManager {
         </div>
       </div>
     `;
+
+    const bodyEl = this.optionsLayer.querySelector('.kc-options-body');
+    if (bodyEl && prevBodyScrollTop > 0) {
+      bodyEl.scrollTop = prevBodyScrollTop;
+    }
 
     this.bindOptionsEvents();
   }
@@ -1035,6 +1566,84 @@ export class UIManager {
       this.callbacks.onUpdateAudioSettings({ muted });
       this.lastOptionsSig = '';
       this.updateOptionsModal();
+    });
+
+    // Controller & Touch Controls Wiring
+    this.optionsLayer.querySelectorAll<HTMLButtonElement>('[data-gp-layout]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const layoutPreset = btn.dataset.gpLayout as GamepadLayoutPreset;
+        this.callbacks.onPlayUiClick?.('select');
+        this.applyControllerSettingsPatch({ layoutPreset });
+      });
+    });
+
+    this.optionsLayer.querySelectorAll<HTMLButtonElement>('[data-gp-glyph]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const glyphStyle = btn.dataset.gpGlyph as GamepadGlyphStyle;
+        this.callbacks.onPlayUiClick?.('select');
+        this.applyControllerSettingsPatch({ glyphStyle });
+      });
+    });
+
+    const deadzoneSlider = this.optionsLayer.querySelector('[data-range="deadzone"]') as HTMLInputElement | null;
+    const deadzoneVal = this.optionsLayer.querySelector('[data-el="deadzone-val"]');
+    deadzoneSlider?.addEventListener('input', () => {
+      const pct = Number(deadzoneSlider.value);
+      if (deadzoneVal) deadzoneVal.textContent = `${pct}%`;
+      this.applyControllerSettingsPatch({ deadzone: pct / 100 }, false);
+    });
+
+    this.optionsLayer.querySelector('[data-act="rumble-toggle"]')?.addEventListener('click', () => {
+      this.callbacks.onPlayUiClick?.('select');
+      this.applyControllerSettingsPatch({ rumbleEnabled: !this.controllerSettings.rumbleEnabled });
+    });
+
+    this.optionsLayer.querySelector('[data-act="test-rumble"]')?.addEventListener('click', () => {
+      this.callbacks.onPlayUiClick?.('confirm');
+      if (this.callbacks.onTestRumble) {
+        this.callbacks.onTestRumble();
+      } else {
+        this.inputManager?.testRumble();
+      }
+    });
+
+    const rumbleSlider = this.optionsLayer.querySelector('[data-range="rumble-intensity"]') as HTMLInputElement | null;
+    const rumbleVal = this.optionsLayer.querySelector('[data-el="rumble-intensity-val"]');
+    rumbleSlider?.addEventListener('input', () => {
+      const pct = Number(rumbleSlider.value);
+      if (rumbleVal) rumbleVal.textContent = `${pct}%`;
+      this.applyControllerSettingsPatch({ rumbleIntensity: pct / 100 }, false);
+    });
+
+    this.optionsLayer.querySelector('[data-act="auto-pause-dc"]')?.addEventListener('click', () => {
+      this.callbacks.onPlayUiClick?.('select');
+      this.applyControllerSettingsPatch({
+        autoPauseOnDisconnect: !this.controllerSettings.autoPauseOnDisconnect,
+      });
+    });
+
+    this.optionsLayer.querySelectorAll<HTMLButtonElement>('[data-touch-mode]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const touchMode = btn.dataset.touchMode as TouchControlsMode;
+        this.callbacks.onPlayUiClick?.('select');
+        this.applyControllerSettingsPatch({ touchMode });
+      });
+    });
+
+    const touchOpacitySlider = this.optionsLayer.querySelector('[data-range="touch-opacity"]') as HTMLInputElement | null;
+    const touchOpacityVal = this.optionsLayer.querySelector('[data-el="touch-opacity-val"]');
+    touchOpacitySlider?.addEventListener('input', () => {
+      const pct = Number(touchOpacitySlider.value);
+      if (touchOpacityVal) touchOpacityVal.textContent = `${pct}%`;
+      this.applyControllerSettingsPatch({ touchOpacity: pct / 100 }, false);
+    });
+
+    const touchScaleSlider = this.optionsLayer.querySelector('[data-range="touch-scale"]') as HTMLInputElement | null;
+    const touchScaleVal = this.optionsLayer.querySelector('[data-el="touch-scale-val"]');
+    touchScaleSlider?.addEventListener('input', () => {
+      const pct = Number(touchScaleSlider.value);
+      if (touchScaleVal) touchScaleVal.textContent = `${pct}%`;
+      this.applyControllerSettingsPatch({ touchScale: pct / 100 }, false);
     });
 
     this.optionsLayer.querySelector('[data-act="reset-keys"]')?.addEventListener('click', () => {

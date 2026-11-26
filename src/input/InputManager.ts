@@ -1,20 +1,40 @@
 // =============================================================================
-// KRUNKED CELLS — Unified Keyboard + Mouse + Gamepad Input Manager
+// KRUNKED CELLS — Unified Keyboard + Mouse + Multi-Gamepad + Touch Input Manager
 // Edge-triggered Pressed latches guarantee zero dropped inputs at 30/60/120 FPS.
-// Accurate 16:9 letterbox world-space aim + direct canvas contextmenu guard.
+// Accurate 16:9 letterbox world-space aim, multi-controller active-pad switching,
+// UI directional navigation with repeat, dual-rumble haptics, and strict touch detection.
 // =============================================================================
 
 import {
   CameraState,
+  ControllerSettings,
+  DEFAULT_CONTROLLER_SETTINGS,
   DEFAULT_KEY_BINDINGS,
+  GamepadConnectionInfo,
   InputFrame,
   KeyBindings,
   SimCommand,
+  SimEvent,
+  UiNavAction,
   VIEWPORT_H,
   VIEWPORT_W,
   Vec2,
+  VirtualControlAction,
+  ActiveInputSnapshot,
   createEmptyInputFrame,
 } from '../contracts';
+import {
+  NormalizedGamepadState,
+  computeEventRumble,
+  detectGamepadFamily,
+  formatGamepadDisplayName,
+  hasGamepadRumbleSupport,
+  normalizeGamepadState,
+  resolveGlyphFamily,
+  triggerGamepadRumble,
+  triggerTouchHaptic,
+} from './GamepadProfiles';
+import { TouchDetector } from './TouchDetector';
 
 export type KeyAction = keyof KeyBindings;
 export type CameraOriginMode = 'auto' | 'topLeft' | 'center';
@@ -28,6 +48,10 @@ export interface InputHotkeys {
   isScrollModalOpen?: () => boolean;
   isGameplayMouseAllowed?: () => boolean;
   isGameplayKeysAllowed?: () => boolean;
+  onUiNav?: (action: UiNavAction) => boolean | void;
+  onGamepadConnectionChange?: (info: GamepadConnectionInfo, connected: boolean) => void;
+  onInputModeChange?: (snapshot: ActiveInputSnapshot) => void;
+  isUiNavActive?: () => boolean;
 }
 
 export interface ViewportRect {
@@ -37,7 +61,14 @@ export interface ViewportRect {
   height: number;
 }
 
-const GAMEPAD_DEADZONE = 0.26;
+const UI_NAV_INITIAL_DELAY_MS = 320;
+const UI_NAV_REPEAT_INTERVAL_MS = 115;
+const VIRTUAL_MOVE_DEADZONE_X = 0.18;
+const VIRTUAL_MOVE_DEADZONE_Y = 0.22;
+const VIRTUAL_AIM_DEADZONE = 0.12;
+const VIRTUAL_PEEK_DEADZONE = 0.25;
+const AIM_PROJECTION_DIST = 120;
+
 const ARROW_FALLBACKS: Partial<Record<KeyAction, string[]>> = {
   moveLeft: ['ArrowLeft'],
   moveRight: ['ArrowRight'],
@@ -63,7 +94,20 @@ const INTERACTIVE_UI_SELECTOR = [
   '.kc-interact-prompt',
   '.kc-flask-widget',
   '.kc-passage-quickbar',
+  '.kc-touch-controls',
 ].join(', ');
+
+function clampAxis(v: number): number {
+  if (!Number.isFinite(v)) return 0;
+  return Math.max(-1, Math.min(1, v));
+}
+
+function nowHighResMs(): number {
+  if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+    return performance.now();
+  }
+  return Date.now();
+}
 
 /**
  * Computes the fitted 16:9 (480x270) content rectangle inside a canvas element
@@ -128,16 +172,58 @@ export function resolveCameraTopLeft(
   return { x: cx, y: cy };
 }
 
+interface PolledGamepadFrame {
+  moveLeft: boolean;
+  moveRight: boolean;
+  moveUp: boolean;
+  moveDown: boolean;
+  jump: boolean;
+  jumpPressed: boolean;
+  rollPressed: boolean;
+  weapon1Pressed: boolean;
+  weapon1Held: boolean;
+  weapon2Pressed: boolean;
+  weapon2Held: boolean;
+  skill1Pressed: boolean;
+  skill2Pressed: boolean;
+  healPressed: boolean;
+  interactPressed: boolean;
+  mapTogglePressed: boolean;
+  cameraPeekY: number;
+}
+
+const EMPTY_GAMEPAD_FRAME: PolledGamepadFrame = {
+  moveLeft: false,
+  moveRight: false,
+  moveUp: false,
+  moveDown: false,
+  jump: false,
+  jumpPressed: false,
+  rollPressed: false,
+  weapon1Pressed: false,
+  weapon1Held: false,
+  weapon2Pressed: false,
+  weapon2Held: false,
+  skill1Pressed: false,
+  skill2Pressed: false,
+  healPressed: false,
+  interactPressed: false,
+  mapTogglePressed: false,
+  cameraPeekY: 0,
+};
+
 export class InputManager {
   private bindings: KeyBindings;
+  private controllerSettings: ControllerSettings;
   private canvas: HTMLCanvasElement | null;
   private hotkeys: InputHotkeys;
   private cameraOriginMode: CameraOriginMode = 'auto';
+  private touchDetector: TouchDetector;
 
   private heldKeys = new Set<string>();
   private boundCodeSet = new Set<string>();
 
-  // Latched edge-triggered action flags (persisted until consumeInputFrame)
+  // Latched edge-triggered keyboard/mouse action flags (persisted until consumeInputFrame)
   private latchedJump = false;
   private latchedRoll = false;
   private latchedWeapon1 = false;
@@ -155,9 +241,27 @@ export class InputManager {
   private mouseLeftHeld = false;
   private mouseRightHeld = false;
 
-  // Gamepad previous button snapshot for rising-edge detection
-  private prevGamepadButtons: boolean[] = [];
+  // Multi-gamepad state (per-pad tracking prevents ghost index 0 lockups & lost edges)
+  private activeGamepadIndex: number | null = null;
+  private connectedGamepadInfos = new Map<number, GamepadConnectionInfo>();
+  private prevGamepadNormalized = new Map<number, NormalizedGamepadState>();
   private gamepadAimOffset: Vec2 | null = null;
+
+  // Gamepad UI navigation directional repeat timer
+  private uiNavRepeatDir: 'up' | 'down' | 'left' | 'right' | null = null;
+  private uiNavNextRepeatMs = 0;
+
+  // Virtual touch twin-stick & button state
+  private virtualMoveX = 0;
+  private virtualMoveY = 0;
+  private virtualAimX = 0;
+  private virtualAimY = 0;
+  private virtualAimActive = false;
+  private virtualHeld = new Set<VirtualControlAction>();
+  private virtualLatched = new Set<VirtualControlAction>();
+
+  // Last emitted snapshot signature for change deduping
+  private lastEmittedSnapshotKey = '';
 
   // Queued SimCommands from UI / Minimap / Passage / DevDrawer
   private commandQueue: SimCommand[] = [];
@@ -172,9 +276,15 @@ export class InputManager {
   constructor(
     initialBindings?: Partial<KeyBindings>,
     canvas?: HTMLCanvasElement | null,
-    hotkeys: InputHotkeys = {}
+    hotkeys: InputHotkeys = {},
+    initialControllerSettings?: Partial<ControllerSettings>
   ) {
     this.bindings = { ...DEFAULT_KEY_BINDINGS, ...(initialBindings ?? {}) };
+    this.controllerSettings = {
+      ...DEFAULT_CONTROLLER_SETTINGS,
+      ...(initialControllerSettings ?? {}),
+    };
+    this.touchDetector = new TouchDetector();
     this.rebuildBoundCodeSet();
     this.canvas =
       canvas !== undefined
@@ -184,6 +294,8 @@ export class InputManager {
           : null;
     this.hotkeys = { ...hotkeys };
     this.attach();
+    this.seedInitialGamepadsSilently();
+    this.lastEmittedSnapshotKey = this.snapshotKey(this.getActiveInputSnapshot());
   }
 
   public setCanvas(canvas: HTMLCanvasElement | null): void {
@@ -217,6 +329,162 @@ export class InputManager {
     this.bindings = { ...DEFAULT_KEY_BINDINGS };
     this.rebuildBoundCodeSet();
     return this.getKeyBindings();
+  }
+
+  public setControllerSettings(settings: ControllerSettings): void {
+    this.controllerSettings = {
+      ...DEFAULT_CONTROLLER_SETTINGS,
+      ...settings,
+    };
+    this.notifyInputModeIfChanged();
+  }
+
+  public getControllerSettings(): ControllerSettings {
+    return { ...this.controllerSettings };
+  }
+
+  public getActiveInputSnapshot(): ActiveInputSnapshot {
+    const padInfo =
+      this.activeGamepadIndex !== null
+        ? (this.connectedGamepadInfos.get(this.activeGamepadIndex) ?? null)
+        : null;
+    const mode = this.touchDetector.activeMode;
+    const touchSensed = this.touchDetector.touchSensed;
+    const touchVisible = this.touchDetector.shouldShowTouchControls(
+      this.controllerSettings.touchMode
+    );
+    const isTeslaBrowser = this.touchDetector.isTeslaBrowser;
+    const glyphFamily = resolveGlyphFamily(mode, padInfo, this.controllerSettings.glyphStyle);
+
+    return {
+      mode,
+      touchSensed,
+      touchVisible,
+      isTeslaBrowser,
+      gamepad: padInfo ? { ...padInfo } : null,
+      glyphFamily,
+    };
+  }
+
+  public setVirtualMoveStick(x: number, y: number): void {
+    this.virtualMoveX = clampAxis(x);
+    this.virtualMoveY = clampAxis(y);
+    if (Math.hypot(this.virtualMoveX, this.virtualMoveY) > 0.05) {
+      this.notifyTouchActivity();
+    }
+  }
+
+  public setVirtualAimStick(x: number, y: number, active: boolean): void {
+    if (!active) {
+      this.virtualAimX = 0;
+      this.virtualAimY = 0;
+      this.virtualAimActive = false;
+      return;
+    }
+    this.virtualAimX = clampAxis(x);
+    this.virtualAimY = clampAxis(y);
+    this.virtualAimActive = true;
+    this.notifyTouchActivity();
+  }
+
+  public setVirtualActionHeld(action: VirtualControlAction, held: boolean): void {
+    const wasHeld = this.virtualHeld.has(action);
+    if (!held) {
+      this.virtualHeld.delete(action);
+      return;
+    }
+
+    this.virtualHeld.add(action);
+    this.notifyTouchActivity();
+
+    if (wasHeld) return;
+
+    // Subtle tactile click feedback on mobile touch devices when haptics enabled
+    if (this.controllerSettings.rumbleEnabled && this.controllerSettings.rumbleIntensity > 0) {
+      triggerTouchHaptic(10, true);
+    }
+
+    if (action === 'pause') {
+      this.hotkeys.onTogglePause?.();
+      return;
+    }
+
+    if (action === 'map') {
+      this.virtualLatched.add('map');
+      this.hotkeys.onToggleMap?.();
+      return;
+    }
+
+    if (action === 'interact') {
+      const handledLoot = this.hotkeys.onLootShortcut?.('equip1') === true;
+      if (!handledLoot) {
+        this.virtualLatched.add('interact');
+      }
+      return;
+    }
+
+    this.virtualLatched.add(action);
+  }
+
+  public notifyTouchActivity(): void {
+    if (this.touchDetector.recordTouchActivity()) {
+      this.notifyInputModeIfChanged();
+    }
+  }
+
+  public clearVirtualInputs(): void {
+    this.virtualMoveX = 0;
+    this.virtualMoveY = 0;
+    this.virtualAimX = 0;
+    this.virtualAimY = 0;
+    this.virtualAimActive = false;
+    this.virtualHeld.clear();
+    this.virtualLatched.clear();
+  }
+
+  public triggerHapticsForEvents(events: readonly SimEvent[]): void {
+    if (
+      !this.controllerSettings.rumbleEnabled ||
+      this.controllerSettings.rumbleIntensity <= 0 ||
+      !events ||
+      events.length === 0
+    ) {
+      return;
+    }
+
+    const pulse = computeEventRumble(events);
+    if (!pulse) return;
+
+    const pad = this.getActiveRawGamepad();
+    if (pad && pad.connected) {
+      triggerGamepadRumble(
+        pad,
+        pulse.weak,
+        pulse.strong,
+        pulse.durationMs,
+        this.controllerSettings.rumbleIntensity
+      );
+      return;
+    }
+
+    if (this.touchDetector.activeMode === 'touch') {
+      const vibMs = Math.round(
+        Math.min(45, Math.max(8, pulse.durationMs * 0.2 * this.controllerSettings.rumbleIntensity))
+      );
+      triggerTouchHaptic(vibMs, true);
+    }
+  }
+
+  public testRumble(): void {
+    const intensity = Math.max(0.25, this.controllerSettings.rumbleIntensity);
+    const pad = this.getActiveRawGamepad() ?? this.findFirstConnectedRawGamepad();
+    if (pad) {
+      triggerGamepadRumble(pad, 0.65, 0.85, 220, intensity);
+      return;
+    }
+    if (this.touchDetector.touchSensed) {
+      triggerTouchHaptic(35, true);
+    }
   }
 
   public startRebindCapture(
@@ -266,6 +534,9 @@ export class InputManager {
     this.latchedHeal = false;
     this.latchedInteract = false;
     this.latchedMapToggle = false;
+    this.uiNavRepeatDir = null;
+    this.uiNavNextRepeatMs = 0;
+    this.clearVirtualInputs();
   }
 
   public getMouseLogicalPos(): Vec2 {
@@ -282,18 +553,27 @@ export class InputManager {
   }
 
   public getMouseWorldPos(camera?: CameraState, playerPos?: Vec2): Vec2 | null {
-    if (!camera) return null;
-    const zoom = camera.zoom > 0.05 ? camera.zoom : 1;
-    const topLeft = resolveCameraTopLeft(camera, playerPos, this.cameraOriginMode, 1);
-    if (this.gamepadAimOffset && playerPos) {
+    if (
+      this.virtualAimActive &&
+      playerPos &&
+      Math.hypot(this.virtualAimX, this.virtualAimY) > VIRTUAL_AIM_DEADZONE
+    ) {
       return {
-        x: playerPos.x + this.gamepadAimOffset.x * 120,
-        y: playerPos.y + this.gamepadAimOffset.y * 120,
+        x: playerPos.x + this.virtualAimX * AIM_PROJECTION_DIST,
+        y: playerPos.y + this.virtualAimY * AIM_PROJECTION_DIST,
       };
     }
-    if (!this.mouseHasMoved) {
+    if (this.gamepadAimOffset && playerPos) {
+      return {
+        x: playerPos.x + this.gamepadAimOffset.x * AIM_PROJECTION_DIST,
+        y: playerPos.y + this.gamepadAimOffset.y * AIM_PROJECTION_DIST,
+      };
+    }
+    if (!camera || !this.mouseHasMoved) {
       return null;
     }
+    const zoom = camera.zoom > 0.05 ? camera.zoom : 1;
+    const topLeft = resolveCameraTopLeft(camera, playerPos, this.cameraOriginMode, 1);
     const logical = this.getMouseLogicalPos();
     return {
       x: topLeft.x + logical.x / zoom,
@@ -314,23 +594,48 @@ export class InputManager {
       : true;
 
     if (keysAllowed && !this.isCapturingRebind()) {
-      frame.moveLeft = this.isActionHeld('moveLeft') || gp.moveLeft;
-      frame.moveRight = this.isActionHeld('moveRight') || gp.moveRight;
-      frame.moveUp = this.isActionHeld('moveUp') || gp.moveUp;
-      frame.moveDown = this.isActionHeld('moveDown') || gp.moveDown;
-      frame.jump = this.isActionHeld('jump') || gp.jump;
-      frame.jumpPressed = this.latchedJump || gp.jumpPressed;
-      frame.rollPressed = this.latchedRoll || gp.rollPressed;
-      frame.weapon1Pressed = this.latchedWeapon1 || gp.weapon1Pressed;
-      frame.weapon1Held = this.isActionHeld('weapon1') || this.mouseLeftHeld || gp.weapon1Held;
-      frame.weapon2Pressed = this.latchedWeapon2 || gp.weapon2Pressed;
-      frame.weapon2Held = this.isActionHeld('weapon2') || this.mouseRightHeld || gp.weapon2Held;
-      frame.skill1Pressed = this.latchedSkill1 || gp.skill1Pressed;
-      frame.skill2Pressed = this.latchedSkill2 || gp.skill2Pressed;
-      frame.healPressed = this.latchedHeal || gp.healPressed;
-      frame.interactPressed = this.latchedInteract || gp.interactPressed;
-      frame.mapTogglePressed = this.latchedMapToggle || gp.mapTogglePressed;
-      if (gp.cameraPeekY !== 0) {
+      const vMoveLeft = this.virtualMoveX < -VIRTUAL_MOVE_DEADZONE_X;
+      const vMoveRight = this.virtualMoveX > VIRTUAL_MOVE_DEADZONE_X;
+      const vVerticalDominant =
+        Math.abs(this.virtualMoveY) >= Math.abs(this.virtualMoveX) * 0.45;
+      const vMoveUp = this.virtualMoveY < -VIRTUAL_MOVE_DEADZONE_Y && vVerticalDominant;
+      const vMoveDown = this.virtualMoveY > VIRTUAL_MOVE_DEADZONE_Y && vVerticalDominant;
+
+      frame.moveLeft = this.isActionHeld('moveLeft') || gp.moveLeft || vMoveLeft;
+      frame.moveRight = this.isActionHeld('moveRight') || gp.moveRight || vMoveRight;
+      frame.moveUp = this.isActionHeld('moveUp') || gp.moveUp || vMoveUp;
+      frame.moveDown = this.isActionHeld('moveDown') || gp.moveDown || vMoveDown;
+
+      frame.jump = this.isActionHeld('jump') || gp.jump || this.virtualHeld.has('jump');
+      frame.jumpPressed = this.latchedJump || this.virtualLatched.has('jump') || gp.jumpPressed;
+      frame.rollPressed = this.latchedRoll || this.virtualLatched.has('roll') || gp.rollPressed;
+      frame.weapon1Pressed =
+        this.latchedWeapon1 || this.virtualLatched.has('weapon1') || gp.weapon1Pressed;
+      frame.weapon1Held =
+        this.isActionHeld('weapon1') ||
+        this.mouseLeftHeld ||
+        gp.weapon1Held ||
+        this.virtualHeld.has('weapon1');
+      frame.weapon2Pressed =
+        this.latchedWeapon2 || this.virtualLatched.has('weapon2') || gp.weapon2Pressed;
+      frame.weapon2Held =
+        this.isActionHeld('weapon2') ||
+        this.mouseRightHeld ||
+        gp.weapon2Held ||
+        this.virtualHeld.has('weapon2');
+      frame.skill1Pressed =
+        this.latchedSkill1 || this.virtualLatched.has('skill1') || gp.skill1Pressed;
+      frame.skill2Pressed =
+        this.latchedSkill2 || this.virtualLatched.has('skill2') || gp.skill2Pressed;
+      frame.healPressed = this.latchedHeal || this.virtualLatched.has('heal') || gp.healPressed;
+      frame.interactPressed =
+        this.latchedInteract || this.virtualLatched.has('interact') || gp.interactPressed;
+      frame.mapTogglePressed =
+        this.latchedMapToggle || this.virtualLatched.has('map') || gp.mapTogglePressed;
+
+      if (this.virtualAimActive && Math.abs(this.virtualAimY) > VIRTUAL_PEEK_DEADZONE) {
+        frame.cameraPeekY = clampAxis(this.virtualAimY);
+      } else if (gp.cameraPeekY !== 0) {
         frame.cameraPeekY = gp.cameraPeekY;
       }
     }
@@ -345,6 +650,7 @@ export class InputManager {
     this.latchedHeal = false;
     this.latchedInteract = false;
     this.latchedMapToggle = false;
+    this.virtualLatched.clear();
 
     const aim = this.getMouseWorldPos(camera, playerPos);
     if (aim) {
@@ -367,6 +673,16 @@ export class InputManager {
     window.addEventListener('mousemove', this.handleMouseMove, { passive: true });
     window.addEventListener('mousedown', this.handleMouseDown);
     window.addEventListener('mouseup', this.handleMouseUp);
+    window.addEventListener('pointerdown', this.handleWindowPointerDown, {
+      passive: true,
+      capture: true,
+    });
+    window.addEventListener('touchstart', this.handleWindowTouchStart, {
+      passive: true,
+      capture: true,
+    });
+    window.addEventListener('gamepadconnected', this.handleGamepadConnected);
+    window.addEventListener('gamepaddisconnected', this.handleGamepadDisconnected);
     window.addEventListener('contextmenu', this.handleContextMenu);
     window.addEventListener('blur', this.handleWindowBlur);
     this.canvas?.addEventListener('contextmenu', this.handleCanvasContextMenu);
@@ -380,10 +696,97 @@ export class InputManager {
     window.removeEventListener('mousemove', this.handleMouseMove);
     window.removeEventListener('mousedown', this.handleMouseDown);
     window.removeEventListener('mouseup', this.handleMouseUp);
+    window.removeEventListener('pointerdown', this.handleWindowPointerDown, { capture: true });
+    window.removeEventListener('touchstart', this.handleWindowTouchStart, { capture: true });
+    window.removeEventListener('gamepadconnected', this.handleGamepadConnected);
+    window.removeEventListener('gamepaddisconnected', this.handleGamepadDisconnected);
     window.removeEventListener('contextmenu', this.handleContextMenu);
     window.removeEventListener('blur', this.handleWindowBlur);
     this.canvas?.removeEventListener('contextmenu', this.handleCanvasContextMenu);
     this.clearTransient();
+  }
+
+  private snapshotKey(s: ActiveInputSnapshot): string {
+    const g = s.gamepad;
+    return [
+      s.mode,
+      s.touchSensed ? '1' : '0',
+      s.touchVisible ? '1' : '0',
+      s.isTeslaBrowser ? '1' : '0',
+      s.glyphFamily,
+      g ? `${g.connected ? '1' : '0'}:${g.index}:${g.family}:${g.id}` : 'none',
+    ].join('|');
+  }
+
+  private notifyInputModeIfChanged(): void {
+    const snap = this.getActiveInputSnapshot();
+    const key = this.snapshotKey(snap);
+    if (key === this.lastEmittedSnapshotKey) return;
+    this.lastEmittedSnapshotKey = key;
+    this.hotkeys.onInputModeChange?.(snap);
+  }
+
+  private buildGamepadInfo(pad: Gamepad, connected: boolean): GamepadConnectionInfo {
+    const isTeslaBrowser = this.touchDetector.isTeslaBrowser;
+    const family = detectGamepadFamily(pad.id, isTeslaBrowser);
+    return {
+      connected,
+      index: pad.index,
+      id: pad.id ?? '',
+      displayName: formatGamepadDisplayName(pad.id ?? '', family, isTeslaBrowser),
+      family,
+      mapping: pad.mapping ?? '',
+      isTeslaBrowser,
+      hasRumble: hasGamepadRumbleSupport(pad),
+    };
+  }
+
+  private readNavigatorGamepads(): Array<Gamepad | null> {
+    if (typeof navigator === 'undefined' || typeof navigator.getGamepads !== 'function') {
+      return [];
+    }
+    try {
+      const list = navigator.getGamepads();
+      if (!list) return [];
+      const out: Array<Gamepad | null> = [];
+      for (let i = 0; i < list.length; i++) {
+        out.push(list[i] ?? null);
+      }
+      return out;
+    } catch {
+      return [];
+    }
+  }
+
+  private seedInitialGamepadsSilently(): void {
+    const pads = this.readNavigatorGamepads();
+    for (const pad of pads) {
+      if (!pad || !pad.connected) continue;
+      const info = this.buildGamepadInfo(pad, true);
+      this.connectedGamepadInfos.set(pad.index, info);
+      if (this.activeGamepadIndex === null) {
+        this.activeGamepadIndex = pad.index;
+      }
+    }
+  }
+
+  private getActiveRawGamepad(): Gamepad | null {
+    if (this.activeGamepadIndex === null) return null;
+    const pads = this.readNavigatorGamepads();
+    for (const pad of pads) {
+      if (pad && pad.connected && pad.index === this.activeGamepadIndex) {
+        return pad;
+      }
+    }
+    return null;
+  }
+
+  private findFirstConnectedRawGamepad(): Gamepad | null {
+    const pads = this.readNavigatorGamepads();
+    for (const pad of pads) {
+      if (pad && pad.connected) return pad;
+    }
+    return null;
   }
 
   private rebuildBoundCodeSet(): void {
@@ -435,8 +838,66 @@ export class InputManager {
     return Boolean(target.closest(INTERACTIVE_UI_SELECTOR));
   }
 
+  private handleWindowTouchStart = (): void => {
+    this.notifyTouchActivity();
+  };
+
+  private handleWindowPointerDown = (e: PointerEvent): void => {
+    if (e.pointerType === 'touch' || e.pointerType === 'pen') {
+      this.notifyTouchActivity();
+    } else if (e.pointerType === 'mouse') {
+      if (this.touchDetector.recordMouseActivity()) {
+        this.notifyInputModeIfChanged();
+      }
+    }
+  };
+
+  private handleGamepadConnected = (e: Event): void => {
+    const pad = (e as GamepadEvent).gamepad;
+    if (!pad) return;
+    const alreadyKnown = this.connectedGamepadInfos.has(pad.index);
+    const info = this.buildGamepadInfo(pad, true);
+    this.connectedGamepadInfos.set(pad.index, info);
+    if (this.activeGamepadIndex === null) {
+      this.activeGamepadIndex = pad.index;
+    }
+    if (!alreadyKnown) {
+      this.hotkeys.onGamepadConnectionChange?.({ ...info }, true);
+    }
+    this.notifyInputModeIfChanged();
+  };
+
+  private handleGamepadDisconnected = (e: Event): void => {
+    const pad = (e as GamepadEvent).gamepad;
+    if (!pad) return;
+    const existing = this.connectedGamepadInfos.get(pad.index);
+    const info: GamepadConnectionInfo = existing
+      ? { ...existing, connected: false }
+      : this.buildGamepadInfo(pad, false);
+
+    this.connectedGamepadInfos.delete(pad.index);
+    this.prevGamepadNormalized.delete(pad.index);
+
+    if (this.activeGamepadIndex === pad.index) {
+      const nextIndex = this.connectedGamepadInfos.keys().next().value;
+      this.activeGamepadIndex = typeof nextIndex === 'number' ? nextIndex : null;
+      this.gamepadAimOffset = null;
+      this.uiNavRepeatDir = null;
+      this.uiNavNextRepeatMs = 0;
+    }
+
+    if (existing) {
+      this.hotkeys.onGamepadConnectionChange?.({ ...info }, false);
+    }
+    this.notifyInputModeIfChanged();
+  };
+
   private handleKeyDown = (e: KeyboardEvent): void => {
     const code = e.code;
+
+    if (this.touchDetector.recordKeyboardActivity()) {
+      this.notifyInputModeIfChanged();
+    }
 
     // 1. Live Keybind Capture Mode intercepts all keys cleanly
     if (this.capturingAction !== null) {
@@ -551,6 +1012,12 @@ export class InputManager {
   };
 
   private handleMouseMove = (e: MouseEvent): void => {
+    if (this.touchDetector.isWithinSyntheticMouseWindow()) {
+      return;
+    }
+    if (this.touchDetector.recordMouseActivity()) {
+      this.notifyInputModeIfChanged();
+    }
     this.mouseClientX = e.clientX;
     this.mouseClientY = e.clientY;
     this.mouseHasMoved = true;
@@ -558,6 +1025,12 @@ export class InputManager {
   };
 
   private handleMouseDown = (e: MouseEvent): void => {
+    if (this.touchDetector.isWithinSyntheticMouseWindow()) {
+      return;
+    }
+    if (this.touchDetector.recordMouseActivity()) {
+      this.notifyInputModeIfChanged();
+    }
     this.mouseClientX = e.clientX;
     this.mouseClientY = e.clientY;
     this.mouseHasMoved = true;
@@ -602,100 +1075,222 @@ export class InputManager {
     this.clearTransient();
   };
 
-  private pollGamepad(): {
-    moveLeft: boolean;
-    moveRight: boolean;
-    moveUp: boolean;
-    moveDown: boolean;
-    jump: boolean;
-    jumpPressed: boolean;
-    rollPressed: boolean;
-    weapon1Pressed: boolean;
-    weapon1Held: boolean;
-    weapon2Pressed: boolean;
-    weapon2Held: boolean;
-    skill1Pressed: boolean;
-    skill2Pressed: boolean;
-    healPressed: boolean;
-    interactPressed: boolean;
-    mapTogglePressed: boolean;
-    cameraPeekY: number;
-  } {
-    const empty = {
-      moveLeft: false,
-      moveRight: false,
-      moveUp: false,
-      moveDown: false,
-      jump: false,
-      jumpPressed: false,
-      rollPressed: false,
-      weapon1Pressed: false,
-      weapon1Held: false,
-      weapon2Pressed: false,
-      weapon2Held: false,
-      skill1Pressed: false,
-      skill2Pressed: false,
-      healPressed: false,
-      interactPressed: false,
-      mapTogglePressed: false,
-      cameraPeekY: 0,
-    };
-
-    if (typeof navigator === 'undefined' || typeof navigator.getGamepads !== 'function') {
-      return empty;
+  private resolvePrimaryUiDirection(
+    norm: NormalizedGamepadState
+  ): 'up' | 'down' | 'left' | 'right' | null {
+    const vDir: 'up' | 'down' | null = norm.ui.up ? 'up' : norm.ui.down ? 'down' : null;
+    const hDir: 'left' | 'right' | null = norm.ui.left ? 'left' : norm.ui.right ? 'right' : null;
+    if (vDir && !hDir) return vDir;
+    if (hDir && !vDir) return hDir;
+    if (vDir && hDir) {
+      return Math.abs(norm.moveX) > Math.abs(norm.moveY) ? hDir : vDir;
     }
+    return null;
+  }
 
-    const pads = navigator.getGamepads();
-    let pad: Gamepad | null = null;
-    for (let i = 0; i < pads.length; i++) {
-      if (pads[i] && pads[i]!.connected) {
-        pad = pads[i];
-        break;
+  private pollGamepad(): PolledGamepadFrame {
+    const pads = this.readNavigatorGamepads();
+    const connectedMap = new Map<number, Gamepad>();
+
+    for (const pad of pads) {
+      if (pad && pad.connected) {
+        connectedMap.set(pad.index, pad);
       }
     }
-    if (!pad) {
-      this.prevGamepadButtons = [];
-      return empty;
+
+    // Reconcile newly disconnected pads (catches environments without gamepaddisconnected events)
+    let connectionChanged = false;
+    for (const [idx, oldInfo] of Array.from(this.connectedGamepadInfos.entries())) {
+      if (!connectedMap.has(idx)) {
+        this.connectedGamepadInfos.delete(idx);
+        this.prevGamepadNormalized.delete(idx);
+        if (this.activeGamepadIndex === idx) {
+          this.activeGamepadIndex = null;
+          this.gamepadAimOffset = null;
+          this.uiNavRepeatDir = null;
+          this.uiNavNextRepeatMs = 0;
+        }
+        this.hotkeys.onGamepadConnectionChange?.({ ...oldInfo, connected: false }, false);
+        connectionChanged = true;
+      }
     }
 
-    const curr = pad.buttons.map((b) => Boolean(b && (b.pressed || b.value > 0.45)));
-    const pressed = (idx: number): boolean => Boolean(curr[idx] && !this.prevGamepadButtons[idx]);
-    const held = (idx: number): boolean => Boolean(curr[idx]);
+    // Reconcile newly connected pads & evaluate normalized state for every connected pad
+    const evaluated: Array<{
+      pad: Gamepad;
+      info: GamepadConnectionInfo;
+      norm: NormalizedGamepadState;
+      prev: NormalizedGamepadState | undefined;
+    }> = [];
 
-    const ax0 = pad.axes[0] ?? 0;
-    const ax1 = pad.axes[1] ?? 0;
-    const rx = pad.axes[2] ?? 0;
-    const ry = pad.axes[3] ?? 0;
-    if (Math.hypot(rx, ry) > 0.3) {
-      this.gamepadAimOffset = { x: rx, y: ry };
+    for (const pad of connectedMap.values()) {
+      const existed = this.connectedGamepadInfos.has(pad.index);
+      const info = this.buildGamepadInfo(pad, true);
+      this.connectedGamepadInfos.set(pad.index, info);
+      if (!existed) {
+        this.hotkeys.onGamepadConnectionChange?.({ ...info }, true);
+        connectionChanged = true;
+      }
+
+      const prev = this.prevGamepadNormalized.get(pad.index);
+      const norm = normalizeGamepadState(
+        pad,
+        this.controllerSettings,
+        info.family,
+        prev
+          ? {
+              leftTrigger: prev.leftTriggerHeld,
+              rightTrigger: prev.rightTriggerHeld,
+            }
+          : undefined
+      );
+      evaluated.push({ pad, info, norm, prev });
     }
-    const cameraPeekY = Math.abs(ry) > 0.45 ? Math.max(-1, Math.min(1, ry)) : 0;
 
-    // Start (9) -> Pause, Select (8) -> Map
-    if (pressed(9)) this.hotkeys.onTogglePause?.();
-    if (pressed(8)) this.hotkeys.onToggleMap?.();
+    if (evaluated.length === 0) {
+      this.activeGamepadIndex = null;
+      this.gamepadAimOffset = null;
+      this.uiNavRepeatDir = null;
+      this.uiNavNextRepeatMs = 0;
+      if (connectionChanged) {
+        this.notifyInputModeIfChanged();
+      }
+      return EMPTY_GAMEPAD_FRAME;
+    }
 
-    const result = {
-      moveLeft: ax0 < -GAMEPAD_DEADZONE || held(14),
-      moveRight: ax0 > GAMEPAD_DEADZONE || held(15),
-      moveUp: ax1 < -GAMEPAD_DEADZONE || held(12),
-      moveDown: ax1 > GAMEPAD_DEADZONE || held(13),
-      jump: held(0),
-      jumpPressed: pressed(0),
-      rollPressed: pressed(1),
-      weapon1Pressed: pressed(2),
-      weapon1Held: held(2),
-      weapon2Pressed: pressed(3),
-      weapon2Held: held(3),
-      skill1Pressed: pressed(4),
-      skill2Pressed: pressed(5),
-      healPressed: pressed(6),
-      interactPressed: pressed(7) || pressed(10),
-      mapTogglePressed: pressed(8),
-      cameraPeekY,
+    // Active-pad selection: immediately switch to whichever connected pad shows active input
+    // so ghost/idle virtual controllers at index 0 never hijack input.
+    let selected = evaluated.find((e) => e.pad.index === this.activeGamepadIndex) ?? null;
+    if (!selected || !selected.norm.anyActive) {
+      const activeEntry = evaluated.find((e) => e.norm.anyActive);
+      if (activeEntry) {
+        selected = activeEntry;
+        this.activeGamepadIndex = activeEntry.pad.index;
+      } else if (!selected) {
+        selected = evaluated[0]!;
+        this.activeGamepadIndex = selected.pad.index;
+      }
+    }
+
+    // Persist per-pad previous normalized states for clean rising edges on next tick
+    for (const entry of evaluated) {
+      this.prevGamepadNormalized.set(entry.pad.index, entry.norm);
+    }
+
+    const { norm, prev } = selected;
+
+    if (norm.anyActive) {
+      this.touchDetector.recordGamepadActivity();
+      this.notifyInputModeIfChanged();
+    } else if (connectionChanged) {
+      this.notifyInputModeIfChanged();
+    }
+
+    if (norm.aimActive) {
+      this.gamepadAimOffset = { x: norm.aim.x, y: norm.aim.y };
+    } else {
+      this.gamepadAimOffset = null;
+    }
+
+    if (this.isCapturingRebind()) {
+      return EMPTY_GAMEPAD_FRAME;
+    }
+
+    const edge = (currVal: boolean, prevVal?: boolean): boolean => currVal && !prevVal;
+    const uiNavActive = Boolean(this.hotkeys.isUiNavActive?.());
+
+    if (uiNavActive) {
+      const nowMs = nowHighResMs();
+      const dir = this.resolvePrimaryUiDirection(norm);
+      if (dir === null) {
+        this.uiNavRepeatDir = null;
+        this.uiNavNextRepeatMs = 0;
+      } else if (dir !== this.uiNavRepeatDir) {
+        this.uiNavRepeatDir = dir;
+        this.uiNavNextRepeatMs = nowMs + UI_NAV_INITIAL_DELAY_MS;
+        this.hotkeys.onUiNav?.(dir);
+      } else if (nowMs >= this.uiNavNextRepeatMs) {
+        this.uiNavNextRepeatMs = nowMs + UI_NAV_REPEAT_INTERVAL_MS;
+        this.hotkeys.onUiNav?.(dir);
+      }
+
+      if (edge(norm.ui.confirm, prev?.ui.confirm)) {
+        this.hotkeys.onUiNav?.('confirm');
+      }
+      if (edge(norm.ui.cancel, prev?.ui.cancel)) {
+        this.hotkeys.onUiNav?.('cancel');
+      }
+      if (edge(norm.ui.tabPrev, prev?.ui.tabPrev)) {
+        this.hotkeys.onUiNav?.('tabPrev');
+      }
+      if (edge(norm.ui.tabNext, prev?.ui.tabNext)) {
+        this.hotkeys.onUiNav?.('tabNext');
+      }
+      if (edge(norm.ui.pause, prev?.ui.pause)) {
+        if (this.hotkeys.onUiNav) {
+          const handled = this.hotkeys.onUiNav('pause');
+          if (handled === false) this.hotkeys.onTogglePause?.();
+        } else {
+          this.hotkeys.onTogglePause?.();
+        }
+      }
+      if (edge(norm.ui.map, prev?.ui.map)) {
+        if (this.hotkeys.onUiNav) {
+          const handled = this.hotkeys.onUiNav('map');
+          if (handled === false) this.hotkeys.onToggleMap?.();
+        } else {
+          this.hotkeys.onToggleMap?.();
+        }
+      }
+
+      return EMPTY_GAMEPAD_FRAME;
+    }
+
+    // Gameplay routing
+    this.uiNavRepeatDir = null;
+    this.uiNavNextRepeatMs = 0;
+
+    if (edge(norm.pause, prev?.pause)) {
+      this.hotkeys.onTogglePause?.();
+    }
+    const mapTogglePressed = edge(norm.map, prev?.map);
+    if (mapTogglePressed) {
+      this.hotkeys.onToggleMap?.();
+    }
+
+    let interactPressed = false;
+    if (edge(norm.interact, prev?.interact)) {
+      const handledLoot = this.hotkeys.onLootShortcut?.('equip1') === true;
+      if (!handledLoot) {
+        interactPressed = true;
+      }
+    }
+
+    if (edge(norm.equip2, prev?.equip2)) {
+      this.hotkeys.onLootShortcut?.('equip2');
+    }
+    if (edge(norm.recycle, prev?.recycle)) {
+      this.hotkeys.onLootShortcut?.('recycle');
+    }
+
+    return {
+      moveLeft: norm.moveLeft,
+      moveRight: norm.moveRight,
+      moveUp: norm.moveUp,
+      moveDown: norm.moveDown,
+      jump: norm.jump,
+      jumpPressed: edge(norm.jump, prev?.jump),
+      rollPressed: edge(norm.roll, prev?.roll),
+      weapon1Pressed: edge(norm.weapon1, prev?.weapon1),
+      weapon1Held: norm.weapon1,
+      weapon2Pressed: edge(norm.weapon2, prev?.weapon2),
+      weapon2Held: norm.weapon2,
+      skill1Pressed: edge(norm.skill1, prev?.skill1),
+      skill2Pressed: edge(norm.skill2, prev?.skill2),
+      healPressed: edge(norm.heal, prev?.heal),
+      interactPressed,
+      mapTogglePressed,
+      cameraPeekY: norm.cameraPeekY,
     };
-
-    this.prevGamepadButtons = curr;
-    return result;
   }
 }

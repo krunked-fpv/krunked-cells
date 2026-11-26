@@ -3,8 +3,17 @@
 // Clicking any discovered Teleportation Rune dispatches { type: 'teleportTo' }.
 // =============================================================================
 
-import { SimCommand, SimState, TILE_SIZE, TileKind } from '../contracts';
-import { CatalogLookup, escapeHtml, getBiomeDisplayName, renderUiGlyphSvg } from './HudOverlay';
+import { ActiveInputSnapshot, GamepadLayoutPreset, KeyBindings, SimCommand, SimState, TILE_SIZE, TileKind } from '../contracts';
+import { getActionGlyph } from '../input';
+import {
+  CatalogLookup,
+  escapeHtml,
+  formatKeyCode,
+  getBiomeDisplayName,
+  renderControllerBadgeHtml,
+  renderUiGlyphSvg,
+  resolveBadgeClasses,
+} from './HudOverlay';
 
 export interface MinimapCallbacks {
   onDispatchCommand(cmd: SimCommand): void;
@@ -27,9 +36,12 @@ export class Minimap {
   private miniCanvas: HTMLCanvasElement;
   private miniCtx: CanvasRenderingContext2D | null;
   private miniRoomCountEl: HTMLSpanElement;
+  private miniTabHintEl: HTMLSpanElement;
 
   private modalBackdrop: HTMLDivElement;
   private modalTitleEl: HTMLHeadingElement;
+  private modalSubtitleEl: HTMLDivElement;
+  private modalCloseBtnEl: HTMLButtonElement;
   private expandedCanvas: HTMLCanvasElement;
   private expandedCtx: CanvasRenderingContext2D | null;
   private runeListEl: HTMLDivElement;
@@ -38,6 +50,7 @@ export class Minimap {
   private expandedRunes: ProjectedRune[] = [];
   private hoveredRuneUid: number | null = null;
   private lastRuneListSig = '';
+  private lastPromptSig = '';
   private lastState: SimState | null = null;
   private animTime = 0;
 
@@ -66,10 +79,10 @@ export class Minimap {
     this.miniRoomCountEl = document.createElement('span');
     this.miniRoomCountEl.className = 'kc-minimap-rooms';
     this.miniRoomCountEl.textContent = '1/1';
-    const tabHint = document.createElement('span');
-    tabHint.className = 'kc-minimap-tab-hint';
-    tabHint.textContent = 'TAB';
-    overlayBar.append(this.miniRoomCountEl, tabHint);
+    this.miniTabHintEl = document.createElement('span');
+    this.miniTabHintEl.className = 'kc-minimap-tab-hint';
+    this.miniTabHintEl.textContent = 'TAB';
+    overlayBar.append(this.miniRoomCountEl, this.miniTabHintEl);
 
     this.miniShell.append(this.miniCanvas, overlayBar);
     this.miniShell.addEventListener('click', () => {
@@ -86,7 +99,7 @@ export class Minimap {
         <div class="kc-minimap-modal-head">
           <div>
             <h2 class="kc-modal-title" style="font-size:18px;text-align:left">Biome Map</h2>
-            <div style="font-size:11px;color:var(--cell-cyan);font-family:var(--font-mono)">Click any glowing cyan Teleportation Rune to Fast Travel</div>
+            <div data-el="map-sub" style="font-size:11px;color:var(--cell-cyan);font-family:var(--font-mono)">Click any glowing cyan Teleportation Rune to Fast Travel</div>
           </div>
           <button class="kc-btn kc-btn-sm" data-act="close">Close [Tab / Esc]</button>
         </div>
@@ -104,11 +117,13 @@ export class Minimap {
     `;
 
     this.modalTitleEl = this.modalBackdrop.querySelector('.kc-modal-title') as HTMLHeadingElement;
+    this.modalSubtitleEl = this.modalBackdrop.querySelector('[data-el="map-sub"]') as HTMLDivElement;
+    this.modalCloseBtnEl = this.modalBackdrop.querySelector('[data-act="close"]') as HTMLButtonElement;
     this.expandedCanvas = this.modalBackdrop.querySelector('.kc-minimap-expanded-canvas') as HTMLCanvasElement;
     this.expandedCtx = this.expandedCanvas.getContext('2d');
     this.runeListEl = this.modalBackdrop.querySelector('[data-el="rune-pills"]') as HTMLDivElement;
 
-    this.modalBackdrop.querySelector('[data-act="close"]')?.addEventListener('click', () => {
+    this.modalCloseBtnEl.addEventListener('click', () => {
       this.callbacks.onPlayUiClick?.('cancel');
       this.toggleExpanded(false);
     });
@@ -127,6 +142,54 @@ export class Minimap {
 
   public setCatalog(catalog?: CatalogLookup): void {
     this.catalog = catalog;
+  }
+
+  public getModalElement(): HTMLElement {
+    return this.modalBackdrop;
+  }
+
+  public setInputSnapshot(
+    snapshot: ActiveInputSnapshot | null,
+    keyBindings?: KeyBindings,
+    layoutPreset: GamepadLayoutPreset = 'standard'
+  ): void {
+    const mode = snapshot?.mode ?? 'keyboard';
+    const glyphFamily = snapshot?.glyphFamily ?? 'keyboard';
+    const mapKey = formatKeyCode(keyBindings?.map ?? 'Tab');
+    const sig = `${mode}:${glyphFamily}:${layoutPreset}:${mapKey}`;
+    if (sig === this.lastPromptSig) return;
+    this.lastPromptSig = sig;
+
+    if (mode === 'gamepad') {
+      const mapGlyph = getActionGlyph('map', glyphFamily, keyBindings, layoutPreset);
+      const mapBadgeCls = resolveBadgeClasses('map', glyphFamily, mapGlyph.styleClass, mapGlyph.label);
+      this.miniTabHintEl.className = `kc-minimap-tab-hint kc-gp-badge ${mapBadgeCls}`;
+      this.miniTabHintEl.textContent = mapGlyph.label;
+      this.miniShell.title = `Press [${mapGlyph.label}] to expand Map & Fast Travel`;
+
+      const confirmBadge = renderControllerBadgeHtml('confirm', snapshot, keyBindings, {
+        extraClass: 'is-inline',
+        layoutPreset,
+      });
+      const cancelBadge = renderControllerBadgeHtml('cancel', snapshot, keyBindings, {
+        extraClass: 'is-inline-after',
+        layoutPreset,
+      });
+      this.modalSubtitleEl.innerHTML = `Select a Teleportation Rune below and press ${confirmBadge} to Fast Travel`;
+      this.modalCloseBtnEl.innerHTML = `Close${cancelBadge}`;
+    } else if (mode === 'touch') {
+      this.miniTabHintEl.className = 'kc-minimap-tab-hint';
+      this.miniTabHintEl.textContent = 'MAP';
+      this.miniShell.title = 'Tap to expand Map & Fast Travel';
+      this.modalSubtitleEl.textContent = 'Tap any glowing cyan Teleportation Rune to Fast Travel';
+      this.modalCloseBtnEl.textContent = 'Close';
+    } else {
+      this.miniTabHintEl.className = 'kc-minimap-tab-hint';
+      this.miniTabHintEl.textContent = mapKey;
+      this.miniShell.title = `Click or press [${mapKey}] to expand Map & Fast Travel`;
+      this.modalSubtitleEl.textContent = 'Click any glowing cyan Teleportation Rune to Fast Travel';
+      this.modalCloseBtnEl.textContent = `Close [${mapKey} / Esc]`;
+    }
   }
 
   public isExpanded(): boolean {

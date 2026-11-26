@@ -16,15 +16,18 @@ import {
   type AudioSettings,
   type BiomeId,
   type BossId,
+  type ControllerSettings,
   type CustomPackAssetResolver,
   type CustomPackStatus,
   type DebugBridge,
+  type GamepadConnectionInfo,
   type KeyBindings,
   type PerfStats,
   type RenderSettings,
   type SaveData,
   type SimCommand,
   type SimState,
+  type UiNavAction,
 } from '../contracts';
 import { CustomPackLoader } from '../assets';
 import { AudioEngine } from '../audio';
@@ -153,6 +156,7 @@ export class GameApp {
 
   private resizeHandler: (() => void) | null = null;
   private unlockHandler: (() => void) | null = null;
+  private audioNavUnlocked = false;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -201,6 +205,8 @@ export class GameApp {
         onUpdateAudioSettings: (patch) => this.updateAudioSettings(patch),
         onUpdateKeyBindings: (bindings) => this.updateKeyBindings(bindings),
         onResetKeyBindings: () => this.resetKeyBindings(),
+        onUpdateControllerSettings: (patch) => this.updateControllerSettings(patch),
+        onTestRumble: () => this.input.testRumble(),
         onLoadCustomPackFolder: () => this.loadCustomPackFolder(),
         onToggleArtPackMode: (mode) => this.toggleArtPackMode(mode),
         onPlayUiClick: (kind) => this.audio.playUiClick(kind),
@@ -237,6 +243,30 @@ export class GameApp {
         this.ui.handleScrollShortcut(idx, this.state);
       },
       onLootShortcut: (action) => this.ui.handleLootShortcut(action, this.state),
+      onUiNav: (action: UiNavAction) => this.handleUiNavAction(action),
+      onGamepadConnectionChange: (info: GamepadConnectionInfo, connected: boolean) => {
+        this.ui.handleGamepadConnectionChange(info, connected);
+        if (
+          !connected &&
+          this.saveData.controllerSettings.autoPauseOnDisconnect &&
+          (this.state.runStatus === 'playing' || this.state.runStatus === 'passage') &&
+          !this.ui.isAnyModalBlockingGameplay(this.state)
+        ) {
+          this.state.runStatus = 'paused';
+          this.prevRunStatus = 'paused';
+          this.input.clearTransient();
+          this.syncUiSettings();
+        }
+      },
+      onInputModeChange: () => {
+        this.syncUiSettings();
+      },
+      isUiNavActive: () =>
+        this.state.runStatus === 'title' ||
+        this.state.runStatus === 'paused' ||
+        this.state.runStatus === 'dead' ||
+        this.state.runStatus === 'victory' ||
+        this.ui.isAnyModalBlockingGameplay(this.state),
       isScrollModalOpen: () => this.ui.isScrollModalOpen(this.state),
       isGameplayMouseAllowed: () =>
         (this.state.runStatus === 'playing' || this.state.runStatus === 'passage') &&
@@ -246,6 +276,7 @@ export class GameApp {
         !this.ui.isAnyModalBlockingGameplay(this.state),
     });
 
+    this.input.setControllerSettings(this.saveData.controllerSettings);
     this.input.setCameraOriginMode('topLeft');
     this.ui.setCameraOriginMode('topLeft');
     this.ui.setInputManager(this.input);
@@ -274,6 +305,7 @@ export class GameApp {
       };
       window.addEventListener('pointerdown', this.unlockHandler, { once: true });
       window.addEventListener('keydown', this.unlockHandler, { once: true });
+      window.addEventListener('touchstart', this.unlockHandler, { once: true, passive: true });
     }
 
     // Probe Vite dev custom pack middleware and/or IndexedDB cached pack
@@ -281,7 +313,7 @@ export class GameApp {
     this.applyCustomPackStatus(packStatus);
 
     this.syncUiSettings();
-    this.ui.update(this.state, this.getPerfStats(), 1);
+    this.ui.update(this.state, this.getPerfStats(), 1, this.input.getActiveInputSnapshot());
     this.startLoop();
   }
 
@@ -315,7 +347,8 @@ export class GameApp {
       this.saveData.keyBindings,
       this.customPackLoader.getStatus(),
       this.saveData,
-      this.renderer.getBackendName()
+      this.renderer.getBackendName(),
+      this.saveData.controllerSettings
     );
   }
 
@@ -462,6 +495,15 @@ export class GameApp {
     }
   }
 
+  private handleUiNavAction(action: UiNavAction): boolean {
+    if (!this.audioNavUnlocked) {
+      this.audioNavUnlocked = true;
+      void this.audio.unlock();
+      this.syncBiomeMusic(true);
+    }
+    return this.ui.handleUiNavAction(action, this.state);
+  }
+
   private dispatchCommand(cmd: SimCommand): void {
     this.input.queueCommand(cmd);
     if (this.state.runStatus === 'playing' || this.state.runStatus === 'passage') {
@@ -546,6 +588,16 @@ export class GameApp {
     this.syncUiSettings();
   }
 
+  private updateControllerSettings(patch: Partial<ControllerSettings>): void {
+    this.saveData.controllerSettings = {
+      ...this.saveData.controllerSettings,
+      ...patch,
+    };
+    this.persistSave();
+    this.input.setControllerSettings(this.saveData.controllerSettings);
+    this.syncUiSettings();
+  }
+
   private async loadCustomPackFolder(): Promise<CustomPackStatus> {
     const status = await this.customPackLoader.pickCustomPackFolder();
     if (status.available) {
@@ -606,6 +658,7 @@ export class GameApp {
     this.titleBaseCamX = this.state.camera.x;
     this.titleBaseCamY = this.state.camera.y;
     this.input.setKeyBindings(this.saveData.keyBindings);
+    this.input.setControllerSettings(this.saveData.controllerSettings);
     this.audio.updateSettings(this.saveData.audioSettings);
     this.applyCustomPackStatus(this.customPackLoader.getStatus());
     this.syncBiomeMusic(true);
@@ -663,6 +716,7 @@ export class GameApp {
       this.renderer.ingestEvents(this.state.events, this.state);
       this.audio.ingestEvents(this.state.events, this.state.player.pos.x, this.state.player.pos.y);
       this.ui.ingestEvents(this.state.events, this.state);
+      this.input.triggerHapticsForEvents(this.state.events);
     }
 
     if (this.state.runStatus !== this.prevRunStatus) {
@@ -776,7 +830,7 @@ export class GameApp {
             : Math.max(0, Math.min(1, this.accumulatorSec / FIXED_DT));
 
         this.renderer.render(this.state, interpAlpha, this.elapsedSec);
-        this.ui.update(this.state, this.getPerfStats(), interpAlpha);
+        this.ui.update(this.state, this.getPerfStats(), interpAlpha, this.input.getActiveInputSnapshot());
       }
     };
 
@@ -820,6 +874,7 @@ export class GameApp {
       if (this.unlockHandler) {
         window.removeEventListener('pointerdown', this.unlockHandler);
         window.removeEventListener('keydown', this.unlockHandler);
+        window.removeEventListener('touchstart', this.unlockHandler);
       }
     }
     this.input.dispose();

@@ -1,5 +1,6 @@
 import {
   DEFAULT_AUDIO_SETTINGS,
+  DEFAULT_CONTROLLER_SETTINGS,
   DEFAULT_KEY_BINDINGS,
   DEFAULT_RENDER_SETTINGS,
   MAX_BOSS_CELLS,
@@ -9,12 +10,16 @@ import {
   createDefaultSaveData,
   type ArtPackMode,
   type AudioSettings,
+  type ControllerSettings,
+  type GamepadGlyphStyle,
+  type GamepadLayoutPreset,
   type KeyBindings,
   type LightingQuality,
   type MetaSnapshot,
   type RenderSettings,
   type SaveData,
   type TargetFps,
+  type TouchControlsMode,
 } from '../contracts';
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -45,6 +50,34 @@ function asLightingQuality(v: unknown, fallback: LightingQuality): LightingQuali
 
 function asArtPackMode(v: unknown, fallback: ArtPackMode): ArtPackMode {
   return v === 'builtin' || v === 'custom' ? v : fallback;
+}
+
+function asGamepadLayoutPreset(v: unknown, fallback: GamepadLayoutPreset): GamepadLayoutPreset {
+  return v === 'standard' || v === 'classic' || v === 'nintendo' ? v : fallback;
+}
+
+function asGamepadGlyphStyle(v: unknown, fallback: GamepadGlyphStyle): GamepadGlyphStyle {
+  return v === 'auto' || v === 'xbox' || v === 'playstation' || v === 'nintendo' ? v : fallback;
+}
+
+function asTouchControlsMode(v: unknown, fallback: TouchControlsMode): TouchControlsMode {
+  return v === 'auto' || v === 'always' || v === 'off' ? v : fallback;
+}
+
+function sanitizeControllerSettings(raw: unknown): ControllerSettings {
+  const def = DEFAULT_CONTROLLER_SETTINGS;
+  if (!isRecord(raw)) return { ...def };
+  return {
+    deadzone: clampNum(raw.deadzone, 0.08, 0.5, def.deadzone),
+    rumbleEnabled: asBool(raw.rumbleEnabled, def.rumbleEnabled),
+    rumbleIntensity: clampNum(raw.rumbleIntensity, 0, 1, def.rumbleIntensity),
+    layoutPreset: asGamepadLayoutPreset(raw.layoutPreset, def.layoutPreset),
+    glyphStyle: asGamepadGlyphStyle(raw.glyphStyle, def.glyphStyle),
+    autoPauseOnDisconnect: asBool(raw.autoPauseOnDisconnect, def.autoPauseOnDisconnect),
+    touchMode: asTouchControlsMode(raw.touchMode, def.touchMode),
+    touchOpacity: clampNum(raw.touchOpacity, 0.2, 0.85, def.touchOpacity),
+    touchScale: clampNum(raw.touchScale, 0.75, 1.35, def.touchScale),
+  };
 }
 
 function sanitizeMeta(raw: unknown): MetaSnapshot {
@@ -161,6 +194,7 @@ export function parseSaveData(rawText: string | null | undefined): SaveData {
     renderSettings: sanitizeRenderSettings(parsed.renderSettings),
     audioSettings: sanitizeAudioSettings(parsed.audioSettings),
     keyBindings: sanitizeKeyBindings(parsed.keyBindings),
+    controllerSettings: sanitizeControllerSettings(parsed.controllerSettings),
     hasActiveRun: asBool(parsed.hasActiveRun, false),
     lastSeed,
   };

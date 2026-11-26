@@ -1,0 +1,536 @@
+/* ============================================================================
+ * KRUNKED CELLS — Controller Focus Rings, Dynamic Gamepad Badges & Options UI
+ * Matches Dead Cells gothic iron-and-ember aesthetic. Zero Unicode emojis.
+ * ============================================================================ */
+
+/* ----------------------------------------------------------------------------
+ * 1. Universal Controller Spatial Focus Ring (.kc-gp-focused)
+ * ---------------------------------------------------------------------------- */
+
+@keyframes kcGpFocusPulse {
+  0%, 100% {
+    box-shadow:
+      0 0 0 2px #fbbf24,
+      0 0 14px rgba(251, 191, 36, 0.55),
+      inset 0 0 10px rgba(251, 191, 36, 0.16);
+  }
+  50% {
+    box-shadow:
+      0 0 0 2px #fde68a,
+      0 0 22px rgba(251, 191, 36, 0.82),
+      inset 0 0 14px rgba(251, 191, 36, 0.28);
+  }
+}
+
+.kc-gp-focused {
+  position: relative;
+  z-index: 5;
+  outline: none !important;
+  border-color: #fbbf24 !important;
+  animation: kcGpFocusPulse 1.35s ease-in-out infinite;
+}
+
+.kc-btn.kc-gp-focused {
+  color: #ffffff;
+  background: linear-gradient(180deg, #423359 0%, #261c38 100%);
+  transform: translateY(-1px);
+}
+
+.kc-btn-primary.kc-gp-focused {
+  background: linear-gradient(180deg, #b5273d 0%, #6d1626 100%);
+  border-color: #fde047 !important;
+}
+
+.kc-menu-item.kc-gp-focused {
+  transform: translateX(6px);
+  color: #ffffff;
+  border-left: 3px solid #fbbf24 !important;
+  background: linear-gradient(
+    90deg,
+    rgba(232, 59, 74, 0.46) 0%,
+    rgba(251, 191, 36, 0.2) 56%,
+    transparent 100%
+  );
+  text-shadow: 0 0 16px rgba(251, 191, 36, 0.6), 0 2px 6px #000;
+  animation: none;
+  box-shadow:
+    inset 0 0 0 1px rgba(251, 191, 36, 0.55),
+    0 0 18px rgba(251, 191, 36, 0.32);
+}
+
+.kc-menu-item.kc-gp-focused .kc-menu-pointer {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.kc-bc-orb.kc-gp-focused {
+  transform: scale(1.2);
+  color: #ffffff;
+}
+
+.kc-scroll-pillar.kc-gp-focused {
+  transform: translateY(-8px);
+  filter: brightness(1.1);
+  border-color: #fde047 !important;
+  box-shadow:
+    0 0 0 2px #fbbf24,
+    inset 0 0 38px var(--accent-soft, rgba(251, 191, 36, 0.3)),
+    0 0 30px rgba(251, 191, 36, 0.55),
+    0 16px 32px rgba(0, 0, 0, 0.88);
+  animation: none;
+}
+
+.kc-seg-btn.kc-gp-focused,
+.kc-art-seg-btn.kc-gp-focused,
+.kc-art-folder-btn.kc-gp-focused,
+.kc-seed-chip.kc-gp-focused,
+.kc-tab.kc-gp-focused,
+.kc-keybind-btn.kc-gp-focused {
+  color: #ffffff;
+}
+
+.kc-range.kc-gp-focused {
+  border-radius: 6px;
+  padding: 2px;
+  background: rgba(251, 191, 36, 0.14);
+}
+
+/* ----------------------------------------------------------------------------
+ * 2. Color-Coded Dynamic Controller Button Badges (.kc-gp-badge)
+ * Supports both semantic `.is-*` classes and `.kc-gp-*` classes from GamepadProfiles
+ * ---------------------------------------------------------------------------- */
+
+.kc-gp-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 19px;
+  height: 18px;
+  padding: 0 5px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  line-height: 1;
+  color: #f8fafc;
+  background: linear-gradient(180deg, #2d263e 0%, #141020 100%);
+  border: 1.5px solid #8a7ca4;
+  border-bottom-width: 2px;
+  border-radius: 999px;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.95);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    0 2px 5px rgba(0, 0, 0, 0.72);
+  white-space: nowrap;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+
+.kc-gp-badge.is-inline {
+  margin: 0 4px 0 0;
+  height: 17px;
+  min-width: 18px;
+  font-size: 9px;
+}
+
+.kc-gp-badge.is-inline-after {
+  margin: 0 0 0 6px;
+  height: 17px;
+  min-width: 18px;
+  font-size: 9px;
+}
+
+/* Xbox Face Buttons */
+.kc-gp-badge.is-xbox-a,
+.kc-gp-badge.kc-gp-a {
+  color: #ecfdf5;
+  background: linear-gradient(180deg, #1b8a46 0%, #0f4d26 100%);
+  border-color: #4ade80;
+  box-shadow:
+    inset 0 1px 0 rgba(220, 252, 231, 0.35),
+    0 0 8px rgba(34, 197, 94, 0.45);
+}
+
+.kc-gp-badge.is-xbox-b,
+.kc-gp-badge.kc-gp-b {
+  color: #fef2f2;
+  background: linear-gradient(180deg, #b91c2c 0%, #68101a 100%);
+  border-color: #f87171;
+  box-shadow:
+    inset 0 1px 0 rgba(254, 226, 226, 0.35),
+    0 0 8px rgba(239, 68, 68, 0.48);
+}
+
+.kc-gp-badge.is-xbox-x,
+.kc-gp-badge.kc-gp-x {
+  color: #eff6ff;
+  background: linear-gradient(180deg, #1d5ed8 0%, #103275 100%);
+  border-color: #60a5fa;
+  box-shadow:
+    inset 0 1px 0 rgba(219, 234, 254, 0.38),
+    0 0 8px rgba(59, 130, 246, 0.5);
+}
+
+.kc-gp-badge.is-xbox-y,
+.kc-gp-badge.kc-gp-y {
+  color: #fffbeb;
+  background: linear-gradient(180deg, #c27808 0%, #6e4104 100%);
+  border-color: #fbbf24;
+  box-shadow:
+    inset 0 1px 0 rgba(254, 243, 199, 0.4),
+    0 0 8px rgba(251, 191, 36, 0.48);
+}
+
+/* PlayStation Face & System Badges */
+.kc-gp-badge.is-ps,
+.kc-gp-badge.kc-gp-ps {
+  color: #f1f5f9;
+  background: linear-gradient(180deg, #1f2a44 0%, #0f1628 100%);
+  border-color: #7da2e8;
+  box-shadow:
+    inset 0 1px 0 rgba(219, 234, 254, 0.28),
+    0 0 8px rgba(96, 165, 250, 0.38);
+}
+
+.kc-gp-badge.is-ps-cross {
+  border-color: #60a5fa;
+  color: #bfdbfe;
+}
+
+.kc-gp-badge.is-ps-circle {
+  border-color: #f87171;
+  color: #fecaca;
+}
+
+.kc-gp-badge.is-ps-square {
+  border-color: #f472b6;
+  color: #fbcfe8;
+}
+
+.kc-gp-badge.is-ps-triangle {
+  border-color: #34d399;
+  color: #a7f3d0;
+}
+
+/* Nintendo Face & System Badges */
+.kc-gp-badge.is-nintendo,
+.kc-gp-badge.kc-gp-nintendo {
+  color: #fff5f5;
+  background: linear-gradient(180deg, #4b1723 0%, #240b12 100%);
+  border-color: #fb7185;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 241, 242, 0.3),
+    0 0 8px rgba(244, 63, 94, 0.42);
+}
+
+/* Shoulder Bumpers (LB / RB / L1 / R1 / L / R) */
+.kc-gp-badge.is-bumper,
+.kc-gp-badge.kc-gp-bumper {
+  border-radius: 7px 7px 3px 3px;
+  padding: 0 6px;
+  color: #e2e8f0;
+  background: linear-gradient(180deg, #322c44 0%, #171424 100%);
+  border-color: #94a3b8;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.24),
+    0 2px 6px rgba(0, 0, 0, 0.75);
+}
+
+/* Analog Triggers (LT / RT / L2 / R2 / ZL / ZR) */
+.kc-gp-badge.is-trigger,
+.kc-gp-badge.kc-gp-trigger {
+  border-radius: 4px 4px 8px 8px;
+  padding: 0 6px;
+  color: #fef3c7;
+  background: linear-gradient(180deg, #3b264d 0%, #1c1127 100%);
+  border-color: #d8b4fe;
+  box-shadow:
+    inset 0 1px 0 rgba(243, 232, 255, 0.26),
+    0 0 8px rgba(168, 85, 247, 0.35);
+}
+
+/* Stick Clicks & System Menu Buttons (LS / RS / L3 / R3 / VIEW / MENU / SHARE) */
+.kc-gp-badge.is-stick,
+.kc-gp-badge.kc-gp-stick,
+.kc-gp-badge.kc-gp-menu {
+  border-radius: 4px;
+  padding: 0 6px;
+  color: #cbd5e1;
+  background: linear-gradient(180deg, #242134 0%, #110f1b 100%);
+  border-color: #7c6f94;
+}
+
+/* Gear Slot & Flask Badge Position Overrides */
+.kc-gear-key.kc-gp-badge {
+  position: absolute;
+  bottom: -9px;
+  left: 50%;
+  transform: translateX(-50%);
+  height: 18px;
+  min-width: 22px;
+  padding: 0 6px;
+  z-index: 4;
+}
+
+.kc-flask-key.kc-gp-badge {
+  height: 18px;
+  min-width: 24px;
+  padding: 0 6px;
+}
+
+.kc-minimap-tab-hint.kc-gp-badge {
+  height: 16px;
+  min-width: 26px;
+  padding: 0 5px;
+  font-size: 8px;
+}
+
+.kc-touch-tap-hint {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: #fef3c7;
+  background: rgba(180, 120, 24, 0.32);
+  border: 1px solid rgba(251, 191, 36, 0.65);
+}
+
+/* Passage Modal Shoulder Tab-Switch Hints */
+.kc-tabs-gp-hint {
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
+  opacity: 0.92;
+}
+
+/* ----------------------------------------------------------------------------
+ * 3. Title Screen Connected Controller / Touch Ready Indicator Pill
+ * ---------------------------------------------------------------------------- */
+
+@keyframes kcInputDotPulse {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 0.9;
+  }
+  50% {
+    transform: scale(1.22);
+    opacity: 1;
+  }
+}
+
+.kc-title-input-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 11px;
+  background: rgba(10, 8, 19, 0.84);
+  border: 1px solid rgba(114, 100, 148, 0.52);
+  border-radius: 999px;
+  backdrop-filter: blur(4px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.72);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: var(--text-bone);
+}
+
+.kc-title-input-pill.is-gamepad {
+  border-color: rgba(74, 222, 128, 0.52);
+  box-shadow:
+    0 0 14px rgba(34, 197, 94, 0.22),
+    0 6px 18px rgba(0, 0, 0, 0.75);
+}
+
+.kc-title-input-pill.is-tesla {
+  border-color: rgba(56, 232, 255, 0.56);
+  box-shadow:
+    0 0 14px rgba(56, 232, 255, 0.26),
+    0 6px 18px rgba(0, 0, 0, 0.75);
+}
+
+.kc-title-input-pill.is-touch {
+  border-color: rgba(251, 191, 36, 0.52);
+  box-shadow:
+    0 0 14px rgba(251, 191, 36, 0.22),
+    0 6px 18px rgba(0, 0, 0, 0.75);
+}
+
+.kc-input-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  animation: kcInputDotPulse 2s ease-in-out infinite;
+}
+
+.kc-input-dot.is-gamepad {
+  background: #4ade80;
+  box-shadow: 0 0 8px rgba(74, 222, 128, 0.9);
+}
+
+.kc-input-dot.is-tesla {
+  background: #38e8ff;
+  box-shadow: 0 0 8px rgba(56, 232, 255, 0.95);
+}
+
+.kc-input-dot.is-touch {
+  background: #fbbf24;
+  box-shadow: 0 0 8px rgba(251, 191, 36, 0.9);
+}
+
+.kc-input-dot.is-disconnected {
+  background: #64748b;
+  box-shadow: none;
+  animation: none;
+}
+
+/* ----------------------------------------------------------------------------
+ * 4. Options Modal — "Controller & Touch" Status Card & Controls
+ * ---------------------------------------------------------------------------- */
+
+.kc-controller-status-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border-radius: 4px;
+  background: linear-gradient(180deg, rgba(22, 17, 34, 0.92) 0%, rgba(12, 9, 20, 0.96) 100%);
+  border: 1px solid #44385c;
+}
+
+.kc-controller-status-card.is-connected {
+  border-color: rgba(74, 222, 128, 0.55);
+  box-shadow: inset 0 0 18px rgba(34, 197, 94, 0.14);
+}
+
+.kc-controller-status-card.is-disconnected {
+  border-color: rgba(100, 90, 124, 0.45);
+}
+
+.kc-controller-status-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.kc-controller-status-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 4px;
+  border: 1px solid rgba(122, 106, 154, 0.45);
+  background: rgba(8, 6, 15, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.kc-controller-status-card.is-connected .kc-controller-status-icon {
+  border-color: rgba(74, 222, 128, 0.55);
+}
+
+.kc-controller-status-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.kc-controller-status-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--text-bone);
+}
+
+.kc-controller-status-sub {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.kc-opt-meta-pills {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.kc-opt-meta-pill {
+  padding: 2px 7px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-parchment);
+  background: rgba(24, 19, 36, 0.92);
+  border: 1px solid #4d4066;
+}
+
+.kc-opt-meta-pill.is-cyan {
+  color: #7ce8ff;
+  border-color: rgba(56, 232, 255, 0.55);
+  background: rgba(12, 46, 62, 0.65);
+}
+
+.kc-opt-meta-pill.is-emerald {
+  color: #86efac;
+  border-color: rgba(34, 197, 94, 0.55);
+  background: rgba(14, 52, 30, 0.65);
+}
+
+.kc-opt-meta-pill.is-amber {
+  color: #fde68a;
+  border-color: rgba(251, 191, 36, 0.55);
+  background: rgba(68, 44, 10, 0.65);
+}
+
+.kc-opt-sub-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.kc-opt-divider {
+  height: 1px;
+  background: linear-gradient(90deg, transparent 0%, rgba(102, 88, 130, 0.45) 18%, rgba(102, 88, 130, 0.45) 82%, transparent 100%);
+  margin: 2px 0;
+}
+
+/* Touch mode cleanups */
+#viewport-stage.kc-input-touch .kc-keycap-kb-only {
+  display: none !important;
+}
+
+/* Responsive Options Layout (Mobile / Compact Screens) */
+@media (max-width: 680px) {
+  .kc-opt-row {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .kc-seg-group {
+    flex-wrap: wrap;
+  }
+
+  .kc-range {
+    width: 148px;
+  }
+}

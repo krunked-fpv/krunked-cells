@@ -8,6 +8,7 @@
 
 import { getItemIconUrl } from '../assets/ItemIcons';
 import {
+  ActiveInputSnapshot,
   AffixDef,
   ArtPackMode,
   BiomeDef,
@@ -18,6 +19,8 @@ import {
   CustomPackAssetResolver,
   DEFAULT_KEY_BINDINGS,
   DifficultyDef,
+  GamepadLayoutPreset,
+  GamepadVendorFamily,
   GearInstance,
   GearQuality,
   ItemColor,
@@ -39,7 +42,7 @@ import {
   VIEWPORT_W,
   WeaponDef,
 } from '../contracts';
-import { CameraOriginMode, computeCanvasDrawRect, resolveCameraTopLeft } from '../input';
+import { CameraOriginMode, computeCanvasDrawRect, getActionGlyph, resolveCameraTopLeft } from '../input';
 
 export interface CatalogLookup {
   getWeapon?(id: string): WeaponDef | undefined;
@@ -286,6 +289,136 @@ export function formatKeyCode(code: string): string {
     Backspace: 'BKSP',
   };
   return map[code] ?? code.toUpperCase().slice(0, 5);
+}
+
+export type GlyphAction =
+  | 'jump'
+  | 'roll'
+  | 'weapon1'
+  | 'weapon2'
+  | 'skill1'
+  | 'skill2'
+  | 'heal'
+  | 'interact'
+  | 'equip2'
+  | 'recycle'
+  | 'map'
+  | 'pause'
+  | 'confirm'
+  | 'cancel';
+
+export function resolveBadgeClasses(
+  _action: GlyphAction,
+  glyphFamily: 'keyboard' | GamepadVendorFamily | 'touch',
+  rawStyleClass: string,
+  label: string
+): string {
+  const classes = new Set<string>();
+  if (rawStyleClass) {
+    for (const part of rawStyleClass.split(/\s+/)) {
+      if (part) classes.add(part);
+    }
+  }
+  const upper = label.trim().toUpperCase();
+
+  if (
+    upper === 'LB' ||
+    upper === 'RB' ||
+    upper === 'L1' ||
+    upper === 'R1' ||
+    upper === 'L' ||
+    upper === 'R'
+  ) {
+    classes.add('is-bumper');
+  } else if (
+    upper === 'LT' ||
+    upper === 'RT' ||
+    upper === 'L2' ||
+    upper === 'R2' ||
+    upper === 'ZL' ||
+    upper === 'ZR'
+  ) {
+    classes.add('is-trigger');
+  } else if (
+    upper === 'LS' ||
+    upper === 'RS' ||
+    upper === 'L3' ||
+    upper === 'R3' ||
+    upper === 'VIEW' ||
+    upper === 'MENU' ||
+    upper === 'SHARE' ||
+    upper === 'OPT' ||
+    upper === 'OPTIONS' ||
+    upper === 'START' ||
+    upper === 'SELECT' ||
+    upper === '-' ||
+    upper === '+'
+  ) {
+    classes.add('is-stick');
+  } else if (glyphFamily === 'playstation') {
+    classes.add('is-ps');
+    if (label === '✕' || upper === 'CROSS') classes.add('is-ps-cross');
+    else if (label === '○' || upper === 'CIRCLE') classes.add('is-ps-circle');
+    else if (label === '□' || upper === 'SQUARE') classes.add('is-ps-square');
+    else if (label === '△' || upper === 'TRIANGLE') classes.add('is-ps-triangle');
+  } else if (glyphFamily === 'nintendo') {
+    classes.add('is-nintendo');
+  } else if (glyphFamily !== 'keyboard' && glyphFamily !== 'touch') {
+    if (upper === 'A') classes.add('is-xbox-a');
+    else if (upper === 'B') classes.add('is-xbox-b');
+    else if (upper === 'X') classes.add('is-xbox-x');
+    else if (upper === 'Y') classes.add('is-xbox-y');
+  }
+
+  return Array.from(classes).join(' ');
+}
+
+export function renderControllerBadgeHtml(
+  action: GlyphAction,
+  snapshot: ActiveInputSnapshot | null | undefined,
+  keyBindings?: KeyBindings,
+  opts?: { extraClass?: string; layoutPreset?: GamepadLayoutPreset }
+): string {
+  const family = snapshot?.glyphFamily ?? 'keyboard';
+  const glyph = getActionGlyph(action, family, keyBindings, opts?.layoutPreset);
+  const semantic = resolveBadgeClasses(action, family, glyph.styleClass, glyph.label);
+  const extra = opts?.extraClass ? ` ${opts.extraClass}` : '';
+  return `<span class="kc-gp-badge ${semantic}${extra}">${escapeHtml(glyph.label)}</span>`;
+}
+
+export function renderGamepadIconSvg(size = 16, accent = '#4ade80'): string {
+  return `<svg class="kc-pixel-svg" width="${size}" height="${size}" viewBox="0 0 16 16" shape-rendering="crispEdges" aria-hidden="true">
+    <rect x="3" y="4" width="10" height="1" fill="${accent}"/>
+    <rect x="2" y="5" width="12" height="5" fill="#1e192c"/>
+    <rect x="1" y="6" width="1" height="5" fill="${accent}"/>
+    <rect x="14" y="6" width="1" height="5" fill="${accent}"/>
+    <rect x="2" y="10" width="3" height="2" fill="#1e192c"/>
+    <rect x="11" y="10" width="3" height="2" fill="#1e192c"/>
+    <rect x="5" y="10" width="6" height="1" fill="${accent}"/>
+    <rect x="2" y="12" width="3" height="1" fill="${accent}"/>
+    <rect x="11" y="12" width="3" height="1" fill="${accent}"/>
+    <rect x="4" y="6" width="1" height="3" fill="#f2ead8"/>
+    <rect x="3" y="7" width="3" height="1" fill="#f2ead8"/>
+    <rect x="11" y="6" width="1" height="1" fill="#fbbf24"/>
+    <rect x="10" y="7" width="1" height="1" fill="#60a5fa"/>
+    <rect x="12" y="7" width="1" height="1" fill="#f87171"/>
+    <rect x="11" y="8" width="1" height="1" fill="#4ade80"/>
+  </svg>`;
+}
+
+export function renderTouchStickIconSvg(size = 16, accent = '#fbbf24'): string {
+  return `<svg class="kc-pixel-svg" width="${size}" height="${size}" viewBox="0 0 16 16" shape-rendering="crispEdges" aria-hidden="true">
+    <rect x="5" y="2" width="6" height="1" fill="${accent}"/>
+    <rect x="5" y="13" width="6" height="1" fill="${accent}"/>
+    <rect x="2" y="5" width="1" height="6" fill="${accent}"/>
+    <rect x="13" y="5" width="1" height="6" fill="${accent}"/>
+    <rect x="3" y="3" width="2" height="2" fill="${accent}"/>
+    <rect x="11" y="3" width="2" height="2" fill="${accent}"/>
+    <rect x="3" y="11" width="2" height="2" fill="${accent}"/>
+    <rect x="11" y="11" width="2" height="2" fill="${accent}"/>
+    <rect x="6" y="6" width="4" height="4" fill="#f2ead8"/>
+    <rect x="7" y="7" width="2" height="2" fill="${accent}"/>
+  </svg>`;
 }
 
 export function getScrollDamageMultiplier(count: number): number {
@@ -1315,6 +1448,8 @@ export class HudOverlay {
   private lastCurseRendered = -1;
   private lastStatusSig = '';
   private activeNearbyPickup: PickupState | null = null;
+  private lastInputSnapshot: ActiveInputSnapshot | null = null;
+  private layoutPreset: GamepadLayoutPreset = 'standard';
   private visible = false;
 
   constructor(
@@ -1402,6 +1537,16 @@ export class HudOverlay {
     this.cameraOriginMode = mode;
   }
 
+  public setLayoutPreset(layoutPreset: GamepadLayoutPreset): void {
+    if (this.layoutPreset === layoutPreset) return;
+    this.layoutPreset = layoutPreset;
+    this.lastLoadoutSignature = '';
+    this.lastLootSignature = '';
+    this.lastTubeSig = '';
+    this.lastInteractSignature = '';
+    this.lastTooltipSig = '';
+  }
+
   public setCatalog(catalog?: CatalogLookup): void {
     this.catalog = catalog;
     this.forceRefreshIcons();
@@ -1430,6 +1575,15 @@ export class HudOverlay {
     if (!visible) {
       this.hideSlotTooltip();
     }
+  }
+
+  public hasActiveInteractable(): boolean {
+    if (!this.visible) return false;
+    return (
+      this.activeNearbyPickup !== null ||
+      this.activeNearbyTube !== null ||
+      !this.interactEl.classList.contains('kc-hidden')
+    );
   }
 
   public showToast(text: string, durationSec = 2.6): void {
@@ -1791,9 +1945,16 @@ export class HudOverlay {
     }
   }
 
-  public update(state: SimState, bindings: KeyBindings, dtSec: number, interpAlpha = 1): void {
+  public update(
+    state: SimState,
+    bindings: KeyBindings,
+    dtSec: number,
+    interpAlpha = 1,
+    inputSnapshot?: ActiveInputSnapshot
+  ): void {
     this.lastState = state;
     this.lastBindings = bindings;
+    this.lastInputSnapshot = inputSnapshot ?? null;
 
     const showHud =
       state.runStatus === 'playing' ||
@@ -2163,31 +2324,56 @@ export class HudOverlay {
 
   private renderSlotTooltip(slotIndex: number, state: SimState, bindings: KeyBindings): void {
     const p = state.player;
-    const slotDefs: Array<{ gear: GearInstance | null; slotLabel: string; keyHint: string }> = [
+    const mode = this.lastInputSnapshot?.mode ?? 'keyboard';
+    const glyphFamily = this.lastInputSnapshot?.glyphFamily ?? 'keyboard';
+
+    const buildHint = (action: GlyphAction | null, kbFallback: string): { text: string; html: string } => {
+      if (!action) {
+        return { text: kbFallback, html: `[${escapeHtml(kbFallback)}]` };
+      }
+      if (mode === 'gamepad') {
+        const g = getActionGlyph(action, glyphFamily, bindings, this.layoutPreset);
+        const cls = resolveBadgeClasses(action, glyphFamily, g.styleClass, g.label);
+        return {
+          text: `gp:${glyphFamily}:${this.layoutPreset}:${g.label}`,
+          html: `<span class="kc-gp-badge ${cls}">${escapeHtml(g.label)}</span>`,
+        };
+      }
+      if (mode === 'touch') {
+        return { text: '', html: '' };
+      }
+      return { text: kbFallback, html: `<span class="kc-tt-key-inline">[${escapeHtml(kbFallback)}]</span>` };
+    };
+
+    const slotDefs: Array<{
+      gear: GearInstance | null;
+      slotLabel: string;
+      hint: { text: string; html: string };
+    }> = [
       {
         gear: p.loadout.weapon1,
         slotLabel: 'Weapon Slot 1',
-        keyHint: `LMB / ${formatKeyCode(bindings.weapon1)}`,
+        hint: buildHint('weapon1', `LMB / ${formatKeyCode(bindings.weapon1)}`),
       },
       {
         gear: p.loadout.weapon2,
         slotLabel: 'Weapon Slot 2',
-        keyHint: `RMB / ${formatKeyCode(bindings.weapon2)}`,
+        hint: buildHint('weapon2', `RMB / ${formatKeyCode(bindings.weapon2)}`),
       },
       {
         gear: p.loadout.skill1,
         slotLabel: 'Skill Slot 1',
-        keyHint: formatKeyCode(bindings.skill1),
+        hint: buildHint('skill1', formatKeyCode(bindings.skill1)),
       },
       {
         gear: p.loadout.skill2,
         slotLabel: 'Skill Slot 2',
-        keyHint: formatKeyCode(bindings.skill2),
+        hint: buildHint('skill2', formatKeyCode(bindings.skill2)),
       },
       {
         gear: p.loadout.amulet,
         slotLabel: 'Amulet Slot',
-        keyHint: 'PASSIVE',
+        hint: buildHint(null, 'PASSIVE'),
       },
     ];
 
@@ -2200,24 +2386,27 @@ export class HudOverlay {
 
     const g = slot.gear;
     const sig = g
-      ? `i${slotIndex}:${g.uid}:${g.level}:${g.quality}:${g.color}:${g.affixes.join('.')}:${JSON.stringify(g.bonusScrolls ?? {})}:${p.scrolls.brutality}/${p.scrolls.tactics}/${p.scrolls.survival}:${p.loadout.weapon1?.uid ?? 0}:${p.loadout.weapon2?.uid ?? 0}:${p.loadout.skill1?.uid ?? 0}:${p.loadout.skill2?.uid ?? 0}:${p.loadout.amulet?.uid ?? 0}:${p.mutations.join(',')}:${this.artPackMode}`
-      : `i${slotIndex}:empty:${slot.keyHint}`;
+      ? `i${slotIndex}:${g.uid}:${g.level}:${g.quality}:${g.color}:${g.affixes.join('.')}:${JSON.stringify(g.bonusScrolls ?? {})}:${p.scrolls.brutality}/${p.scrolls.tactics}/${p.scrolls.survival}:${p.loadout.weapon1?.uid ?? 0}:${p.loadout.weapon2?.uid ?? 0}:${p.loadout.skill1?.uid ?? 0}:${p.loadout.skill2?.uid ?? 0}:${p.loadout.amulet?.uid ?? 0}:${p.mutations.join(',')}:${this.artPackMode}:${mode}:${glyphFamily}:${slot.hint.text}`
+      : `i${slotIndex}:empty:${slot.hint.text}:${mode}:${glyphFamily}`;
 
     this.slotTooltipEl.classList.remove('kc-hidden');
 
     if (sig !== this.lastTooltipSig) {
       this.lastTooltipSig = sig;
       if (!g) {
+        const bindSuffix = slot.hint.html
+          ? ` · Bind: ${mode === 'gamepad' ? slot.hint.html : `<span class="kc-keycap">${escapeHtml(slot.hint.text)}</span>`}`
+          : '';
         this.slotTooltipEl.innerHTML = `
           <div class="kc-tt-empty">
             <div class="kc-tt-empty-title">${escapeHtml(slot.slotLabel)}</div>
-            <div class="kc-tt-empty-sub">Empty · Bind: <span class="kc-keycap">${escapeHtml(slot.keyHint)}</span></div>
+            <div class="kc-tt-empty-sub">Empty${bindSuffix}</div>
           </div>
           <span class="kc-tt-arrow" aria-hidden="true"></span>
         `;
       } else {
         this.slotTooltipEl.innerHTML = `
-          ${this.renderGearCardBodyHtml(g, state, { slotLabel: slot.slotLabel, keyHint: slot.keyHint })}
+          ${this.renderGearCardBodyHtml(g, state, { slotLabel: slot.slotLabel, keyHintHtml: slot.hint.html })}
           <span class="kc-tt-arrow" aria-hidden="true"></span>
         `;
       }
@@ -2295,7 +2484,7 @@ export class HudOverlay {
   private renderGearCardBodyHtml(
     gear: GearInstance,
     state: SimState,
-    opts?: { slotLabel?: string; keyHint?: string }
+    opts?: { slotLabel?: string; keyHint?: string; keyHintHtml?: string }
   ): string {
     const info = getGearDisplayInfo(gear, this.catalog);
     const summary = computeGearDpsSummary(gear, state, this.catalog);
@@ -2362,7 +2551,13 @@ export class HudOverlay {
               <span>${escapeHtml(summary.colors.length > 0 ? summary.colors.map((c) => c.toUpperCase()).join(' / ') : 'COLORLESS')}</span>
               <span>·</span>
               <span>${escapeHtml(info.glyph)}</span>
-              ${opts?.keyHint ? `<span>·</span><span class="kc-tt-key-inline">[${escapeHtml(opts.keyHint)}]</span>` : ''}
+              ${
+                opts?.keyHintHtml
+                  ? `<span>·</span>${opts.keyHintHtml}`
+                  : opts?.keyHint
+                    ? `<span>·</span><span class="kc-tt-key-inline">[${escapeHtml(opts.keyHint)}]</span>`
+                    : ''
+              }
             </div>
           </div>
         </div>
@@ -2587,12 +2782,26 @@ export class HudOverlay {
     }
 
     // Sculpted Glass Health Flask
+    const mode = this.lastInputSnapshot?.mode ?? 'keyboard';
+    const glyphFamily = this.lastInputSnapshot?.glyphFamily ?? 'keyboard';
+
     const maxFlask = Math.max(1, p.maxFlaskCharges);
     const flaskPct = Math.max(0, Math.min(100, (p.flaskCharges / maxFlask) * 100));
     this.flaskLiquidEl.style.height = `${flaskPct.toFixed(0)}%`;
     this.flaskWidgetEl.classList.toggle('is-empty', p.flaskCharges <= 0);
     this.flaskWidgetEl.classList.toggle('is-low-hp', p.flaskCharges > 0 && hpPct < 45);
-    this.flaskKeyEl.textContent = formatKeyCode(bindings.heal);
+    if (mode === 'gamepad') {
+      const healGlyph = getActionGlyph('heal', glyphFamily, bindings, this.layoutPreset);
+      const badgeCls = resolveBadgeClasses('heal', glyphFamily, healGlyph.styleClass, healGlyph.label);
+      this.flaskKeyEl.className = `kc-flask-key kc-gp-badge ${badgeCls}`;
+      this.flaskKeyEl.textContent = healGlyph.label;
+    } else if (mode === 'touch') {
+      this.flaskKeyEl.className = 'kc-flask-key kc-keycap kc-hidden';
+      this.flaskKeyEl.textContent = '';
+    } else {
+      this.flaskKeyEl.className = 'kc-flask-key kc-keycap';
+      this.flaskKeyEl.textContent = formatKeyCode(bindings.heal);
+    }
     if (this.flaskPipsEl.childElementCount !== maxFlask) {
       this.flaskPipsEl.innerHTML = '';
       for (let i = 0; i < maxFlask; i++) {
@@ -2620,11 +2829,36 @@ export class HudOverlay {
     const w2KeyLabel =
       bindings.weapon2 === DEFAULT_KEY_BINDINGS.weapon2 ? 'RMB' : formatKeyCode(bindings.weapon2);
 
-    const slots: Array<{ gear: GearInstance | null; keyLabel: string; emptyTag: string }> = [
-      { gear: p.loadout.weapon1, keyLabel: w1KeyLabel, emptyTag: 'W1' },
-      { gear: p.loadout.weapon2, keyLabel: w2KeyLabel, emptyTag: 'W2' },
-      { gear: p.loadout.skill1, keyLabel: formatKeyCode(bindings.skill1), emptyTag: 'S1' },
-      { gear: p.loadout.skill2, keyLabel: formatKeyCode(bindings.skill2), emptyTag: 'S2' },
+    const resolveSlotBadge = (
+      action: 'weapon1' | 'weapon2' | 'skill1' | 'skill2',
+      kbLabel: string
+    ): { sigKey: string; html: string } => {
+      if (mode === 'gamepad') {
+        const g = getActionGlyph(action, glyphFamily, bindings, this.layoutPreset);
+        const cls = resolveBadgeClasses(action, glyphFamily, g.styleClass, g.label);
+        return {
+          sigKey: `gp:${glyphFamily}:${this.layoutPreset}:${g.label}`,
+          html: `<span class="kc-gear-key kc-gp-badge ${cls}">${escapeHtml(g.label)}</span>`,
+        };
+      }
+      if (mode === 'touch') {
+        return { sigKey: 'touch', html: '' };
+      }
+      return {
+        sigKey: `kb:${kbLabel}`,
+        html: `<span class="kc-gear-key">${escapeHtml(kbLabel)}</span>`,
+      };
+    };
+
+    const slots: Array<{
+      gear: GearInstance | null;
+      badge: { sigKey: string; html: string };
+      emptyTag: string;
+    }> = [
+      { gear: p.loadout.weapon1, badge: resolveSlotBadge('weapon1', w1KeyLabel), emptyTag: 'W1' },
+      { gear: p.loadout.weapon2, badge: resolveSlotBadge('weapon2', w2KeyLabel), emptyTag: 'W2' },
+      { gear: p.loadout.skill1, badge: resolveSlotBadge('skill1', formatKeyCode(bindings.skill1)), emptyTag: 'S1' },
+      { gear: p.loadout.skill2, badge: resolveSlotBadge('skill2', formatKeyCode(bindings.skill2)), emptyTag: 'S2' },
     ];
     const amulet = p.loadout.amulet;
 
@@ -2632,8 +2866,8 @@ export class HudOverlay {
       slots
         .map((s) =>
           s.gear
-            ? `${s.gear.uid}:${s.gear.defId}:${s.gear.level}:${s.gear.quality}:${s.gear.color}:${s.gear.ammo ?? -1}/${s.gear.maxAmmo ?? -1}:${Math.ceil(s.gear.cooldownTicks / 6)}:${s.keyLabel}`
-            : `empty:${s.keyLabel}`
+            ? `${s.gear.uid}:${s.gear.defId}:${s.gear.level}:${s.gear.quality}:${s.gear.color}:${s.gear.ammo ?? -1}/${s.gear.maxAmmo ?? -1}:${Math.ceil(s.gear.cooldownTicks / 6)}:${s.badge.sigKey}`
+            : `empty:${s.badge.sigKey}`
         )
         .join('|') +
       '||amu:' +
@@ -2641,13 +2875,17 @@ export class HudOverlay {
       '||' +
       p.mutations.join(',') +
       '||' +
-      this.artPackMode;
+      this.artPackMode +
+      '||' +
+      mode +
+      ':' +
+      glyphFamily;
 
     if (sig !== this.lastLoadoutSignature) {
       this.lastLoadoutSignature = sig;
       for (let i = 0; i < 4; i++) {
         const el = this.gearSlotEls[i]!;
-        const { gear, keyLabel, emptyTag } = slots[i]!;
+        const { gear, badge: keyBadge, emptyTag } = slots[i]!;
         const casting = this.slotFlashSec[i]! > 0;
 
         el.className = 'kc-gear-slot';
@@ -2659,7 +2897,7 @@ export class HudOverlay {
           el.setAttribute('aria-label', `Empty ${emptyTag} Slot`);
           el.innerHTML = `
             <span class="kc-gear-empty-mark">${emptyTag}</span>
-            <span class="kc-gear-key">${escapeHtml(keyLabel)}</span>
+            ${keyBadge.html}
           `;
           continue;
         }
@@ -2699,7 +2937,7 @@ export class HudOverlay {
           <div class="kc-gear-icon-wrap">${iconHtml}</div>
           <span class="kc-gear-badge ${qClass} ${isLeg ? 'is-legendary' : ''}">${escapeHtml(badge)}</span>
           ${ammoHtml}
-          <span class="kc-gear-key">${escapeHtml(keyLabel)}</span>
+          ${keyBadge.html}
           ${
             gear.cooldownTicks > 0
               ? `<div class="kc-cd-overlay"><div class="kc-cd-curtain" style="height:${cdPct.toFixed(1)}%"></div><span class="kc-cd-text">${cdSec}s</span></div>`
@@ -2934,6 +3172,9 @@ export class HudOverlay {
     }
 
     // 5. Render Ground Loot Comparison Card
+    const inputMode = this.lastInputSnapshot?.mode ?? 'keyboard';
+    const glyphFamily = this.lastInputSnapshot?.glyphFamily ?? 'keyboard';
+
     if (hasLootBelow && nearestGear && nearestGear.gear) {
       this.interactEl.classList.add('kc-hidden');
       this.tubeCardEl.classList.add('kc-hidden');
@@ -2945,12 +3186,12 @@ export class HudOverlay {
       const canRecycle = state.metaSnapshot.recycleUnlocked && price === 0;
       const keyF = formatKeyCode(bindings.interact);
       const p = state.player;
-      const sig = `${nearestGear.uid}:${g.level}:${g.quality}:${g.color}:${g.affixes.join('.')}:${price}:${canAfford}:${canRecycle}:${p.scrolls.brutality}/${p.scrolls.tactics}/${p.scrolls.survival}:${p.loadout.weapon1?.uid ?? 0}:${p.loadout.weapon2?.uid ?? 0}:${p.loadout.skill1?.uid ?? 0}:${p.loadout.skill2?.uid ?? 0}:${p.loadout.amulet?.uid ?? 0}:${keyF}:${this.artPackMode}`;
+      const sig = `${nearestGear.uid}:${g.level}:${g.quality}:${g.color}:${g.affixes.join('.')}:${price}:${canAfford}:${canRecycle}:${p.scrolls.brutality}/${p.scrolls.tactics}/${p.scrolls.survival}:${p.loadout.weapon1?.uid ?? 0}:${p.loadout.weapon2?.uid ?? 0}:${p.loadout.skill1?.uid ?? 0}:${p.loadout.skill2?.uid ?? 0}:${p.loadout.amulet?.uid ?? 0}:${keyF}:${this.artPackMode}:${inputMode}:${glyphFamily}`;
 
       this.lootCardEl.classList.remove('kc-hidden');
       if (sig !== this.lastLootSignature) {
         this.lastLootSignature = sig;
-        this.renderLootComparisonCard(nearestGear, g, state, keyF, canAfford, canRecycle);
+        this.renderLootComparisonCard(nearestGear, g, state, bindings, keyF, canAfford, canRecycle);
       }
       return;
     }
@@ -2964,10 +3205,10 @@ export class HudOverlay {
       this.tubeCardEl.classList.remove('kc-hidden');
       const keyF = formatKeyCode(bindings.interact);
       const tl = nearestTube.tubeLoadout;
-      const tubeSig = `${nearestTube.uid}:${tl.theme}:${tl.weapon1.uid}:${tl.weapon2.uid}:${tl.skill1.uid}:${tl.skill2.uid}:${keyF}:${this.artPackMode}`;
+      const tubeSig = `${nearestTube.uid}:${tl.theme}:${tl.weapon1.uid}:${tl.weapon2.uid}:${tl.skill1.uid}:${tl.skill2.uid}:${keyF}:${this.artPackMode}:${inputMode}:${glyphFamily}`;
       if (tubeSig !== this.lastTubeSig) {
         this.lastTubeSig = tubeSig;
-        this.renderRecyclingTubeCard(nearestTube, state, keyF);
+        this.renderRecyclingTubeCard(nearestTube, state, bindings, keyF);
       }
       return;
     }
@@ -2989,10 +3230,19 @@ export class HudOverlay {
     }
 
     this.interactEl.classList.remove('kc-hidden');
-    const sig = `${prompt.key}:${prompt.label}`;
+    const sig = `${prompt.action}:${prompt.key}:${prompt.label}:${inputMode}:${glyphFamily}`;
     if (sig !== this.lastInteractSignature) {
       this.lastInteractSignature = sig;
-      this.interactEl.innerHTML = `<span class="kc-keycap">${escapeHtml(prompt.key)}</span><span>${escapeHtml(prompt.label)}</span>`;
+      if (inputMode === 'gamepad') {
+        const badgeHtml = renderControllerBadgeHtml(prompt.action, this.lastInputSnapshot, bindings, {
+          layoutPreset: this.layoutPreset,
+        });
+        this.interactEl.innerHTML = `${badgeHtml}<span>${escapeHtml(prompt.label)}</span>`;
+      } else if (inputMode === 'touch') {
+        this.interactEl.innerHTML = `<span class="kc-touch-tap-hint">USE</span><span>${escapeHtml(prompt.label)}</span>`;
+      } else {
+        this.interactEl.innerHTML = `<span class="kc-keycap">${escapeHtml(prompt.key)}</span><span>${escapeHtml(prompt.label)}</span>`;
+      }
       this.interactEl.onclick = prompt.onClick ?? null;
     }
   }
@@ -3087,9 +3337,15 @@ export class HudOverlay {
     });
   }
 
-  private renderRecyclingTubeCard(shrine: ShrineState, state: SimState, keyF: string): void {
+  private renderRecyclingTubeCard(
+    shrine: ShrineState,
+    state: SimState,
+    bindings: KeyBindings,
+    keyF: string
+  ): void {
     const tl = shrine.tubeLoadout;
     if (!tl) return;
+    const mode = this.lastInputSnapshot?.mode ?? 'keyboard';
     const theme = tl.theme;
     const themeLabel = `${theme.toUpperCase()} LOADOUT`;
     const tubeIcon = renderUiGlyphSvg(
@@ -3136,6 +3392,13 @@ export class HudOverlay {
       })
       .join('');
 
+    const equipBtnContent =
+      mode === 'gamepad'
+        ? `${renderControllerBadgeHtml('interact', this.lastInputSnapshot, bindings, { extraClass: 'is-inline', layoutPreset: this.layoutPreset })}Equip Loadout`
+        : mode === 'touch'
+          ? 'Equip Loadout'
+          : `[${escapeHtml(keyF)}] Equip Loadout`;
+
     this.tubeCardEl.innerHTML = `
       <div class="kc-tube-head">
         <div class="kc-tube-title-wrap">
@@ -3148,7 +3411,7 @@ export class HudOverlay {
       <div class="kc-tube-grid">${slotsHtml}</div>
       <div class="kc-tube-actions">
         <button type="button" class="kc-btn kc-btn-sm kc-btn-primary" data-act="pick-tube">
-          [${escapeHtml(keyF)}] Equip Loadout
+          ${equipBtnContent}
         </button>
       </div>
     `;
@@ -3232,10 +3495,12 @@ export class HudOverlay {
     pickup: PickupState,
     gear: GearInstance,
     state: SimState,
+    bindings: KeyBindings,
     keyF: string,
     canAfford: boolean,
     canRecycle: boolean
   ): void {
+    const mode = this.lastInputSnapshot?.mode ?? 'keyboard';
     const groundSummary = computeGearDpsSummary(gear, state, this.catalog);
     const colorClass = gear.quality === 'L' ? 'kc-color-colorless' : `kc-color-${gear.color}`;
 
@@ -3326,6 +3591,26 @@ export class HudOverlay {
       alt: 'Gold',
     });
 
+    const equip1Text = gear.slotKind === 'amulet' ? 'Equip Amulet' : 'Equip Slot 1';
+    const equip1Label =
+      mode === 'gamepad'
+        ? `${renderControllerBadgeHtml('interact', this.lastInputSnapshot, bindings, { extraClass: 'is-inline', layoutPreset: this.layoutPreset })}${equip1Text}`
+        : mode === 'touch'
+          ? equip1Text
+          : `[${escapeHtml(keyF)}] ${equip1Text}`;
+    const equip2Label =
+      mode === 'gamepad'
+        ? `${renderControllerBadgeHtml('equip2', this.lastInputSnapshot, bindings, { extraClass: 'is-inline', layoutPreset: this.layoutPreset })}Equip Slot 2`
+        : mode === 'touch'
+          ? 'Equip Slot 2'
+          : '[G] Equip Slot 2';
+    const recycleLabel =
+      mode === 'gamepad'
+        ? `${renderControllerBadgeHtml('recycle', this.lastInputSnapshot, bindings, { extraClass: 'is-inline', layoutPreset: this.layoutPreset })}Recycle`
+        : mode === 'touch'
+          ? 'Recycle'
+          : '[X] Recycle';
+
     this.lootCardEl.innerHTML = `
       <div class="kc-loot-grid">
         <div class="kc-loot-col kc-loot-ground ${colorClass}">
@@ -3342,15 +3627,15 @@ export class HudOverlay {
             ? `<span class="kc-price-tag ${canAfford ? '' : 'is-unaffordable'}">${goldIconHtml}<span>${price} Gold${canAfford ? '' : ' (Insufficient)'}</span></span>`
             : ''
         }
-        <button class="kc-btn kc-btn-sm kc-btn-primary" data-loot-act="equip1" ${canAfford ? '' : 'disabled'}>[${escapeHtml(keyF)}] ${gear.slotKind === 'amulet' ? 'Equip Amulet' : 'Equip Slot 1'}</button>
+        <button class="kc-btn kc-btn-sm kc-btn-primary" data-loot-act="equip1" ${canAfford ? '' : 'disabled'}>${equip1Label}</button>
         ${
           gear.slotKind !== 'amulet'
-            ? `<button class="kc-btn kc-btn-sm" data-loot-act="equip2" ${canAfford ? '' : 'disabled'}>[G] Equip Slot 2</button>`
+            ? `<button class="kc-btn kc-btn-sm" data-loot-act="equip2" ${canAfford ? '' : 'disabled'}>${equip2Label}</button>`
             : ''
         }
         ${
           canRecycle
-            ? `<button class="kc-btn kc-btn-sm kc-btn-emerald" data-loot-act="recycle">[X] Recycle</button>`
+            ? `<button class="kc-btn kc-btn-sm kc-btn-emerald" data-loot-act="recycle">${recycleLabel}</button>`
             : ''
         }
       </div>
@@ -3369,7 +3654,7 @@ export class HudOverlay {
     px: number,
     py: number,
     bindings: KeyBindings
-  ): { key: string; label: string; onClick?: () => void } | null {
+  ): { action: 'interact' | 'map'; key: string; label: string; onClick?: () => void } | null {
     const keyF = formatKeyCode(bindings.interact);
     const keyTab = formatKeyCode(bindings.map);
 
@@ -3382,7 +3667,7 @@ export class HudOverlay {
             : c.kind === 'boss'
               ? 'Open Boss Chest'
               : 'Open Treasure Chest';
-        return { key: keyF, label };
+        return { action: 'interact', key: keyF, label };
       }
     }
 
@@ -3393,6 +3678,7 @@ export class HudOverlay {
         }
         if (s.kind === 'collector') {
           return {
+            action: 'interact',
             key: keyF,
             label: 'Talk to The Collector',
             onClick: () => this.callbacks.onDispatchCommand({ type: 'openPassageNpc', npc: 'collector' }),
@@ -3400,6 +3686,7 @@ export class HudOverlay {
         }
         if (s.kind === 'guillain') {
           return {
+            action: 'interact',
             key: keyF,
             label: 'Talk to Guillain (Mutations)',
             onClick: () => this.callbacks.onDispatchCommand({ type: 'openPassageNpc', npc: 'guillain' }),
@@ -3407,6 +3694,7 @@ export class HudOverlay {
         }
         if (s.kind === 'forge') {
           return {
+            action: 'interact',
             key: keyF,
             label: 'Use Minor Forge',
             onClick: () => this.callbacks.onDispatchCommand({ type: 'openPassageNpc', npc: 'forge' }),
@@ -3414,13 +3702,14 @@ export class HudOverlay {
         }
         if (s.kind === 'fountain' && !s.used) {
           return {
+            action: 'interact',
             key: keyF,
             label: 'Drink Health Fountain',
             onClick: () => this.callbacks.onDispatchCommand({ type: 'useFountain' }),
           };
         }
         if (!s.used) {
-          return { key: keyF, label: s.label || 'Activate Shrine' };
+          return { action: 'interact', key: keyF, label: s.label || 'Activate Shrine' };
         }
       }
     }
@@ -3433,6 +3722,7 @@ export class HudOverlay {
         if (d.kind === 'biomeExit') {
           const dest = d.targetBiomeId ? getBiomeDisplayName(d.targetBiomeId, this.catalog) : 'The Passage';
           return {
+            action: 'interact',
             key: keyF,
             label: d.label || `Enter ${dest}`,
             onClick: d.targetBiomeId
@@ -3441,7 +3731,7 @@ export class HudOverlay {
           };
         }
         if (d.kind === 'timed' || d.kind === 'killStreak') {
-          return { key: keyF, label: d.label || 'Open Reward Door' };
+          return { action: 'interact', key: keyF, label: d.label || 'Open Reward Door' };
         }
       }
     }
@@ -3449,6 +3739,7 @@ export class HudOverlay {
     for (const tp of state.teleporters) {
       if (Math.hypot(tp.pos.x - px, tp.pos.y - py) < 44) {
         return {
+          action: 'map',
           key: keyTab,
           label: `Teleportation Rune (${tp.label}) — Open Map`,
           onClick: () => this.callbacks.onToggleMinimap?.(),
@@ -3469,7 +3760,7 @@ export class HudOverlay {
             : pk.kind === 'flaskRefill'
               ? `Refill Health Flask${priceSuffix}`
               : `Eat Food${priceSuffix}`;
-        return { key: keyF, label };
+        return { action: 'interact', key: keyF, label };
       }
     }
 

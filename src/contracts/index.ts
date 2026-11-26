@@ -1061,6 +1061,68 @@ export interface KeyBindings {
   pause: string;
 }
 
+export type InputDeviceMode = 'keyboard' | 'gamepad' | 'touch';
+export type GamepadVendorFamily = 'xbox' | 'playstation' | 'nintendo' | 'tesla' | 'generic';
+export type GamepadLayoutPreset = 'standard' | 'classic' | 'nintendo';
+export type GamepadGlyphStyle = 'auto' | 'xbox' | 'playstation' | 'nintendo';
+export type TouchControlsMode = 'auto' | 'always' | 'off';
+
+export type UiNavAction =
+  | 'up'
+  | 'down'
+  | 'left'
+  | 'right'
+  | 'confirm'
+  | 'cancel'
+  | 'tabPrev'
+  | 'tabNext'
+  | 'pause'
+  | 'map';
+
+export type VirtualControlAction =
+  | 'jump'
+  | 'roll'
+  | 'weapon1'
+  | 'weapon2'
+  | 'skill1'
+  | 'skill2'
+  | 'heal'
+  | 'interact'
+  | 'map'
+  | 'pause';
+
+export interface ControllerSettings {
+  deadzone: number;
+  rumbleEnabled: boolean;
+  rumbleIntensity: number;
+  layoutPreset: GamepadLayoutPreset;
+  glyphStyle: GamepadGlyphStyle;
+  autoPauseOnDisconnect: boolean;
+  touchMode: TouchControlsMode;
+  touchOpacity: number;
+  touchScale: number;
+}
+
+export interface GamepadConnectionInfo {
+  connected: boolean;
+  index: number;
+  id: string;
+  displayName: string;
+  family: GamepadVendorFamily;
+  mapping: string;
+  isTeslaBrowser: boolean;
+  hasRumble: boolean;
+}
+
+export interface ActiveInputSnapshot {
+  mode: InputDeviceMode;
+  touchSensed: boolean;
+  touchVisible: boolean;
+  isTeslaBrowser: boolean;
+  gamepad: GamepadConnectionInfo | null;
+  glyphFamily: 'keyboard' | GamepadVendorFamily | 'touch';
+}
+
 export const DEFAULT_KEY_BINDINGS: KeyBindings = {
   moveLeft: 'KeyA',
   moveRight: 'KeyD',
@@ -1076,6 +1138,18 @@ export const DEFAULT_KEY_BINDINGS: KeyBindings = {
   interact: 'KeyF',
   map: 'Tab',
   pause: 'Escape',
+};
+
+export const DEFAULT_CONTROLLER_SETTINGS: ControllerSettings = {
+  deadzone: 0.24,
+  rumbleEnabled: true,
+  rumbleIntensity: 0.85,
+  layoutPreset: 'standard',
+  glyphStyle: 'auto',
+  autoPauseOnDisconnect: true,
+  touchMode: 'auto',
+  touchOpacity: 0.45,
+  touchScale: 1.0,
 };
 
 export const DEFAULT_RENDER_SETTINGS: RenderSettings = {
@@ -1101,6 +1175,7 @@ export interface SaveData {
   renderSettings: RenderSettings;
   audioSettings: AudioSettings;
   keyBindings: KeyBindings;
+  controllerSettings: ControllerSettings;
   hasActiveRun: boolean;
   lastSeed: number;
 }
@@ -1149,6 +1224,7 @@ export function createDefaultSaveData(): SaveData {
     renderSettings: { ...DEFAULT_RENDER_SETTINGS },
     audioSettings: { ...DEFAULT_AUDIO_SETTINGS },
     keyBindings: { ...DEFAULT_KEY_BINDINGS },
+    controllerSettings: { ...DEFAULT_CONTROLLER_SETTINGS },
     hasActiveRun: false,
     lastSeed: 133742,
   };

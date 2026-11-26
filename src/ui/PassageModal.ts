@@ -5,9 +5,11 @@
 // =============================================================================
 
 import {
+  ActiveInputSnapshot,
   ArtPackMode,
   BiomeId,
   CustomPackAssetResolver,
+  GamepadLayoutPreset,
   GearInstance,
   GearQuality,
   MetaBlueprintDef,
@@ -27,6 +29,7 @@ import {
   getGearDisplayInfo,
   getMutationDisplayInfo,
   getQualityCssClass,
+  renderControllerBadgeHtml,
   renderItemIconHtml,
   renderUiGlyphSvg,
 } from './HudOverlay';
@@ -59,6 +62,9 @@ export class PassageModal {
   private lastActiveNpc: 'none' | 'collector' | 'guillain' | 'forge' = 'none';
   private lastQuickBarPostBoss = false;
   private lastRenderSig = '';
+  private inputSnapshot: ActiveInputSnapshot | null = null;
+  private layoutPreset: GamepadLayoutPreset = 'standard';
+  private lastState: SimState | null = null;
 
   constructor(uiRoot: HTMLElement, callbacks: PassageModalCallbacks, catalog?: CatalogLookup) {
     this.callbacks = callbacks;
@@ -101,6 +107,47 @@ export class PassageModal {
     return !this.backdropEl.classList.contains('kc-hidden');
   }
 
+  public getModalElement(): HTMLElement {
+    return this.backdropEl;
+  }
+
+  public setInputSnapshot(
+    snapshot: ActiveInputSnapshot | null,
+    layoutPreset: GamepadLayoutPreset = this.layoutPreset
+  ): void {
+    const prevMode = this.inputSnapshot?.mode ?? 'keyboard';
+    const prevFamily = this.inputSnapshot?.glyphFamily ?? 'keyboard';
+    const prevLayout = this.layoutPreset;
+    const nextMode = snapshot?.mode ?? 'keyboard';
+    const nextFamily = snapshot?.glyphFamily ?? 'keyboard';
+    this.inputSnapshot = snapshot;
+    this.layoutPreset = layoutPreset;
+    if (prevMode !== nextMode || prevFamily !== nextFamily || prevLayout !== layoutPreset) {
+      this.lastRenderSig = '';
+    }
+  }
+
+  public cycleTab(delta: -1 | 1): boolean {
+    if (!this.isOpen()) return false;
+    const tabs: PassageTab[] = this.lastQuickBarPostBoss
+      ? ['collector', 'guillain', 'forge', 'legendaryForge', 'exits']
+      : ['collector', 'guillain', 'forge', 'exits'];
+    const curIdx = Math.max(0, tabs.indexOf(this.activeTab));
+    const nextTab = tabs[(curIdx + delta + tabs.length) % tabs.length] ?? 'collector';
+    this.activeTab = nextTab;
+    this.callbacks.onPlayUiClick?.('select');
+    if (nextTab === 'collector' || nextTab === 'guillain' || nextTab === 'forge') {
+      this.callbacks.onDispatchCommand({ type: 'openPassageNpc', npc: nextTab });
+    }
+    if (this.lastState) {
+      this.lastRenderSig = this.computeSignature(this.lastState);
+      this.render(this.lastState);
+    } else {
+      this.lastRenderSig = '';
+    }
+    return true;
+  }
+
   public openTab(tab: PassageTab): void {
     this.activeTab = tab;
     this.manualOpen = true;
@@ -119,6 +166,7 @@ export class PassageModal {
   }
 
   public update(state: SimState): void {
+    this.lastState = state;
     const inPassage =
       (state.runStatus === 'passage' || state.runStatus === 'playing') &&
       (state.passageState.active || state.activeBiomeId === 'Passage');
@@ -214,7 +262,9 @@ export class PassageModal {
     const gearKey = [p.loadout.weapon1, p.loadout.weapon2, p.loadout.skill1, p.loadout.skill2]
       .map((g) => (g ? `${g.uid}:${g.quality}:${g.affixes.join('.')}` : 'none'))
       .join('|');
-    return `${this.activeTab}|fb:${ps.fromBiome}|art:${this.artPackMode}|c${p.cells}|g${p.gold}|hp${Math.ceil(p.hp)}/${Math.ceil(p.maxHp)}|fl${p.flaskCharges}/${p.maxFlaskCharges}|f${ps.fountainUsed}:${state.fountainRefillsLeft ?? -1}:${state.singleFlaskRefillsLeft ?? -1}|td${ps.timedDoorOpen}${ps.timedDoorClaimed}|kd${ps.killStreakDoorOpen}${ps.killStreakDoorClaimed}|fd${ps.flawlessBossDoorOpen ? 1 : 0}${ps.flawlessBossDoorClaimed ? 1 : 0}|lf${ms.legendaryForgePlus ?? 0}/${ms.legendaryForgePlusPlus ?? 0}|rf${ps.reforgeCount}|m${p.mutations.join(',')}|ub${ms.unlockedBlueprints.length}|ft${ms.flaskTier}|gr${ms.goldReserveTier}|rs${ms.randomStarterUnlocked}|rc${ms.recycleUnlocked}|${progKey}|${gearKey}|nb${ps.nextBiomes.join(',')}`;
+    const inMode = this.inputSnapshot?.mode ?? 'keyboard';
+    const inFamily = this.inputSnapshot?.glyphFamily ?? 'keyboard';
+    return `${this.activeTab}|fb:${ps.fromBiome}|art:${this.artPackMode}|in:${inMode}:${inFamily}:${this.layoutPreset}|c${p.cells}|g${p.gold}|hp${Math.ceil(p.hp)}/${Math.ceil(p.maxHp)}|fl${p.flaskCharges}/${p.maxFlaskCharges}|f${ps.fountainUsed}:${state.fountainRefillsLeft ?? -1}:${state.singleFlaskRefillsLeft ?? -1}|td${ps.timedDoorOpen}${ps.timedDoorClaimed}|kd${ps.killStreakDoorOpen}${ps.killStreakDoorClaimed}|fd${ps.flawlessBossDoorOpen ? 1 : 0}${ps.flawlessBossDoorClaimed ? 1 : 0}|lf${ms.legendaryForgePlus ?? 0}/${ms.legendaryForgePlusPlus ?? 0}|rf${ps.reforgeCount}|m${p.mutations.join(',')}|ub${ms.unlockedBlueprints.length}|ft${ms.flaskTier}|gr${ms.goldReserveTier}|rs${ms.randomStarterUnlocked}|rc${ms.recycleUnlocked}|${progKey}|${gearKey}|nb${ps.nextBiomes.join(',')}`;
   }
 
   private render(state: SimState): void {
@@ -253,6 +303,22 @@ export class PassageModal {
       bodyHtml = this.renderExitsTab(state);
     }
 
+    const mode = this.inputSnapshot?.mode ?? 'keyboard';
+    const closeBtnLabel =
+      mode === 'gamepad'
+        ? `Close${renderControllerBadgeHtml('cancel', this.inputSnapshot, undefined, { extraClass: 'is-inline-after', layoutPreset: this.layoutPreset })}`
+        : mode === 'touch'
+          ? 'Close'
+          : 'Close [Esc]';
+    const prevTabHint =
+      mode === 'gamepad'
+        ? `<span class="kc-tabs-gp-hint" aria-hidden="true">${renderControllerBadgeHtml('skill1', this.inputSnapshot, undefined, { layoutPreset: this.layoutPreset })}</span>`
+        : '';
+    const nextTabHint =
+      mode === 'gamepad'
+        ? `<span class="kc-tabs-gp-hint" aria-hidden="true">${renderControllerBadgeHtml('skill2', this.inputSnapshot, undefined, { layoutPreset: this.layoutPreset })}</span>`
+        : '';
+
     this.backdropEl.innerHTML = `
       <div class="kc-passage-modal kc-iron-panel">
         <div class="kc-passage-head">
@@ -265,15 +331,17 @@ export class PassageModal {
           <div class="kc-passage-wallet">
             <span class="kc-res-item kc-res-cells">${cellIcon}<span>${Math.floor(p.cells)} Cells</span></span>
             <span class="kc-res-item kc-res-gold">${goldIcon}<span>${Math.floor(p.gold)} Gold</span></span>
-            <button class="kc-btn kc-btn-sm" data-act="close">Close [Esc]</button>
+            <button class="kc-btn kc-btn-sm" data-act="close">${closeBtnLabel}</button>
           </div>
         </div>
         <div class="kc-tabs">
+          ${prevTabHint}
           ${tabBtn('collector', cellIcon, 'The Collector')}
           ${tabBtn('guillain', mutIcon, 'Guillain (Mutations)')}
           ${tabBtn('forge', forgeIcon, 'Minor Forge')}
           ${postBoss ? tabBtn('legendaryForge', starIcon, 'Legendary Forge', 'is-legendary-tab') : ''}
           ${tabBtn('exits', exitIcon, 'Fountain & Next Biome')}
+          ${nextTabHint}
         </div>
         <div class="kc-passage-body">
           ${bodyHtml}
