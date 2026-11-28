@@ -51,6 +51,7 @@ uniform sampler2D u_scrollerNearTex;
 uniform float u_hasOverlayTex;
 uniform sampler2D u_scrollerOverlayTex;
 uniform float u_overlayAdditive;
+uniform float u_hdBackdropMode;
 
 out vec4 o_color;
 
@@ -249,6 +250,110 @@ void drawMoon(vec2 uv, float sy, vec2 moonPos, float radius, float haloMul, vec3
 }
 
 void main() {
+  // ===========================================================================
+  // BUILT-IN 480x270 CRISP DEAD CELLS PIXEL-ART PARALLAX BACKDROPS (1:1 NEAREST)
+  // Smoothly composites painterly far + mid layers snapped to integer pixels
+  // with live Black Bridge moon/water shimmer, Throne star twinkle, Clock gears!
+  // ===========================================================================
+  if (u_hdBackdropMode > 0.5 && u_hasFarTex > 0.5) {
+    vec2 px = floor(v_uv * u_resolution);
+    vec2 uv = (px + 0.5) / u_resolution;
+    float sy = 1.0 - uv.y;
+
+    // Far pixel-art panorama (integer-pixel snapped 0.06x parallax — ZERO shimmer!)
+    float farOffX = floor(u_camera.x * 0.06);
+    float farOffY = clamp(floor(u_camera.y * 0.015), -10.0, 10.0);
+    float uFar = fract((px.x + farOffX + 0.5) / 480.0);
+    float vFar = clamp((sy * 270.0 + farOffY) / 270.0, 0.002, 0.998);
+    vec3 col = texture(u_scrollerFarTex, vec2(uFar, vFar)).rgb;
+
+    // Black Bridge: living pale-gold moon halo pulse, subtle storm lightning & calm water shimmer!
+    float bridgeBolt = 0.0;
+    if (u_biomeStyle == 4) {
+      // Soft pulsing warm pink-gold atmospheric halo around the iconic full moon (ref_07)
+      vec2 moonUv = vec2(fract(0.50 - farOffX / 480.0), 0.25);
+      vec2 mDiff = (vec2(uv.x, sy) - moonUv) * vec2(u_resolution.x / u_resolution.y, 1.0);
+      float mDist = length(mDiff);
+      float moonPulse = 0.88 + 0.12 * sin(u_time * 1.4);
+      col += mix(vec3(1.0, 0.88, 0.56), vec3(0.95, 0.52, 0.66), clamp(mDist * 2.2, 0.0, 1.0))
+        * exp(-mDist * 3.8) * 0.14 * moonPulse;
+
+      // Subtle periodic sheet-lightning flash illuminating distant clouds
+      float lCycle = fract(u_time * 0.15 + 0.37);
+      float dA = (lCycle - 0.84) * 48.0;
+      float dB = (lCycle - 0.875) * 58.0;
+      bridgeBolt = clamp(exp(-(dA * dA)) + 0.65 * exp(-(dB * dB)), 0.0, 1.0);
+      vec3 boltCol = vec3(0.68, 0.84, 1.0);
+      col += boltCol * (bridgeBolt * (1.0 - sy * 0.72) * 0.22);
+
+      // Live shimmering water reflection ripples along bottom water mirror band (y=196..270)
+      if (sy > 0.725) {
+        float wT = (sy - 0.725) / 0.275;
+        float ripple = sin(sy * 135.0 - u_time * 2.1 + sin(uv.x * 24.0 + u_time * 0.8) * 1.4);
+        float glint = smoothstep(0.62, 0.96, ripple) * (1.0 - wT * 0.55);
+        float underMoon = exp(-abs(uv.x - moonUv.x) * 4.2);
+        vec3 reflCol = mix(vec3(0.76, 0.62, 0.78), vec3(1.0, 0.86, 0.62), underMoon);
+        col += reflCol * glint * (0.07 + underMoon * 0.14);
+      }
+    }
+
+    // Throne Room: live sparkling cosmic Milky Way star twinkle across the violet nebula (ref_20)!
+    if (u_themeId == 8 && sy < 0.70) {
+      float starCell = hash21(floor(vec2(px.x + farOffX, px.y)));
+      if (starCell > 0.9942) {
+        float twinkle = 0.40 + 0.60 * sin(u_time * (2.4 + fract(starCell * 71.0) * 3.2) + starCell * 95.0);
+        float bandDiag = exp(-pow((uv.x * 0.85 - sy * 0.95 - 0.10) * 3.2, 2.0));
+        vec3 starCol = mix(vec3(0.86, 0.72, 1.0), vec3(1.0, 0.96, 1.0), fract(starCell * 37.0));
+        col += starCol * twinkle * (0.28 + bandDiag * 0.48) * (1.0 - sy / 0.70);
+      }
+    }
+
+    // Crisp pixel-snapped rotating silhouette gears behind Clock Tower / Clock Room mid-layer
+    if (u_biomeStyle == 6) {
+      float xG = px.x + floor(u_camera.x * 0.09);
+      vec2 gp = vec2(mod(xG * 1.1, 200.0), sy * 270.0);
+      float gA = gearMask(gp, vec2(58.0, 128.0), 56.0, 16.0, 0.22);
+      float gB = gearMask(gp, vec2(154.0, 174.0), 42.0, 12.0, -0.32);
+      float gMask = clamp(gA + gB, 0.0, 1.0);
+      if (gMask > 0.5) {
+        vec3 gTint = mix(u_celShadow * 0.22, u_accentColor * 0.38, 0.32);
+        col = mix(col, gTint, 0.38);
+      }
+    }
+
+    // Subtle crisp pixel water glint on Ramparts & Stilt Village
+    if ((u_biomeStyle == 3 || u_biomeStyle == 5) && sy > 0.70) {
+      float wT = (sy - 0.70) / 0.30;
+      float wave = sin(uv.x * 78.0 + floor(u_camera.x * 0.04) + sin(sy * 110.0 + u_time * 2.2) * 2.2);
+      float shimmer = step(0.80, wave) * (1.0 - wT * 0.55) * 0.22;
+      col += mix(u_accentColor, vec3(1.0, 0.92, 0.72), 0.45) * shimmer;
+    }
+
+    // Mid pixel-art architectural silhouette layer (smooth alpha blend preserves soft mist & crisp edges!)
+    if (u_hasMidTex > 0.5) {
+      float midOffX = floor(u_camera.x * 0.16);
+      float midOffY = clamp(floor(u_camera.y * 0.03), -12.0, 12.0);
+      float uMid = fract((px.x + midOffX + 0.5) / 480.0);
+      float vMid = clamp((sy * 270.0 + midOffY) / 270.0, 0.002, 0.998);
+      vec4 midSample = texture(u_scrollerMidTex, vec2(uMid, vMid));
+      vec3 midRgb = midSample.rgb;
+      if (bridgeBolt > 0.02) {
+        midRgb = mix(midRgb, vec3(0.05, 0.07, 0.15), bridgeBolt * 0.36);
+      }
+      col = mix(col, midRgb, midSample.a);
+    }
+
+    // Subtle stepped low-altitude atmospheric mist band (ultra-clean on Bridge so moonlit water reflection shines!)
+    float mistStrength = (u_biomeStyle == 4) ? 0.05 : (u_themeId == 8 ? 0.12 : 0.24);
+    vec2 mUv = vec2(uv.x * 4.2 + floor(u_camera.x * 0.22) / 480.0 + u_time * 0.022, sy * 3.0);
+    float rawMist = smoothstep(0.40, 0.80, fbm2(mUv)) * smoothstep(0.60, 1.0, sy);
+    float driftMist = floor(rawMist * 4.0) / 4.0;
+    col = mix(col, mix(u_fogColor * 1.10, u_accentColor * 0.32, 0.16), driftMist * mistStrength);
+
+    o_color = vec4(col, 1.0);
+    return;
+  }
+
   // Snap to crisp logical 480x270 pixel grid (Y-down screen uv: sy=0 top, sy=1 bottom)
   vec2 px = floor(v_uv * u_resolution);
   vec2 uv = (px + 0.5) / u_resolution;
@@ -261,13 +366,24 @@ void main() {
 
   // Owned Custom Pack Multi-Layer Dead Cells Parallax Scrollers (up to 4 depth layers!)
   if (u_hasFarTex > 0.5) {
-    // Subtle sky moon glow behind transparent outdoor scroller sky edges (skip indoor Prison/Sewer)
-    if (u_biomeStyle != 0 && u_biomeStyle != 2) {
+    // Dramatic full moon + halo behind Black Bridge sky, or subtle moon glow in other outdoor biomes
+    if (u_biomeStyle == 4) {
+      vec2 moonPos = vec2(0.50 - fract(u_camera.x * 0.000018) * 0.04, 0.24);
+      float moonPulse = 0.90 + 0.10 * sin(u_time * 1.4);
+      drawMoon(uv, sy, moonPos, 0.135, 1.25 * moonPulse, vec3(1.0, 0.94, 0.70), col);
+      // Warm rosy-lavender halo around moon (ref_07)
+      vec2 mDelta = (vec2(uv.x, sy) - moonPos) * vec2(u_resolution.x / u_resolution.y, 1.0);
+      col += vec3(0.88, 0.46, 0.62) * exp(-length(mDelta) * 2.6) * 0.22 * moonPulse;
+    } else if (u_biomeStyle != 0 && u_biomeStyle != 2) {
       vec2 moonPos = vec2(0.76 - fract(u_camera.x * 0.000025) * 0.08, 0.20);
       vec2 mDelta = (vec2(uv.x, sy) - moonPos) * vec2(u_resolution.x / u_resolution.y, 1.0);
       float mDist = length(mDelta);
       vec3 moonTint = mix(u_accentColor, vec3(1.0, 0.96, 0.88), 0.65);
       col += moonTint * (exp(-mDist * 3.4) * 0.36);
+    }
+
+    if (u_themeId == 8) {
+      drawStars(px, sy, 0.58, 0.55, vec3(0.86, 0.68, 1.0), col);
     }
 
     vec3 atmosTint = mix(
@@ -302,6 +418,14 @@ void main() {
         vec3 fogTint = mix(ovTex.rgb, u_fogColor * 1.25, 0.38);
         col = mix(col, fogTint, clamp(ovTex.a * 0.44, 0.0, 0.56));
       }
+    }
+
+    // Subtle live water reflection shimmer on Black Bridge custom pack
+    if (u_biomeStyle == 4 && sy > 0.74) {
+      float wT = (sy - 0.74) / 0.26;
+      float ripple = sin(sy * 130.0 - u_time * 2.0 + sin(uv.x * 26.0 + u_time * 0.7) * 1.4);
+      float glint = smoothstep(0.64, 0.96, ripple) * (1.0 - wT * 0.55);
+      col += vec3(0.92, 0.76, 0.74) * glint * 0.12;
     }
 
     // Subtle atmospheric horizon depth mist so foreground gameplay silhouettes pop cleanly
@@ -1002,8 +1126,10 @@ void main() {
   }
 
   vec3 baseCol = albedoSample.rgb * v_color.rgb;
-  // White-gold hit flash mix for tactile impact pop
-  baseCol = mix(baseCol, vec3(1.0, 0.97, 0.90), clamp(v_flashMix, 0.0, 1.0));
+  // Vivid Dead Cells hot white-rose damage hit-flash (ref_05_tooltip_card.jpg!)
+  float fm = clamp(v_flashMix, 0.0, 1.0);
+  vec3 flashTint = mix(vec3(1.0, 0.58, 0.68), vec3(1.0, 0.94, 0.96), smoothstep(0.35, 0.95, fm));
+  baseCol = mix(baseCol, flashTint, fm);
 
   // Reconstruct tangent-space normal and invert X whenever sprite is horizontally flipped!
   vec3 n = texture(u_normalTex, v_uv).rgb * 2.0 - 1.0;
@@ -1013,13 +1139,16 @@ void main() {
   float strength = abs(v_normalStrength);
   n = normalize(vec3(n.xy * strength, max(0.08, n.z)));
 
-  // Surface flag in o_normal.a: 0.45 = recessed background masonry, 1.0 = foreground solid/character
-  float surfaceFlag = v_normalStrength < 0.0 ? 0.45 : 1.0;
+  // Surface class in o_normal.a:
+  //   0.45 = recessed background masonry (v_normalStrength < 0.0)
+  //   0.78 = deep buried interior solid void (0.0 <= v_normalStrength < 0.25)
+  //   1.00 = foreground exposed crust, props, enemies & hero (v_normalStrength >= 0.25)
+  float surfaceFlag = v_normalStrength < 0.0 ? 0.45 : (v_normalStrength < 0.25 ? 0.78 : 1.0);
 
   vec4 emSample = texture(u_emissiveTex, v_uv);
   vec3 em = emSample.rgb * emSample.a;
   em += baseCol * max(0.0, v_emissiveBoost);
-  em += vec3(0.95, 0.88, 0.72) * (v_flashMix * 0.7);
+  em += vec3(1.0, 0.52, 0.62) * (fm * 0.82);
 
   o_albedo = vec4(baseCol, 1.0);
   o_normal = vec4(n * 0.5 + 0.5, surfaceFlag);
@@ -1043,6 +1172,7 @@ uniform sampler2D u_normalTex;
 uniform sampler2D u_emissiveTex;
 
 uniform vec2 u_resolution;
+uniform vec2 u_fboSize;
 uniform vec3 u_ambientColor;
 uniform vec3 u_celShadowColor;
 uniform vec3 u_fogColor;
@@ -1060,8 +1190,9 @@ void main() {
   vec4 gNormal = texture(u_normalTex, v_uv);
   vec4 gEmissive = texture(u_emissiveTex, v_uv);
 
-  // Convert gl_FragCoord (Y-up) into logical World Screen Pixel space (Y-down: 0..480, 0..270)
-  vec2 pixPos = vec2(gl_FragCoord.x, u_resolution.y - gl_FragCoord.y);
+  // Convert gl_FragCoord (at 960x540 HD or 480x270) into logical World Screen Pixel space (Y-down: 0..480, 0..270)
+  vec2 fboSz = max(vec2(1.0), u_fboSize);
+  vec2 pixPos = vec2(gl_FragCoord.x / fboSz.x * u_resolution.x, (1.0 - gl_FragCoord.y / fboSz.y) * u_resolution.y);
 
   // Open Sky / Backdrop pixel: render backdrop + soft volumetric atmospheric light scatter
   if (gAlbedo.a < 0.05) {
@@ -1074,29 +1205,53 @@ void main() {
       float dist = length(lp.xy - pixPos);
       if (dist < lp.z) {
         float t = 1.0 - dist / lp.z;
-        airScatter += lc.rgb * (lc.a * t * t * t * 0.20);
+        airScatter += lc.rgb * (lc.a * t * t * t * t * 0.14);
       }
     }
     vec3 skyOut = backdrop.rgb + airScatter;
     float skyLum = dot(airScatter, vec3(0.299, 0.587, 0.114));
     o_lit = vec4(skyOut, 1.0);
-    o_bloom = vec4(airScatter * smoothstep(0.18, 0.55, skyLum), 1.0);
+    o_bloom = vec4(airScatter * smoothstep(0.16, 0.52, skyLum), 1.0);
     return;
   }
 
   vec3 N = normalize(gNormal.rgb * 2.0 - 1.0);
-  bool isBgWall = gNormal.a < 0.72;
+  bool isBgWall = gNormal.a < 0.60;
+  bool isSolidVoid = gNormal.a >= 0.60 && gNormal.a < 0.90;
+
+  // ===========================================================================
+  // DEAD CELLS 1-PIXEL CONTACT AO + CRISP SILHOUETTE RIM DETECTION (480x270)
+  // ===========================================================================
+  vec2 texel = 1.0 / fboSz;
+  float sUp    = texture(u_normalTex, v_uv + vec2(0.0,  texel.y)).a;
+  float sDown  = texture(u_normalTex, v_uv + vec2(0.0, -texel.y)).a;
+  float sLeft  = texture(u_normalTex, v_uv + vec2(-texel.x, 0.0)).a;
+  float sRight = texture(u_normalTex, v_uv + vec2( texel.x, 0.0)).a;
+
+  // Contact AO: foreground walls/floors/platforms cast crisp dark shadows onto adjacent recessed bgWall!
+  float contactAo = 1.0;
+  float silhouetteRim = 0.0;
+  if (isBgWall) {
+    float fgNear = step(0.60, sUp) * 0.42 + step(0.60, sDown) * 0.20 + step(0.60, sLeft) * 0.26 + step(0.60, sRight) * 0.26;
+    float fgFarUp = step(0.60, texture(u_normalTex, v_uv + vec2(0.0, texel.y * 2.5)).a) * 0.24;
+    contactAo = 1.0 - clamp(fgNear + fgFarUp, 0.0, 0.54);
+  } else if (!isSolidVoid) {
+    // Exposed foreground crust / character / prop: crisp 1-pixel rim highlight on exposed edges!
+    float openUp = 1.0 - step(0.60, sUp);
+    float openLeft = 1.0 - step(0.60, sLeft);
+    float openRight = 1.0 - step(0.60, sRight);
+    silhouetteRim = clamp(openUp * 0.72 + openLeft * 0.34 + openRight * 0.16, 0.0, 1.0);
+  }
 
   // Directional moon/sky rim light (overhead upper-left in Y-down space => y < 0)
   vec3 skyDir = normalize(vec3(-0.34, -0.78, 0.52));
   float skyNdl = max(dot(N, skyDir), 0.0);
-  float skyCel = 0.25 + 0.35 * smoothstep(0.14, 0.32, skyNdl) + 0.40 * smoothstep(0.52, 0.70, skyNdl);
+  float skyCel = 0.28 + 0.34 * smoothstep(0.14, 0.32, skyNdl) + 0.38 * smoothstep(0.52, 0.70, skyNdl);
 
-  // Deep velvety Dead Cells celShadow in crevices vs cool ambient moon/sky on upward bevels
-  vec3 baseLight = mix(u_celShadowColor * 0.36, u_ambientColor * 0.48, skyCel);
-  // Crisp silhouette edge rim highlight
-  float topRim = pow(max(0.0, -N.y), 2.0) * 0.20;
-  baseLight += u_rimColor * topRim;
+  // Deep velvety Dead Cells chiaroscuro shadow floor + crisp 1px rim pop!
+  vec3 baseLight = mix(u_celShadowColor * 0.34 + vec3(0.022, 0.024, 0.040), u_ambientColor * 0.54, skyCel);
+  float topRim = pow(max(0.0, -N.y), 2.0) * 0.22;
+  baseLight += u_rimColor * (topRim + silhouetteRim * 0.20);
 
   // Dynamic Point Lights (up to 64 active lights with 3-band cel-stepped normal shading)
   vec3 pointAccum = vec3(0.0);
@@ -1117,41 +1272,53 @@ void main() {
     vec3 L = normalize(vec3(dxy, lp.w));
     float ndl = max(dot(N, L), 0.0);
 
-    // 3-band stylized Dead Cells cel ramp with bevel grazing rim + metallic specular glint!
+    // 3-band stylized Hades x Dead Cells cel ramp with bevel grazing rim + metallic specular glint!
     float cel = 0.16
-      + 0.40 * smoothstep(0.10, 0.24, ndl)
-      + 0.44 * smoothstep(0.46, 0.62, ndl);
-    float grazing = pow(clamp(1.0 - max(N.z, 0.0), 0.0, 1.0), 1.8) * smoothstep(0.14, 0.48, ndl) * 0.30;
+      + 0.38 * smoothstep(0.10, 0.24, ndl)
+      + 0.46 * smoothstep(0.44, 0.62, ndl);
+    float grazing = pow(clamp(1.0 - max(N.z, 0.0), 0.0, 1.0), 1.7) * smoothstep(0.12, 0.48, ndl) * 0.36;
     float specRim = 0.0;
-    if (!isBgWall) {
-      specRim = pow(max(dot(N, normalize(L + vec3(0.0, 0.0, 1.0))), 0.0), 14.0) * smoothstep(0.45, 0.78, ndl) * 0.28;
+    if (!isBgWall && !isSolidVoid) {
+      specRim = pow(max(dot(N, normalize(L + vec3(0.0, 0.0, 1.0))), 0.0), 14.0) * smoothstep(0.40, 0.76, ndl) * 0.34;
+      specRim += silhouetteRim * smoothstep(0.05, 0.45, ndl) * 0.26;
     }
 
     pointAccum += lc.rgb * (lc.a * atten * (cel + grazing + specRim));
   }
 
-  // Relaxed soft-knee shoulder compression so warm braziers carve deep cool shadows dramatically!
-  pointAccum = pointAccum / (1.0 + pointAccum * 0.34);
+  // Smooth shoulder compression so overlapping torches/braziers carve chiaroscuro WITHOUT bleaching sprites chalky white!
+  pointAccum = pointAccum / (1.0 + pointAccum * 0.48);
 
-  vec3 totalLight = baseLight + pointAccum;
-  if (isBgWall) {
-    // Recessed background masonry sits deeper in cool shadow so foreground pops cleanly!
-    totalLight *= 0.48;
+  vec3 lit;
+  if (isSolidVoid) {
+    // Deep velvety Dead Cells interior solid void (0.15x ambient, zero flat brick noise!)
+    vec3 voidLight = u_ambientColor * 0.15 + u_celShadowColor * 0.14 + pointAccum * 0.14;
+    vec3 voidBase = mix(u_fogColor * 0.16 + u_celShadowColor * 0.10, gAlbedo.rgb * voidLight, 0.72);
+    lit = clamp(voidBase, vec3(0.014, 0.012, 0.024), vec3(0.16, 0.15, 0.20));
+  } else {
+    vec3 totalLight = (baseLight + pointAccum * 1.04) * contactAo;
+    if (isBgWall) {
+      // Vaulted ceiling gothic gloom + deeper recessed background value so foreground silhouettes LEAP out!
+      float ceilGloom = 1.0 - smoothstep(0.36, 0.0, pixPos.y / max(1.0, u_resolution.y)) * 0.32;
+      totalLight *= 0.48 * ceilGloom;
+    } else {
+      // Soft highlight shoulder preserves rich dark-fantasy armor/cloth saturation under bright multi-light overlap!
+      totalLight = min(totalLight, vec3(0.92)) + max(totalLight - vec3(0.92), vec3(0.0)) * 0.36;
+    }
+    lit = gAlbedo.rgb * totalLight;
+    if (isBgWall) {
+      lit = mix(lit, u_fogColor * 0.52, 0.20);
+    }
   }
 
-  vec3 lit = gAlbedo.rgb * totalLight;
-  if (isBgWall) {
-    lit = mix(lit, u_fogColor * 0.62, 0.28);
-  }
-
-  // Unshaded self-illuminated emissive pixels (homunculus head, braziers, runes, glowing eyes, acid)
-  vec3 emBoost = gEmissive.rgb * 1.28;
+  // Unshaded self-illuminated emissive pixels (homunculus head, braziers, runes, stained glass, acid)
+  vec3 emBoost = gEmissive.rgb * 1.24;
   vec3 finalCol = lit + emBoost;
 
-  // Bright-pass bloom contribution: surgical emissive glow + crisp high-intensity bevel catch
+  // Bright-pass bloom contribution: surgical emissive glow + crisp high-intensity specular bevels
   float litLum = dot(lit, vec3(0.299, 0.587, 0.114));
-  vec3 specBloom = lit * smoothstep(0.92, 1.45, litLum) * 0.30;
-  vec3 bloomCol = gEmissive.rgb * 1.05 + specBloom;
+  vec3 specBloom = lit * smoothstep(0.90, 1.42, litLum) * 0.32;
+  vec3 bloomCol = gEmissive.rgb * 1.02 + specBloom;
 
   o_lit = vec4(finalCol, 1.0);
   o_bloom = vec4(clamp(bloomCol, 0.0, 1.35), 1.0);
@@ -1238,6 +1405,7 @@ uniform float u_time;
 uniform vec3 u_fogColor;
 uniform vec3 u_accentColor;
 uniform float u_fogDensity;
+uniform int u_biomeStyle;
 uniform float u_hasEmissiveTex;
 uniform sampler2D u_emissiveTex;
 uniform vec4 u_heroLightZone; // optional: xy = screen UV (Y-down), z = radius UV, w = attenuation strength
@@ -1263,18 +1431,24 @@ float vnoise(vec2 p) {
 }
 
 void main() {
+  // Snap drifting ground mist strictly to 480x270 Dead Cells pixel grid!
   vec2 px = floor(v_uv * u_resolution);
   vec2 uv = (px + 0.5) / u_resolution;
   float sy = 1.0 - uv.y;
 
-  // Dual drifting noise layers scrolling smoothly with camera + wind
-  vec2 p1 = vec2(uv.x * 4.2 + u_camera.x * 0.0022 + u_time * 0.07, sy * 2.6 + u_camera.y * 0.0012);
-  vec2 p2 = vec2(uv.x * 8.5 + u_camera.x * 0.0034 - u_time * 0.045, sy * 5.2 + u_time * 0.02);
+  bool isSewer = (u_biomeStyle == 2);
+
+  // Dual drifting noise layers scrolling cleanly with camera + wind (rising toxic plumes in Sewer!)
+  float riseY1 = isSewer ? u_time * 0.16 : 0.0;
+  float riseY2 = isSewer ? u_time * 0.24 : 0.02 * u_time;
+  vec2 p1 = vec2(uv.x * 4.2 + u_camera.x * 0.0022 + u_time * 0.07, sy * 2.6 + u_camera.y * 0.0012 + riseY1);
+  vec2 p2 = vec2(uv.x * 8.5 + u_camera.x * 0.0034 - u_time * 0.045, sy * 5.2 + riseY2);
   float smoke = vnoise(p1) * 0.62 + vnoise(p2) * 0.38;
 
   // Concentrate mist in dark lower floor crevices while preserving mid-screen hero/boss clarity
-  float creviceBand = smoothstep(0.62, 1.0, sy);
-  float wisp = smoothstep(0.44, 0.86, smoke);
+  float creviceBand = isSewer ? smoothstep(0.46, 1.0, sy) : smoothstep(0.62, 1.0, sy);
+  float rawWisp = smoothstep(isSewer ? 0.34 : 0.44, 0.86, smoke);
+  float wisp = mix(rawWisp, floor(rawWisp * 6.0) / 6.0, 0.30);
   vec2 combatCenter = (vec2(uv.x, sy) - vec2(0.5, 0.56)) * vec2(2.1, 2.7);
   float centerClarity = 1.0 - 0.36 * exp(-dot(combatCenter, combatCenter));
 
@@ -1291,11 +1465,16 @@ void main() {
     brightAtten *= 1.0 - clamp(prox * u_heroLightZone.w * 0.55, 0.0, 0.65);
   }
 
-  float alpha = (creviceBand * 0.34 + wisp * 0.09) * wisp * u_fogDensity * centerClarity * brightAtten;
+  float baseA = isSewer ? (creviceBand * 0.48 + wisp * 0.11) : (creviceBand * 0.34 + wisp * 0.09);
+  float alpha = baseA * wisp * u_fogDensity * centerClarity * brightAtten;
 
-  vec3 fogTint = mix(u_fogColor * 1.15, u_accentColor * 0.55, wisp * 0.22);
-  o_lit = vec4(fogTint, clamp(alpha, 0.0, 0.38));
-  o_bloom = vec4(0.0, 0.0, 0.0, 0.0);
+  vec3 fogTint = isSewer
+    ? mix(vec3(0.16, 0.42, 0.08), vec3(0.58, 1.0, 0.22), wisp * 0.72)
+    : mix(u_fogColor * 1.15, u_accentColor * 0.55, wisp * 0.22);
+  float maxAlpha = isSewer ? 0.48 : 0.38;
+  float outA = clamp(alpha, 0.0, maxAlpha);
+  o_lit = vec4(fogTint, outA);
+  o_bloom = isSewer ? vec4(fogTint * outA * 0.42, outA * 0.35) : vec4(0.0, 0.0, 0.0, 0.0);
 }
 `;
 
@@ -1369,16 +1548,19 @@ void main() {
 
   // Sample silky half-res blurred bloom additively
   vec3 bloom = texture(u_bloomTex, sampleUv).rgb;
-  vec3 hdr = scene + bloom * (u_bloomStrength * 0.72);
+  vec3 hdr = scene + bloom * (u_bloomStrength * 0.66);
 
-  // ACES Filmic tone-mapping curve: velvety dark gothic shadows + saturated glowing highlights!
+  // ACES Filmic tone-mapping curve + subtle Hades split-tone richness (velvety shadows + jewel highlights!)
   vec3 col = (hdr * (2.51 * hdr + 0.03)) / (hdr * (2.43 * hdr + 0.59) + 0.14);
+  float lum = dot(col, vec3(0.299, 0.587, 0.114));
+  // Subtle vibrancy boost so dark-fantasy reds/golds/cyans pop without neon clipping
+  col = mix(vec3(lum), col, 1.12);
   col = mix(col, col * u_gradeTint, 0.14);
 
-  // Crisp subtle corner vignette for theatrical Dead Cells framing
+  // Crisp subtle corner vignette for theatrical Hades x Dead Cells framing
   vec2 centered = v_uv * 2.0 - 1.0;
-  float r2 = dot(centered * vec2(0.88, 1.0), centered * vec2(0.88, 1.0));
-  float vig = 1.0 - smoothstep(0.58, 1.55, r2) * 0.34;
+  float r2 = dot(centered * vec2(0.86, 1.0), centered * vec2(0.86, 1.0));
+  float vig = 1.0 - smoothstep(0.60, 1.62, r2) * 0.32;
   col *= vig;
 
   // Pulsing organic creeping crimson Curse border vignette

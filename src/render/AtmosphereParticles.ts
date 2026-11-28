@@ -194,6 +194,7 @@ export class AtmosphereParticles {
   private readonly wvy = new Float32Array(MAX_WEATHER);
   private readonly wSize = new Float32Array(MAX_WEATHER);
   private readonly wPhase = new Float32Array(MAX_WEATHER);
+  private readonly wVisible = new Uint8Array(MAX_WEATHER);
 
   // Burst VFX particles (world space, supporting tile-bouncing splinters/gibs & soul wisps)
   private readonly bx = new Float32Array(MAX_BURST);
@@ -241,6 +242,7 @@ export class AtmosphereParticles {
   private readonly rr = new Float32Array(MAX_RINGS);
   private readonly rg = new Float32Array(MAX_RINGS);
   private readonly rb = new Float32Array(MAX_RINGS);
+  private readonly rAlpha = new Float32Array(MAX_RINGS);
   private readonly rKind = new Uint8Array(MAX_RINGS);
   private ringCursor = 0;
 
@@ -438,8 +440,26 @@ export class AtmosphereParticles {
     r: number,
     g: number,
     b: number,
-    kind: number
+    kind: number,
+    alpha = 0.72
   ): void {
+    // Coalesce rapid stacked rings of the same kind at the same position (prevents giant white donut!)
+    for (let j = 0; j < MAX_RINGS; j++) {
+      if (this.rLife[j] <= 0 || this.rKind[j] !== kind) continue;
+      const age = this.rMaxLife[j] - this.rLife[j];
+      if (age < 0.08 && Math.abs(this.rx[j] - x) < 18 && Math.abs(this.ry[j] - y) < 18) {
+        this.rx[j] = x;
+        this.ry[j] = y;
+        this.rLife[j] = Math.max(this.rLife[j], life);
+        this.rMaxLife[j] = Math.max(this.rMaxLife[j], life);
+        this.rEndRad[j] = Math.max(this.rEndRad[j], endRad);
+        this.rr[j] = r;
+        this.rg[j] = g;
+        this.rb[j] = b;
+        this.rAlpha[j] = Math.max(this.rAlpha[j], alpha);
+        return;
+      }
+    }
     const i = this.ringCursor;
     this.ringCursor = (i + 1) % MAX_RINGS;
     this.rx[i] = x;
@@ -451,6 +471,7 @@ export class AtmosphereParticles {
     this.rr[i] = r;
     this.rg[i] = g;
     this.rb[i] = b;
+    this.rAlpha[i] = alpha;
     this.rKind[i] = kind;
   }
 
@@ -601,22 +622,24 @@ export class AtmosphereParticles {
           this.sFacing[i] = ev.facing;
           const dur =
             style === SLASH_STYLE_HEAVY
-              ? 0.19
+              ? 0.21
               : style === SLASH_STYLE_WHIP
-              ? 0.16
+              ? 0.17
               : style === SLASH_STYLE_RANGED
-              ? 0.10
-              : 0.14;
+              ? 0.11
+              : 0.16;
           this.sLife[i] = dur;
           this.sMaxLife[i] = dur;
           this.sScale[i] =
             style === SLASH_STYLE_HEAVY
-              ? 1.18
+              ? 1.50
               : style === SLASH_STYLE_THRUST
-              ? 1.08
+              ? 1.38
               : style === SLASH_STYLE_WHIP
-              ? 1.12
-              : 1.02;
+              ? 1.44
+              : style === SLASH_STYLE_TWIN
+              ? 1.32
+              : 1.35;
           this.sStep[i] = ev.stepIndex % 3;
           this.sStyle[i] = style;
           this.sCrit[i] = 0;
@@ -639,30 +662,31 @@ export class AtmosphereParticles {
             this.sb[i] = rgbScratch[2];
           }
 
+          // Explosive transient slash light illuminating nearby dungeon stone bricks (ref_12!)
           this.spawnLight(
-            ev.x + ev.facing * 18,
-            ev.y - 6,
-            style === SLASH_STYLE_HEAVY ? 108 : 88,
-            dur,
-            this.sr[i],
-            this.sg[i],
-            this.sb[i],
-            style === SLASH_STYLE_HEAVY ? 1.65 : 1.4
+            ev.x + ev.facing * 20,
+            ev.y - 8,
+            style === SLASH_STYLE_HEAVY ? 148 : 124,
+            dur + 0.04,
+            this.sr[i] * 0.65 + 0.35,
+            this.sg[i] * 0.65 + 0.35,
+            this.sb[i] * 0.65 + 0.30,
+            style === SLASH_STYLE_HEAVY ? 2.25 : 1.88
           );
           break;
         }
         case 'hitImpact': {
-          parseHexIntoScratch(ev.color, 1.0, 0.82, 0.45);
-          for (let k = 0; k < 8; k++) {
+          parseHexIntoScratch(ev.color, 1.0, 0.86, 0.48);
+          for (let k = 0; k < 10; k++) {
             const ang = this.nextRand() * Math.PI * 2;
-            const spd = 45 + this.nextRand() * 115;
+            const spd = 55 + this.nextRand() * 135;
             this.spawnBurst(
               ev.x,
               ev.y,
               Math.cos(ang) * spd,
-              Math.sin(ang) * spd - 20,
+              Math.sin(ang) * spd - 22,
               0.22 + this.nextRand() * 0.18,
-              3 + this.nextRand() * 3,
+              3.2 + this.nextRand() * 3.2,
               210,
               rgbScratch[0],
               rgbScratch[1],
@@ -670,60 +694,87 @@ export class AtmosphereParticles {
               BURST_KIND_SPARK
             );
           }
-          // Subtle blood droplet burst + persistent floor spatter on melee/blood hits!
+          // Rich directional Dead Cells crimson blood droplet spray + floor splatter stamping!
           const dir = ev.x >= state.player.pos.x ? 1 : -1;
-          for (let k = 0; k < 4; k++) {
+          for (let k = 0; k < 9; k++) {
+            const darkDrop = (k & 1) === 0;
             this.spawnBurst(
-              ev.x,
-              ev.y,
-              dir * (35 + this.nextRand() * 75) + (this.nextRand() - 0.5) * 35,
-              -35 - this.nextRand() * 55,
-              0.30 + this.nextRand() * 0.22,
-              2.6 + this.nextRand() * 1.6,
-              320,
-              0.84,
+              ev.x + (this.nextRand() - 0.5) * 6,
+              ev.y + (this.nextRand() - 0.5) * 6,
+              dir * (42 + this.nextRand() * 115) + (this.nextRand() - 0.5) * 44,
+              -42 - this.nextRand() * 78,
+              0.32 + this.nextRand() * 0.28,
+              2.6 + this.nextRand() * 2.2,
+              365,
+              darkDrop ? 0.76 : 0.96,
+              darkDrop ? 0.05 : 0.11,
+              darkDrop ? 0.13 : 0.20,
+              BURST_KIND_BLOOD,
+              0,
+              0,
               0.12,
-              0.20,
-              BURST_KIND_BLOOD
+              k < 3 ? 3 : 0
             );
           }
           if (ev.damageType === 'fire') {
-            this.stampFloorDecal(grid, ev.x, ev.y, DECAL_KIND_SCORCH, 0.8);
+            this.stampFloorDecal(grid, ev.x, ev.y, DECAL_KIND_SCORCH, 0.88);
           } else {
-            this.stampFloorDecal(grid, ev.x + dir * 4, ev.y, DECAL_KIND_BLOOD, 0.82);
+            this.stampFloorDecal(grid, ev.x + dir * 6, ev.y, DECAL_KIND_BLOOD, 0.96);
           }
-          this.spawnLight(ev.x, ev.y, 72, 0.12, 1.0, 0.84, 0.55, 1.3);
+          this.spawnLight(ev.x, ev.y, 92, 0.15, 1.0, 0.86, 0.55, 1.65);
           break;
         }
         case 'critImpact': {
-          // Elevate active weapon slash smear to blistering crit gold + 1.24x scale!
+          // Elevate active weapon slash smear to blistering crit white-gold + 1.26x scale!
           if (this.lastSlashIdx >= 0 && this.sLife[this.lastSlashIdx] > 0) {
             this.sCrit[this.lastSlashIdx] = 1;
-            this.sScale[this.lastSlashIdx] = Math.min(1.55, this.sScale[this.lastSlashIdx] * 1.24);
+            this.sScale[this.lastSlashIdx] = Math.min(1.85, this.sScale[this.lastSlashIdx] * 1.26);
             this.sr[this.lastSlashIdx] = 1.0;
-            this.sg[this.lastSlashIdx] = 0.94;
-            this.sb[this.lastSlashIdx] = 0.58;
+            this.sg[this.lastSlashIdx] = 0.95;
+            this.sb[this.lastSlashIdx] = 0.56;
           }
-          for (let k = 0; k < 16; k++) {
+          const dir = ev.x >= state.player.pos.x ? 1 : -1;
+          for (let k = 0; k < 18; k++) {
             const ang = this.nextRand() * Math.PI * 2;
-            const spd = 70 + this.nextRand() * 165;
+            const spd = 75 + this.nextRand() * 175;
             this.spawnBurst(
               ev.x,
               ev.y,
               Math.cos(ang) * spd,
-              Math.sin(ang) * spd - 25,
+              Math.sin(ang) * spd - 28,
               0.28 + this.nextRand() * 0.24,
-              4 + this.nextRand() * 4,
-              180,
+              4.2 + this.nextRand() * 4.0,
+              185,
               1.0,
-              0.92,
-              0.36,
+              0.94,
+              0.38,
               BURST_KIND_SPARK
             );
           }
-          this.spawnRing(ev.x, ev.y, 0.22, 10, 48, 1.0, 0.90, 0.34, RING_KIND_PARRY);
-          this.stampFloorDecal(grid, ev.x, ev.y, DECAL_KIND_BLOOD, 1.15);
-          this.spawnLight(ev.x, ev.y, 134, 0.22, 1.0, 0.88, 0.36, 2.3);
+          // Explosive directional crimson blood spray on Critical hits!
+          for (let k = 0; k < 14; k++) {
+            const darkDrop = (k & 1) === 0;
+            this.spawnBurst(
+              ev.x + (this.nextRand() - 0.5) * 8,
+              ev.y + (this.nextRand() - 0.5) * 8,
+              dir * (58 + this.nextRand() * 145) + (this.nextRand() - 0.5) * 65,
+              -52 - this.nextRand() * 98,
+              0.36 + this.nextRand() * 0.30,
+              3.0 + this.nextRand() * 2.4,
+              375,
+              darkDrop ? 0.78 : 0.98,
+              darkDrop ? 0.05 : 0.12,
+              darkDrop ? 0.14 : 0.22,
+              BURST_KIND_BLOOD,
+              0,
+              0,
+              0.15,
+              k < 5 ? 3 : 0
+            );
+          }
+          this.spawnRing(ev.x, ev.y, 0.22, 8, 42, 1.0, 0.92, 0.38, RING_KIND_PARRY, 0.68);
+          this.stampFloorDecal(grid, ev.x + dir * 8, ev.y, DECAL_KIND_BLOOD, 1.28);
+          this.spawnLight(ev.x, ev.y, 154, 0.24, 1.0, 0.90, 0.38, 2.5);
           break;
         }
         case 'bleedBurst': {
@@ -1271,23 +1322,28 @@ export class AtmosphereParticles {
               3 // bit 0: tile collide + bit 1: paint blood decal on first floor strike!
             );
           }
-          // 2. Crimson blood spray droplets
-          const bloodCount = ev.isBoss ? 22 : ev.isElite ? 14 : 10;
+          // 2. Visceral directional crimson blood spray droplets (arcing & staining floors!)
+          const bloodCount = ev.isBoss ? 30 : ev.isElite ? 22 : 16;
           for (let k = 0; k < bloodCount; k++) {
             const ang = this.nextRand() * Math.PI * 2;
-            const spd = 40 + this.nextRand() * (ev.isBoss ? 180 : 105);
+            const spd = 48 + this.nextRand() * (ev.isBoss ? 195 : 130);
+            const darkDrop = (k & 1) === 0;
             this.spawnBurst(
-              ev.x,
-              ev.y - 12,
-              Math.cos(ang) * spd + dir * 35,
-              Math.sin(ang) * spd - 35,
-              0.36 + this.nextRand() * 0.30,
-              ev.isBoss ? 5.0 : 3.2,
-              290,
-              ev.isBoss ? 1.0 : 0.86,
-              ev.isBoss ? 0.45 : 0.14,
-              ev.isBoss ? 0.22 : 0.24,
-              BURST_KIND_BLOOD
+              ev.x + (this.nextRand() - 0.5) * 8,
+              ev.y - 12 + (this.nextRand() - 0.5) * 8,
+              Math.cos(ang) * spd + dir * 48,
+              Math.sin(ang) * spd - 48,
+              0.40 + this.nextRand() * 0.34,
+              ev.isBoss ? 4.8 : 2.8 + this.nextRand() * 2.2,
+              345,
+              ev.isBoss ? 0.98 : darkDrop ? 0.74 : 0.96,
+              ev.isBoss ? 0.26 : darkDrop ? 0.04 : 0.10,
+              ev.isBoss ? 0.18 : darkDrop ? 0.12 : 0.19,
+              BURST_KIND_BLOOD,
+              0,
+              0,
+              0.14,
+              k < 6 ? 3 : 0
             );
           }
           // 3. Ascending curving cyan-violet soul wisps (`vfx:soul_wisp`)!
@@ -1345,17 +1401,18 @@ export class AtmosphereParticles {
           const r = ev.stat === 'brutality' ? 1.0 : ev.stat === 'tactics' ? 0.75 : 0.28;
           const g = ev.stat === 'brutality' ? 0.28 : ev.stat === 'tactics' ? 0.36 : 1.0;
           const b = ev.stat === 'brutality' ? 0.32 : ev.stat === 'tactics' ? 1.0 : 0.52;
-          this.spawnRing(ev.x, ev.y - 14, 0.42, 8, 68, r, g, b, RING_KIND_SHIELD);
-          this.spawnLight(ev.x, ev.y - 14, 130, 0.4, r, g, b, 2.0);
+          // Compact, delicate thin luminous pulse (NEVER a giant opaque donut!)
+          this.spawnRing(ev.x, ev.y - 14, 0.28, 6, 34, r, g, b, RING_KIND_SHOCKWAVE, 0.48);
+          this.spawnLight(ev.x, ev.y - 14, 118, 0.36, r, g, b, 1.8);
           break;
         }
         case 'curseTriggered': {
-          this.spawnRing(ev.x, ev.y - 14, 0.45, 10, 78, 0.88, 0.12, 0.32, RING_KIND_AURA);
+          this.spawnRing(ev.x, ev.y - 14, 0.38, 8, 52, 0.88, 0.12, 0.32, RING_KIND_AURA, 0.62);
           this.spawnLight(ev.x, ev.y - 14, 145, 0.45, 0.92, 0.14, 0.38, 2.2);
           break;
         }
         case 'curseCleared': {
-          this.spawnRing(ev.x, ev.y - 28, 0.42, 8, 72, 0.32, 1.0, 0.68, RING_KIND_PARRY_BURST);
+          this.spawnRing(ev.x, ev.y - 28, 0.36, 8, 54, 0.32, 1.0, 0.68, RING_KIND_PARRY_BURST, 0.66);
           for (let k = 0; k < 16; k++) {
             const ang = (k / 16) * Math.PI * 2;
             const spd = 55 + this.nextRand() * 85;
@@ -1443,12 +1500,12 @@ export class AtmosphereParticles {
           break;
         }
         case 'teleport': {
-          this.spawnRing(ev.toX, ev.toY - 14, 0.38, 6, 54, 0.32, 0.95, 1.0, RING_KIND_SHIELD);
-          this.spawnLight(ev.toX, ev.toY - 14, 130, 0.36, 0.32, 0.95, 1.0, 2.0);
+          this.spawnRing(ev.toX, ev.toY - 14, 0.30, 6, 38, 0.32, 0.95, 1.0, RING_KIND_SHOCKWAVE, 0.50);
+          this.spawnLight(ev.toX, ev.toY - 14, 125, 0.34, 0.32, 0.95, 1.0, 1.85);
           break;
         }
         case 'shopReroll': {
-          this.spawnRing(ev.x, ev.y - 16, 0.34, 8, 56, 1.0, 0.84, 0.32, RING_KIND_PARRY);
+          this.spawnRing(ev.x, ev.y - 16, 0.28, 6, 36, 1.0, 0.84, 0.32, RING_KIND_SHOCKWAVE, 0.48);
           this.spawnLight(ev.x, ev.y - 16, 115, 0.34, 1.0, 0.84, 0.36, 1.8);
           break;
         }
@@ -1473,46 +1530,61 @@ export class AtmosphereParticles {
     phaseOff: number,
     elapsedSec: number,
     dt: number,
-    trailFacingBias = 0
+    trailFacingBias = 0,
+    maxRisePerNode = 0.65
   ): void {
     const dt2 = dt * dt;
-    const maxStep = segLen * 2.2;
+    const maxStepX = segLen * 1.55;
+    const maxUpStep = segLen * 0.55;
+    const maxDownStep = segLen * 1.25;
     xs[0] = anchorX;
     ys[0] = anchorY;
     prevXs[0] = anchorX;
     prevYs[0] = anchorY;
 
-    // 1. Verlet integration with velocity damping & per-frame step clamp (prevents chest-snap!)
+    // 1. Verlet integration with strict upward-spike velocity clamp (ZERO vertical red antenna!)
     for (let i = 1; i < count; i++) {
       const cx = xs[i];
       const cy = ys[i];
-      let vx = (cx - prevXs[i]) * 0.86;
-      let vy = (cy - prevYs[i]) * 0.86;
-      if (vx > maxStep) vx = maxStep;
-      else if (vx < -maxStep) vx = -maxStep;
-      if (vy > maxStep) vy = maxStep;
-      else if (vy < -maxStep) vy = -maxStep;
+      let vx = (cx - prevXs[i]) * 0.82;
+      let vy = (cy - prevYs[i]) * 0.78;
+      if (vx > maxStepX) vx = maxStepX;
+      else if (vx < -maxStepX) vx = -maxStepX;
+      if (vy > maxDownStep) vy = maxDownStep;
+      else if (vy < -maxUpStep) vy = -maxUpStep;
       prevXs[i] = cx;
       prevYs[i] = cy;
 
       const wave = Math.sin(elapsedSec * 14.5 - i * 0.72 + phaseOff);
       const ax = windX + wave * turbAmp * 0.35;
-      const ay = gravY + wave * turbAmp;
+      const ay = gravY + wave * turbAmp * 0.72;
       xs[i] = cx + vx + ax * dt2;
       ys[i] = cy + vy + ay * dt2;
     }
 
-    // 2. 3 distance-constraint relaxation iterations + trailing-side guard when moving
+    // 2. 3 distance-constraint relaxation iterations + behind-shoulder & anti-antenna guards
     for (let iter = 0; iter < 3; iter++) {
       xs[0] = anchorX;
       ys[0] = anchorY;
       for (let i = 1; i < count; i++) {
         if (trailFacingBias !== 0) {
-          const frontExcess = (xs[i] - anchorX) * trailFacingBias - 1.0;
+          const frontExcess = (xs[i] - anchorX) * trailFacingBias - 0.8;
           if (frontExcess > 0) {
-            xs[i] -= trailFacingBias * frontExcess * 0.42;
+            xs[i] -= trailFacingBias * frontExcess * 0.52;
             prevXs[i] = xs[i] + trailFacingBias * 0.4;
           }
+          // Softly guide scarf horizontally behind shoulders so vertical climbs/falls billow diagonally!
+          const minBehind = i * segLen * 0.42;
+          const behindDist = (anchorX - xs[i]) * trailFacingBias;
+          if (behindDist < minBehind) {
+            xs[i] -= trailFacingBias * (minBehind - behindDist) * 0.22;
+          }
+        }
+        // Anti-antenna vertical ceiling: scarf can NEVER shoot straight upward above the hero's head!
+        const ceilingY = anchorY - (1.8 + i * maxRisePerNode);
+        if (ys[i] < ceilingY) {
+          ys[i] = ceilingY + (ys[i] - ceilingY) * 0.18;
+          prevYs[i] = ys[i];
         }
         const dx = xs[i] - xs[i - 1];
         const dy = ys[i] - ys[i - 1];
@@ -1608,15 +1680,21 @@ export class AtmosphereParticles {
     this.lastScarfAnchorY = anchorY;
 
     const isMovingHoriz = Math.abs(p.vel.x) > 16;
+    const isClimbingOrVertical = Math.abs(p.vel.y) > 42 && Math.abs(p.vel.x) < 28;
+    const isFallingFast = p.vel.y > 75;
     const rollWhipX = isRoll ? Math.cos(elapsedSec * 24.0) * 140 : 0;
-    const rollWhipY = isRoll ? Math.sin(elapsedSec * 24.0) * 110 : 0;
+    const rollWhipY = isRoll ? Math.sin(elapsedSec * 24.0) * 85 : 0;
+    const clampedVx = Math.max(-240, Math.min(240, p.vel.x));
     const baseWindX =
-      -p.facing * (isMovingHoriz ? 240 : 95) -
-      p.vel.x * 1.25 +
+      -p.facing * (isDive ? 320 : isMovingHoriz ? 270 : isClimbingOrVertical ? 235 : 155) -
+      clampedVx * 1.15 +
       rollWhipX +
-      (p.speedBuffTicks > 0 ? -p.facing * 90 : 0);
-    const baseGravY = isDive ? -290 : 72 + rollWhipY;
-    const trailBias = !isRoll && isMovingHoriz ? p.facing : 0;
+      (p.speedBuffTicks > 0 ? -p.facing * 95 : 0);
+    // Keep gentle positive gravity during climbs/falls so scarf NEVER shoots straight up like an antenna!
+    const baseGravY = isDive ? -18 : isFallingFast ? 22 : isClimbingOrVertical ? 82 : 94 + rollWhipY;
+    const maxRisePerNode = isDive ? 0.92 : isFallingFast ? 0.78 : 0.56;
+    // Always softly bias scarf behind facing direction unless mid-roll so it flows cleanly off shoulders!
+    const trailBias = !isRoll ? p.facing : 0;
 
     this.stepVerletRibbon(
       this.scarfAX,
@@ -1629,11 +1707,12 @@ export class AtmosphereParticles {
       2.6,
       baseWindX,
       baseGravY,
-      68,
+      64,
       0.0,
       elapsedSec,
       dt,
-      trailBias
+      trailBias,
+      maxRisePerNode
     );
     this.stepVerletRibbon(
       this.scarfBX,
@@ -1644,13 +1723,14 @@ export class AtmosphereParticles {
       this.scarfAX[SCARF_FORK_IDX],
       this.scarfAY[SCARF_FORK_IDX] + 1.0,
       2.4,
-      baseWindX * 0.84,
-      baseGravY + 34,
-      82,
+      baseWindX * 0.86,
+      baseGravY + 38,
+      76,
       1.75,
       elapsedSec,
       dt,
-      trailBias
+      trailBias,
+      maxRisePerNode * 0.75
     );
 
     // Speed-buff wind embers trailing off primary scarf tips (nodes 9-10)!
@@ -1722,26 +1802,38 @@ export class AtmosphereParticles {
       }
     }
 
-    // 3. Step Ambient Biome Weather + Rain Puddle Splashes
+    // 3. Step Ambient Biome Weather + Tile-Occlusion Culling + Rain Puddle Splashes
     for (let i = 0; i < MAX_WEATHER; i++) {
       this.wx[i] += this.wvx[i] * dt;
       this.wy[i] += this.wvy[i] * dt;
 
-      if (weather === 'rain' || weather === 'acidDrip') {
-        const worldX = camX + this.wx[i];
-        const worldY = camY + this.wy[i];
-        const tx = Math.floor(worldX / TILE_SIZE);
-        const ty = Math.floor(worldY / TILE_SIZE);
-        if (tx >= 0 && ty >= 0 && tx < grid.width && ty < grid.height) {
-          const tile = grid.tiles[ty * grid.width + tx];
-          if (tile === TileKind.SOLID || tile === TileKind.ONE_WAY) {
+      if (this.wx[i] < -16) this.wx[i] += VIEWPORT_W + 32;
+      else if (this.wx[i] > VIEWPORT_W + 16) this.wx[i] -= VIEWPORT_W + 32;
+      if (this.wy[i] < -16) this.wy[i] += VIEWPORT_H + 32;
+      else if (this.wy[i] > VIEWPORT_H + 16) this.wy[i] -= VIEWPORT_H + 32;
+
+      const worldX = camX + this.wx[i];
+      const worldY = camY + this.wy[i];
+      const tx = Math.floor(worldX / TILE_SIZE);
+      const ty = Math.floor(worldY / TILE_SIZE);
+      let visible = 1;
+
+      if (tx >= 0 && ty >= 0 && tx < grid.width && ty < grid.height) {
+        const idx = ty * grid.width + tx;
+        const tile = grid.tiles[idx];
+        const isSolidTerrain =
+          tile === TileKind.SOLID || tile === TileKind.CRACKED_FLOOR || tile === TileKind.SECRET_WALL;
+
+        if (isSolidTerrain) {
+          visible = 0;
+          if ((weather === 'rain' || weather === 'acidDrip') && ty > 0 && grid.tiles[(ty - 1) * grid.width + tx] === TileKind.EMPTY) {
             this.spawnBurst(
               worldX,
               ty * TILE_SIZE - 1,
-              (this.nextRand() - 0.5) * 36,
-              -22 - this.nextRand() * 25,
-              0.16,
-              2.5,
+              (this.nextRand() - 0.5) * 32,
+              -18 - this.nextRand() * 20,
+              0.15,
+              2.2,
               220,
               weather === 'acidDrip' ? 0.52 : 0.72,
               weather === 'acidDrip' ? 1.0 : 0.88,
@@ -1750,15 +1842,29 @@ export class AtmosphereParticles {
             );
             this.wy[i] = -4;
             this.wx[i] = this.nextRand() * (VIEWPORT_W + 60);
-            continue;
           }
+        } else if (tile === TileKind.ONE_WAY && (weather === 'rain' || weather === 'acidDrip')) {
+          this.spawnBurst(
+            worldX,
+            ty * TILE_SIZE - 1,
+            (this.nextRand() - 0.5) * 28,
+            -16 - this.nextRand() * 18,
+            0.14,
+            2.0,
+            220,
+            weather === 'acidDrip' ? 0.52 : 0.72,
+            weather === 'acidDrip' ? 1.0 : 0.88,
+            weather === 'acidDrip' ? 0.26 : 1.0,
+            BURST_KIND_SPLASH
+          );
+          this.wy[i] = -4;
+          this.wx[i] = this.nextRand() * (VIEWPORT_W + 60);
+          visible = 0;
         }
+      } else {
+        visible = 0;
       }
-
-      if (this.wx[i] < -16) this.wx[i] += VIEWPORT_W + 32;
-      else if (this.wx[i] > VIEWPORT_W + 16) this.wx[i] -= VIEWPORT_W + 32;
-      if (this.wy[i] < -16) this.wy[i] += VIEWPORT_H + 32;
-      else if (this.wy[i] > VIEWPORT_H + 16) this.wy[i] -= VIEWPORT_H + 32;
+      this.wVisible[i] = visible;
     }
 
     // 4. Step Bursts (including tile-colliding wood splinters, bouncing gibs & swaying soul wisps)
@@ -1920,49 +2026,79 @@ export class AtmosphereParticles {
   renderScarfBehindHero(camX: number, camY: number, emitQuad: EmitVfxQuadFn): void {
     if (!this.scarfInit) return;
 
-    // 1. Secondary forked tail (drawn slightly darker behind primary tail)
+    // 1. Unified Dark Wine Shadow Pass FIRST (ZERO segmented black stripes across scarf!)
     for (let i = SCARF_B_NODES - 1; i >= 1; i--) {
-      const x0 = Math.round(this.scarfBX[i - 1] - camX);
-      const y0 = Math.round(this.scarfBY[i - 1] - camY);
-      const x1 = Math.round(this.scarfBX[i] - camX);
-      const y1 = Math.round(this.scarfBY[i] - camY);
-      const mx = Math.round((x0 + x1) * 0.5);
-      const my = Math.round((y0 + y1) * 0.5);
-      const len = Math.max(3.0, Math.hypot(x1 - x0, y1 - y0) + 1.2);
+      const x0 = this.scarfBX[i - 1] - camX;
+      const y0 = this.scarfBY[i - 1] - camY;
+      const x1 = this.scarfBX[i] - camX;
+      const y1 = this.scarfBY[i] - camY;
+      const mx = (x0 + x1) * 0.5;
+      const my = (y0 + y1) * 0.5;
+      const len = Math.max(2.6, Math.hypot(x1 - x0, y1 - y0) + 1.4);
       const ang = Math.atan2(y1 - y0, x1 - x0);
       const t = i / (SCARF_B_NODES - 1);
-      const thick = Math.max(1.2, 2.7 - t * 1.5);
-      const r = 0.72 - t * 0.35;
-      const g = 0.08 - t * 0.05;
-      const b = 0.17 - t * 0.07;
-      emitQuad('vfx:white_px', mx, my, len, thick, r, g, b, 1.0, 1, 0, 0.04, ang);
+      const thick = Math.max(0.9, 2.0 - t * 1.25);
+      emitQuad('vfx:white_px', mx, my + 0.4, len + 0.8, thick + 0.9, 0.24, 0.03, 0.08, 0.85 * (1 - t * 0.35), 1, 0, 0.0, ang);
     }
-
-    // 2. Primary hero crimson ribbon (11 nodes: vibrant #e01b36 -> #a8102b -> #5e0819 tip!)
     for (let i = SCARF_A_NODES - 1; i >= 1; i--) {
-      const x0 = Math.round(this.scarfAX[i - 1] - camX);
-      const y0 = Math.round(this.scarfAY[i - 1] - camY);
-      const x1 = Math.round(this.scarfAX[i] - camX);
-      const y1 = Math.round(this.scarfAY[i] - camY);
-      const mx = Math.round((x0 + x1) * 0.5);
-      const my = Math.round((y0 + y1) * 0.5);
-      const len = Math.max(3.2, Math.hypot(x1 - x0, y1 - y0) + 1.3);
+      const x0 = this.scarfAX[i - 1] - camX;
+      const y0 = this.scarfAY[i - 1] - camY;
+      const x1 = this.scarfAX[i] - camX;
+      const y1 = this.scarfAY[i] - camY;
+      const mx = (x0 + x1) * 0.5;
+      const my = (y0 + y1) * 0.5;
+      const len = Math.max(2.8, Math.hypot(x1 - x0, y1 - y0) + 1.5);
       const ang = Math.atan2(y1 - y0, x1 - x0);
       const t = i / (SCARF_A_NODES - 1);
-      const thick = Math.max(1.4, 3.6 - t * 2.1);
-      const r = 0.88 - t * 0.51;
-      const g = 0.11 - t * 0.08;
-      const b = 0.21 - t * 0.11;
-      emitQuad('vfx:white_px', mx, my, len, thick, r, g, b, 1.0, 1, 0, 0.06, ang);
+      const thick = Math.max(1.0, 2.9 - t * 1.9);
+      emitQuad('vfx:white_px', mx, my + 0.5, len + 0.8, thick + 1.0, 0.22, 0.02, 0.07, 0.90 * (1 - t * 0.3), 1, 0, 0.0, ang);
+    }
+
+    // 2. Seamless Flowing Crimson Velvet Cloth Body Pass (secondary tail then primary ribbon!)
+    for (let i = SCARF_B_NODES - 1; i >= 1; i--) {
+      const x0 = this.scarfBX[i - 1] - camX;
+      const y0 = this.scarfBY[i - 1] - camY;
+      const x1 = this.scarfBX[i] - camX;
+      const y1 = this.scarfBY[i] - camY;
+      const mx = (x0 + x1) * 0.5;
+      const my = (y0 + y1) * 0.5;
+      const len = Math.max(2.6, Math.hypot(x1 - x0, y1 - y0) + 1.3);
+      const ang = Math.atan2(y1 - y0, x1 - x0);
+      const t = i / (SCARF_B_NODES - 1);
+      const thick = Math.max(0.7, 1.9 - t * 1.3);
+      const r = 0.68 - t * 0.32;
+      const g = 0.07 - t * 0.04;
+      const b = 0.14 - t * 0.06;
+      emitQuad('vfx:white_px', mx, my, len, thick, r, g, b, 0.94 * (1 - t * 0.25), 1, 0, 0.03, ang);
+    }
+    for (let i = SCARF_A_NODES - 1; i >= 1; i--) {
+      const x0 = this.scarfAX[i - 1] - camX;
+      const y0 = this.scarfAY[i - 1] - camY;
+      const x1 = this.scarfAX[i] - camX;
+      const y1 = this.scarfAY[i] - camY;
+      const mx = (x0 + x1) * 0.5;
+      const my = (y0 + y1) * 0.5;
+      const len = Math.max(2.8, Math.hypot(x1 - x0, y1 - y0) + 1.4);
+      const ang = Math.atan2(y1 - y0, x1 - x0);
+      const t = i / (SCARF_A_NODES - 1);
+      const thick = Math.max(0.8, 2.8 - t * 1.9);
+      const r = 0.88 - t * 0.42;
+      const g = 0.10 - t * 0.06;
+      const b = 0.18 - t * 0.08;
+      emitQuad('vfx:white_px', mx, my, len, thick, r, g, b, 0.98 * (1 - t * 0.2), 1, 0, 0.04, ang);
+      if (t < 0.62) {
+        emitQuad('vfx:white_px', mx, my - 0.45, len * 0.94, Math.max(0.5, thick * 0.30), 1.0, 0.34, 0.38, 0.58 * (1 - t), 1, 0, 0.06, ang);
+      }
     }
   }
 
-  /** Draws a tiny crisp 4x2 crimson collar wrap snugly over the Prisoner's neck socket. */
+  /** Draws a tiny crisp crimson collar wrap snugly over the Prisoner's neck socket. */
   renderScarfCollarWrap(camX: number, camY: number, emitQuad: EmitVfxQuadFn): void {
     if (!this.scarfInit) return;
-    const cx = Math.round(this.scarfAX[0] - camX);
-    const cy = Math.round(this.scarfAY[0] - camY);
-    emitQuad('vfx:white_px', cx, cy, 4, 2, 0.88, 0.11, 0.21, 1.0, 1, 0, 0.06, 0);
+    const cx = this.scarfAX[0] - camX;
+    const cy = this.scarfAY[0] - camY;
+    emitQuad('vfx:white_px', cx, cy, 4.8, 2.4, 0.24, 0.03, 0.08, 0.92, 1, 0, 0.0, 0);
+    emitQuad('vfx:white_px', cx, cy, 3.8, 1.6, 0.88, 0.12, 0.22, 1.0, 1, 0, 0.04, 0);
   }
 
   renderOverlay(
@@ -1974,18 +2110,20 @@ export class AtmosphereParticles {
     emitCustomSlash?: EmitCustomSlashFn,
     emitCustomDebris?: EmitCustomDebrisFn
   ): void {
-    // 1. Homunculus Cyan-Amber Flame Wisps
+    // 1. Delicate Smoky Dark-Charcoal/Mossy Homunculus Wisps + Tiny Golden Sparks (ref_01 & ref_16!)
     for (let i = 0; i < MAX_FLAME; i++) {
       const life = this.fLife[i];
       if (life <= 0) continue;
       const t = life / Math.max(0.01, this.fMaxLife[i]);
       const sx = this.fx[i] - camX;
       const sy = this.fy[i] - camY;
-      const sz = 2.5 + t * 3.8;
+      const sz = 1.4 + t * 2.2;
       if (this.fCyan[i] === 1) {
-        emitQuad('vfx:ember', sx, sy, sz, sz, 0.25, 0.92, 1.0, t * 0.85, 1, 0, 1.15);
+        // Dark smoky charcoal-emerald shadow wisp trailing off the homunculus head
+        emitQuad('vfx:ember', sx, sy, sz * 1.1, sz * 1.1, 0.12, 0.22, 0.18, t * 0.58, 1, 0, 0.04);
       } else {
-        emitQuad('vfx:ember', sx, sy, sz, sz, 1.0, 0.62, 0.18, t * 0.9, 1, 0, 1.25);
+        // Occasional tiny golden-amber ember spark matching the star eye
+        emitQuad('vfx:ember', sx, sy, sz * 0.65, sz * 0.65, 1.0, 0.84, 0.28, t * 0.52, 1, 0, 0.72);
       }
     }
 
@@ -2074,9 +2212,26 @@ export class AtmosphereParticles {
         this.sb[i],
         alpha,
         facing,
-        isCrit ? 0.62 : t > 0.65 ? 0.42 : 0.12,
-        isCrit ? 1.55 : 1.38
+        isCrit ? 0.68 : t > 0.62 ? 0.48 : 0.16,
+        isCrit ? 1.65 : 1.50
       );
+      // Blazing razor-white inner core flash on fresh Dead Cells weapon swings (ref_12!)
+      if (t > 0.34 && style !== SLASH_STYLE_RANGED) {
+        emitQuad(
+          key,
+          sx + facing * 1.5,
+          sy,
+          baseW * scale * 0.84,
+          baseH * scale * 0.84,
+          1.0,
+          isCrit ? 0.98 : 0.96,
+          isCrit ? 0.76 : 0.90,
+          alpha * 0.64 * ((t - 0.34) / 0.66),
+          facing,
+          0.82,
+          1.62
+        );
+      }
     }
 
     // 3. Radial Shockwave / Parry Burst / Explosion / Boss-Phase Rings
@@ -2102,8 +2257,9 @@ export class AtmosphereParticles {
           : 'vfx:ice_burst';
       const flashMix =
         rk === RING_KIND_FIRE_BURST || rk === RING_KIND_ICE_BURST || rk === RING_KIND_PARRY_BURST
-          ? (1.0 - frac) * 0.65
+          ? (1.0 - frac) * 0.62
           : 0;
+      const ringAlpha = (this.rAlpha[i] > 0.01 ? this.rAlpha[i] : 0.72) * (1.0 - frac);
       emitQuad(
         key,
         this.rx[i] - camX,
@@ -2113,10 +2269,10 @@ export class AtmosphereParticles {
         this.rr[i],
         this.rg[i],
         this.rb[i],
-        (1.0 - frac) * 0.96,
+        ringAlpha,
         1,
         flashMix,
-        1.48
+        rk === RING_KIND_SHOCKWAVE ? 1.15 : 1.38
       );
     }
 
@@ -2326,6 +2482,27 @@ export class AtmosphereParticles {
           0.25,
           1.35
         );
+      } else if (kind === BURST_KIND_BLOOD) {
+        // Kinetic elongated crimson blood droplet streaking along its arc (ref_02 & ref_12!)
+        const sz = this.bSize[i] * (0.45 + 0.55 * t);
+        const velAng = Math.atan2(this.bvy[i], this.bvx[i]);
+        const spd = Math.hypot(this.bvx[i], this.bvy[i]);
+        const stretch = Math.min(2.4, 1.0 + spd * 0.008);
+        emitQuad(
+          'vfx:ember',
+          sx,
+          sy,
+          sz * stretch,
+          sz * 0.78,
+          this.br[i],
+          this.bg[i],
+          this.bb[i],
+          Math.min(1, t * 1.4) * 0.96,
+          1,
+          0,
+          0.08,
+          velAng
+        );
       } else {
         const sz = this.bSize[i] * (0.4 + 0.6 * t);
         emitQuad(
@@ -2345,45 +2522,56 @@ export class AtmosphereParticles {
       }
     }
 
-    // 6. Ambient Biome Weather
+    // 6. Ambient Biome Weather (strictly tile-occluded so ZERO weather draws over solid rock!)
     const count =
       weather === 'none'
         ? 0
         : weather === 'rain'
-        ? 145
+        ? 110
         : weather === 'embers' || weather === 'wind'
-        ? 95
-        : 65;
+        ? 68
+        : 52;
     for (let i = 0; i < count; i++) {
+      if (this.wVisible[i] === 0) continue;
       const x = this.wx[i];
       const y = this.wy[i];
       const sz = this.wSize[i];
       const ph = this.wPhase[i];
       if (weather === 'rain') {
-        emitQuad('vfx:white_px', x, y, 1.1, 8.0 * sz, 0.72, 0.86, 1.0, 0.42, 1, 0, 0.25, 0.25);
+        // Crisp 1px Dead Cells silver-blue diagonal rain streaks
+        emitQuad('vfx:white_px', Math.round(x), Math.round(y), 1.0, Math.round(8.5 * sz), 0.74, 0.88, 1.0, 0.26, 1, 0, 0.16, 0.22);
       } else if (weather === 'acidDrip') {
-        emitQuad('vfx:drop', x, y, 3.2 * sz, 5.5 * sz, 0.55, 1.0, 0.25, 0.78, 1, 0, 1.1);
+        emitQuad('vfx:drop', Math.round(x), Math.round(y), Math.round(2.5 * sz), Math.round(4.5 * sz), 0.55, 1.0, 0.28, 0.72, 1, 0, 1.05);
       } else if (weather === 'wind') {
-        emitQuad('vfx:white_px', x, y, 10.0 * sz, 1.2, 1.0, 0.82, 0.55, 0.36, 1, 0, 0.45, -0.08);
+        // Subtle pixel fluttering autumn-amber leaves & gossamer twilight wisps
+        const flutter = Math.sin(elapsedSec * 4.5 + ph);
+        if ((i & 3) === 0) {
+          emitQuad('vfx:ember', Math.round(x), Math.round(y + flutter * 3), 2.0, 2.0, 0.96, 0.64, 0.34, 0.44, 1, 0, 0.26, flutter * 0.8);
+        } else {
+          emitQuad('vfx:white_px', Math.round(x), Math.round(y), Math.round(7.0 * sz), 1.0, 1.0, 0.84, 0.62, 0.15, 1, 0, 0.18, -0.05);
+        }
       } else if (weather === 'cogs') {
+        // Luminous warm golden-amber clockwork dust motes & tiny brass spark glints (NEVER ugly square gears!)
+        const flick = 0.42 + 0.58 * Math.sin(elapsedSec * 3.8 + ph);
+        const isSpark = (i % 5) === 0;
         emitQuad(
-          'vfx:cog',
+          isSpark ? 'vfx:spark' : 'vfx:ember',
           x,
           y,
-          7.5 * sz,
-          7.5 * sz,
-          0.95,
-          0.76,
-          0.32,
-          0.52,
+          (isSpark ? 3.2 : 2.1) * sz,
+          (isSpark ? 3.2 : 2.1) * sz,
+          1.0,
+          0.80,
+          0.38,
+          0.56 * flick,
           1,
           0,
-          0.45,
-          elapsedSec * (1.2 + (i % 3) * 0.4) + ph
+          isSpark ? 1.15 : 0.75,
+          elapsedSec * 1.4 + ph
         );
       } else if (weather === 'embers') {
         const flick = 0.55 + 0.45 * Math.sin(elapsedSec * 7.5 + ph);
-        emitQuad('vfx:ember', x, y, 3.0 * sz, 3.0 * sz, 1.0, 0.44, 0.16, 0.82 * flick, 1, 0, 1.25);
+        emitQuad('vfx:ember', x, y, 2.5 * sz, 2.5 * sz, 1.0, 0.46, 0.18, 0.78 * flick, 1, 0, 1.25);
       } else {
         const flick = 0.4 + 0.4 * Math.sin(elapsedSec * 2.8 + ph);
         const warm = i % 4 === 0;
@@ -2391,15 +2579,15 @@ export class AtmosphereParticles {
           'vfx:ember',
           x,
           y,
-          2.2 * sz,
-          2.2 * sz,
+          2.0 * sz,
+          2.0 * sz,
           warm ? 1.0 : 0.78,
           warm ? 0.68 : 0.84,
           warm ? 0.32 : 1.0,
-          flick * 0.58,
+          flick * 0.50,
           1,
           0,
-          warm ? 0.95 : 0.3
+          warm ? 0.90 : 0.25
         );
       }
     }

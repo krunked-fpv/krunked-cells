@@ -70,8 +70,8 @@ export class Minimap {
 
     this.miniCanvas = document.createElement('canvas');
     this.miniCanvas.className = 'kc-minimap-canvas';
-    this.miniCanvas.width = 186;
-    this.miniCanvas.height = 102;
+    this.miniCanvas.width = 196;
+    this.miniCanvas.height = 104;
     this.miniCtx = this.miniCanvas.getContext('2d');
 
     const overlayBar = document.createElement('div');
@@ -290,11 +290,11 @@ export class Minimap {
     ctx.clearRect(0, 0, w, h);
 
     if (isExpanded) {
-      ctx.fillStyle = 'rgba(7, 6, 13, 0.96)';
+      ctx.fillStyle = 'rgba(6, 9, 18, 0.96)';
       ctx.fillRect(0, 0, w, h);
     } else {
-      // Translucent Dead Cells ink wash
-      ctx.fillStyle = 'rgba(6, 7, 14, 0.42)';
+      // Crisp translucent dark-slate Dead Cells minimap backdrop
+      ctx.fillStyle = 'rgba(6, 10, 22, 0.44)';
       ctx.fillRect(0, 0, w, h);
     }
 
@@ -336,66 +336,77 @@ export class Minimap {
     let originY: number;
 
     if (!isExpanded) {
-      scale = 2.7;
-      originX = w * 0.5 - ptx * scale;
-      originY = h * 0.5 - pty * scale;
+      scale = 2.6;
+      originX = Math.round(w * 0.5 - ptx * scale);
+      originY = Math.round(h * 0.5 - pty * scale);
     } else {
       const spanX = Math.max(12, maxTx - minTx);
       const spanY = Math.max(8, maxTy - minTy);
       scale = Math.min((w - pad * 2) / spanX, (h - pad * 2) / spanY);
       scale = Math.max(2, Math.min(12, scale));
-      originX = (w - spanX * scale) * 0.5 - minTx * scale;
-      originY = (h - spanY * scale) * 0.5 - minTy * scale;
+      originX = Math.round((w - spanX * scale) * 0.5 - minTx * scale);
+      originY = Math.round((h - spanY * scale) * 0.5 - minTy * scale);
     }
 
     const toX = (wx: number) => originX + (wx / TILE_SIZE) * scale;
     const toY = (wy: number) => originY + (wy / TILE_SIZE) * scale;
 
-    // 1. Discovered rooms with crisp glowing cyan-slate Dead Cells corridor tint
+    // 1. Discovered rooms — Iconic Dead Cells vibrant royal-blue rooms with razor-sharp 1px white borders
     for (const r of state.rooms) {
       if (!r.discovered && hasExplored) continue;
-      const rx = originX + r.tx * scale;
-      const ry = originY + r.ty * scale;
-      const rw = r.tw * scale;
-      const rh = r.th * scale;
+      const rx = Math.round(originX + r.tx * scale);
+      const ry = Math.round(originY + r.ty * scale);
+      const rw = Math.max(3, Math.round(r.tw * scale));
+      const rh = Math.max(3, Math.round(r.th * scale));
 
-      let fill = 'rgba(26, 56, 84, 0.38)';
-      let stroke = 'rgba(84, 198, 240, 0.52)';
+      let fill = 'rgba(46, 88, 184, 0.86)';
+      let inner = 'rgba(59, 109, 224, 0.42)';
+      let stroke = 'rgba(240, 248, 255, 0.94)';
       if (r.type === 'bossArena') {
-        fill = 'rgba(136, 22, 38, 0.45)';
-        stroke = '#e83b4a';
+        fill = 'rgba(154, 26, 56, 0.88)';
+        inner = 'rgba(220, 48, 86, 0.36)';
+        stroke = '#ff9aa8';
       } else if (r.type === 'treasure') {
-        fill = 'rgba(130, 96, 22, 0.42)';
-        stroke = '#fbbf24';
+        fill = 'rgba(178, 126, 22, 0.88)';
+        inner = 'rgba(251, 191, 36, 0.35)';
+        stroke = '#fef08a';
       } else if (r.type === 'weaponShop' || r.type === 'skillShop' || r.type === 'foodShop') {
-        fill = 'rgba(116, 78, 22, 0.4)';
-        stroke = '#f59e0b';
+        fill = 'rgba(156, 98, 24, 0.86)';
+        inner = 'rgba(245, 158, 11, 0.35)';
+        stroke = '#fde68a';
       } else if (r.type === 'cursedChest') {
-        fill = 'rgba(140, 18, 32, 0.48)';
-        stroke = '#ef4444';
+        fill = 'rgba(164, 22, 40, 0.9)';
+        inner = 'rgba(239, 68, 68, 0.35)';
+        stroke = '#fecaca';
       } else if (r.type === 'exit') {
-        fill = 'rgba(18, 102, 56, 0.45)';
-        stroke = '#22c55e';
+        fill = 'rgba(20, 126, 70, 0.88)';
+        inner = 'rgba(34, 197, 94, 0.35)';
+        stroke = '#bbf7d0';
       } else if (r.type === 'teleporter') {
-        fill = 'rgba(14, 88, 118, 0.44)';
-        stroke = '#38e8ff';
+        fill = 'rgba(42, 104, 204, 0.9)';
+        inner = 'rgba(56, 232, 255, 0.25)';
+        stroke = '#e0f7ff';
       }
 
       ctx.fillStyle = fill;
       ctx.fillRect(rx, ry, rw, rh);
+      if (rw > 4 && rh > 4) {
+        ctx.fillStyle = inner;
+        ctx.fillRect(rx + 1, ry + 1, rw - 2, Math.max(1, Math.floor((rh - 2) * 0.45)));
+      }
       ctx.strokeStyle = stroke;
       ctx.lineWidth = 1;
       ctx.strokeRect(rx + 0.5, ry + 0.5, rw - 1, rh - 1);
     }
 
-    // 2. Crisp explored architectural tile outlines (glowing cyan-steel walls & platforms)
+    // 2. Crisp explored architectural tile outlines (sharp white walls & pale-blue platforms)
     const startTx = Math.max(0, Math.floor(-originX / scale));
     const endTx = Math.min(grid.width - 1, Math.ceil((w - originX) / scale));
     const startTy = Math.max(0, Math.floor(-originY / scale));
     const endTy = Math.min(grid.height - 1, Math.ceil((h - originY) / scale));
 
     const hasAnyExploredTile = grid.explored.some((v) => v > 0);
-    const tileDrawSize = Math.max(1.2, Math.ceil(scale));
+    const tileDrawSize = Math.max(1, Math.ceil(scale));
 
     for (let ty = startTy; ty <= endTy; ty++) {
       const rowOff = ty * grid.width;
@@ -412,9 +423,9 @@ export class Minimap {
             (ty > 0 && grid.tiles[idx - grid.width] !== TileKind.SOLID) ||
             (ty < grid.height - 1 && grid.tiles[idx + grid.width] !== TileKind.SOLID);
           if (!openNeighbor) continue;
-          ctx.fillStyle = 'rgba(128, 214, 245, 0.78)';
+          ctx.fillStyle = 'rgba(232, 244, 255, 0.92)';
         } else if (kind === TileKind.ONE_WAY) {
-          ctx.fillStyle = 'rgba(104, 152, 196, 0.62)';
+          ctx.fillStyle = 'rgba(148, 198, 255, 0.72)';
         } else if (kind === TileKind.ACID) {
           ctx.fillStyle = '#4ade80';
         } else if (kind === TileKind.WATER) {
@@ -422,81 +433,94 @@ export class Minimap {
         } else if (kind === TileKind.SPIKES) {
           ctx.fillStyle = '#f87171';
         } else if (kind === TileKind.EXIT_GATE) {
-          ctx.fillStyle = '#22c55e';
+          ctx.fillStyle = '#22e564';
         } else {
           continue;
         }
-        ctx.fillRect(originX + tx * scale, originY + ty * scale, tileDrawSize, tileDrawSize);
+        ctx.fillRect(
+          Math.round(originX + tx * scale),
+          Math.round(originY + ty * scale),
+          tileDrawSize,
+          kind === TileKind.ONE_WAY ? Math.max(1, Math.round(scale * 0.55)) : tileDrawSize
+        );
       }
     }
 
-    // 3. Chests (golden / crimson)
+    // 3. Chests (gleaming gold / crimson dots with crisp dark rim)
     for (const c of state.chests) {
       if (c.opened) continue;
       const room = state.rooms.find((r) => r.id === c.roomId);
       if (hasExplored && room && !room.discovered) continue;
-      const mx = toX(c.pos.x);
-      const my = toY(c.pos.y);
-      ctx.fillStyle = c.kind === 'cursed' ? '#ef4444' : '#fbbf24';
-      const sz = isExpanded ? 7 : 4.5;
-      ctx.fillRect(mx - sz * 0.5, my - sz * 0.5, sz, sz);
+      const mx = Math.round(toX(c.pos.x));
+      const my = Math.round(toY(c.pos.y));
+      const sz = isExpanded ? 7 : 5;
+      ctx.fillStyle = '#070a14';
+      ctx.fillRect(mx - Math.floor(sz * 0.5) - 1, my - Math.floor(sz * 0.5) - 1, sz + 2, sz + 2);
+      ctx.fillStyle = c.kind === 'cursed' ? '#ff4757' : '#ffd84d';
+      ctx.fillRect(mx - Math.floor(sz * 0.5), my - Math.floor(sz * 0.5), sz, sz);
     }
 
-    // 4. Scrolls & Shops
+    // 4. Scrolls & Shops (violet & gleaming gold dots)
     for (const pk of state.pickups) {
       if (pk.collected) continue;
       if (pk.kind !== 'scroll' && pk.kind !== 'dualScroll' && !(pk.priceGold && pk.priceGold > 0)) continue;
       const tx = Math.floor(pk.pos.x / TILE_SIZE);
       const ty = Math.floor(pk.pos.y / TILE_SIZE);
       if (hasAnyExploredTile && !grid.explored[ty * grid.width + tx]) continue;
-      const mx = toX(pk.pos.x);
-      const my = toY(pk.pos.y);
-      ctx.fillStyle = pk.kind === 'scroll' || pk.kind === 'dualScroll' ? '#c084fc' : '#f59e0b';
+      const mx = Math.round(toX(pk.pos.x));
+      const my = Math.round(toY(pk.pos.y));
+      ctx.fillStyle = pk.kind === 'scroll' || pk.kind === 'dualScroll' ? '#d8b4fe' : '#ffd84d';
       ctx.beginPath();
-      ctx.arc(mx, my, isExpanded ? 3.8 : 2.3, 0, Math.PI * 2);
+      ctx.arc(mx, my, isExpanded ? 3.8 : 2.5, 0, Math.PI * 2);
       ctx.fill();
     }
 
-    // 5. Biome Exits
+    // 5. Biome Exits (crisp vivid emerald doorway icon)
     for (const d of state.doors) {
       if (d.kind !== 'biomeExit') continue;
-      const mx = toX(d.pos.x + d.width * 0.5);
-      const my = toY(d.pos.y + d.height * 0.5);
-      ctx.fillStyle = '#22c55e';
+      const mx = Math.round(toX(d.pos.x + d.width * 0.5));
+      const my = Math.round(toY(d.pos.y + d.height * 0.5));
       const sz = isExpanded ? 8 : 5;
-      ctx.fillRect(mx - sz * 0.5, my - sz * 0.65, sz, sz * 1.3);
+      const sh = Math.round(sz * 1.4);
+      ctx.fillStyle = '#061a0e';
+      ctx.fillRect(mx - Math.floor(sz * 0.5) - 1, my - Math.floor(sh * 0.5) - 1, sz + 2, sh + 2);
+      ctx.fillStyle = '#26e86c';
+      ctx.fillRect(mx - Math.floor(sz * 0.5), my - Math.floor(sh * 0.5), sz, sh);
     }
 
-    // 6. Discovered Teleportation Runes (Pulsing Cyan Diamonds)
+    // 6. Discovered Teleportation Runes (Glowing Cyan Dots / Diamonds)
     if (isExpanded) this.expandedRunes = [];
     const pulse = 0.72 + Math.sin(this.animTime * 5.2) * 0.28;
     const discoveredRunes = this.getDiscoverableTeleporters(state);
 
     for (const tp of discoveredRunes) {
-      const mx = toX(tp.pos.x);
-      const my = toY(tp.pos.y);
+      const mx = Math.round(toX(tp.pos.x));
+      const my = Math.round(toY(tp.pos.y));
       const isHovered = isExpanded && this.hoveredRuneUid === tp.uid;
-      const r = isExpanded ? (isHovered ? 9 : 7) : 4;
+      const r = isExpanded ? (isHovered ? 9 : 7) : 3.6;
 
       if (isExpanded) {
         this.expandedRunes.push({ uid: tp.uid, x: mx, y: my, r: 15, label: tp.label || `Rune #${tp.uid}` });
       }
 
       ctx.save();
-      ctx.strokeStyle = `rgba(56, 232, 255, ${(isHovered ? 1 : 0.7 * pulse).toFixed(2)})`;
+      ctx.strokeStyle = `rgba(56, 240, 255, ${(isHovered ? 1 : 0.78 * pulse).toFixed(2)})`;
       ctx.lineWidth = isHovered ? 2.5 : 1.5;
       ctx.beginPath();
-      ctx.arc(mx, my, r + 3 * pulse, 0, Math.PI * 2);
+      ctx.arc(mx, my, r + 2.5 * pulse, 0, Math.PI * 2);
       ctx.stroke();
 
-      ctx.fillStyle = isHovered ? '#ffffff' : '#38e8ff';
+      ctx.fillStyle = isHovered ? '#ffffff' : '#38f2ff';
       ctx.beginPath();
       ctx.moveTo(mx, my - r);
-      ctx.lineTo(mx + r * 0.8, my);
+      ctx.lineTo(mx + r * 0.85, my);
       ctx.lineTo(mx, my + r);
-      ctx.lineTo(mx - r * 0.8, my);
+      ctx.lineTo(mx - r * 0.85, my);
       ctx.closePath();
       ctx.fill();
+
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(mx - 1, my - 1, 2, 2);
 
       if (isExpanded) {
         ctx.font = 'bold 11px Consolas, monospace';

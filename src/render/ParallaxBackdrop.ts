@@ -13,6 +13,7 @@ export interface BiomeVisualTheme {
   biomeId: BiomeId;
   tilesetTheme: TilesetTheme;
   scrollerKey: string;
+  hdBackdropKey: string;
   themeId: number;
   biomeStyle: number;
   weather: BiomeWeather;
@@ -44,6 +45,7 @@ function makeTheme(cfg: {
   biomeId: BiomeId;
   tilesetTheme: TilesetTheme;
   scrollerKey: string;
+  hdBackdropKey?: string;
   themeId: number;
   biomeStyle: number;
   weather: BiomeWeather;
@@ -63,6 +65,13 @@ function makeTheme(cfg: {
     biomeId: cfg.biomeId,
     tilesetTheme: cfg.tilesetTheme,
     scrollerKey: cfg.scrollerKey,
+    hdBackdropKey:
+      cfg.hdBackdropKey ??
+      (cfg.biomeId === 'TopClockTower'
+        ? 'clockroom'
+        : cfg.tilesetTheme === 'clock'
+        ? 'clocktower'
+        : cfg.tilesetTheme),
     themeId: cfg.themeId,
     biomeStyle: cfg.biomeStyle,
     weather: cfg.weather,
@@ -137,10 +146,10 @@ export const BIOME_VISUAL_THEMES: Record<BiomeId, BiomeVisualTheme> = {
     skyTopHex: '#081409',
     skyMidHex: '#132e12',
     skyBottomHex: '#1e4a15',
-    accentHex: '#84ff3d',
-    rimHex: '#7ef252',
+    accentHex: '#92ff38',
+    rimHex: '#8cff4f',
     gradeHex: '#dcffcf',
-    fogDensity: 1.05,
+    fogDensity: 1.24,
   }),
   PrisonRoof: makeTheme({
     biomeId: 'PrisonRoof',
@@ -172,13 +181,13 @@ export const BIOME_VISUAL_THEMES: Record<BiomeId, BiomeVisualTheme> = {
     fogHex: '#16172f',
     celShadowHex: '#2960ba',
     waterHex: '#448bcc',
-    skyTopHex: '#0a0f26',
-    skyMidHex: '#1c2554',
-    skyBottomHex: '#2a3d73',
-    accentHex: '#ff5c38',
-    rimHex: '#73b4ff',
-    gradeHex: '#d4e2ff',
-    fogDensity: 0.92,
+    skyTopHex: '#121830',
+    skyMidHex: '#28365c',
+    skyBottomHex: '#48456c',
+    accentHex: '#ffdc82',
+    rimHex: '#96c4ff',
+    gradeHex: '#dce6ff',
+    fogDensity: 0.72,
   }),
   StiltVillage: makeTheme({
     biomeId: 'StiltVillage',
@@ -248,13 +257,13 @@ export const BIOME_VISUAL_THEMES: Record<BiomeId, BiomeVisualTheme> = {
     fogHex: '#1d619f',
     celShadowHex: '#e59a71',
     waterHex: '#75cef6',
-    skyTopHex: '#1a3869',
-    skyMidHex: '#3b6ca8',
-    skyBottomHex: '#b87f69',
-    accentHex: '#ffd269',
-    rimHex: '#fff0c2',
-    gradeHex: '#fff3e0',
-    fogDensity: 0.65,
+    skyTopHex: '#223b70',
+    skyMidHex: '#5a70a8',
+    skyBottomHex: '#d69775',
+    accentHex: '#ffdc78',
+    rimHex: '#fff4cc',
+    gradeHex: '#fff6e6',
+    fogDensity: 0.56,
   }),
   Throne: makeTheme({
     biomeId: 'Throne',
@@ -267,13 +276,13 @@ export const BIOME_VISUAL_THEMES: Record<BiomeId, BiomeVisualTheme> = {
     fogHex: '#062654',
     celShadowHex: '#2960ba',
     waterHex: '#448bcc',
-    skyTopHex: '#091836',
-    skyMidHex: '#173e73',
-    skyBottomHex: '#2c629c',
+    skyTopHex: '#1a0b38',
+    skyMidHex: '#441a6e',
+    skyBottomHex: '#762e8c',
     accentHex: '#6ad2ff',
     rimHex: '#a8e4ff',
-    gradeHex: '#e0f2ff',
-    fogDensity: 0.78,
+    gradeHex: '#e4f0ff',
+    fogDensity: 0.62,
   }),
   Passage: makeTheme({
     biomeId: 'Passage',
@@ -328,6 +337,7 @@ export class ParallaxBackdropPass {
   private readonly uHasOverlayTex: WebGLUniformLocation | null;
   private readonly uScrollerOverlayTex: WebGLUniformLocation | null;
   private readonly uOverlayAdditive: WebGLUniformLocation | null;
+  private readonly uHdBackdropMode: WebGLUniformLocation | null;
 
   private readonly dummyTex: WebGLTexture;
   private readonly farTextures = new Map<string, WebGLTexture>();
@@ -335,6 +345,8 @@ export class ParallaxBackdropPass {
   private readonly nearTextures = new Map<string, WebGLTexture>();
   private readonly overlayTextures = new Map<string, WebGLTexture>();
   private readonly overlayAdditiveFlags = new Map<string, boolean>();
+  private readonly hdFarTextures = new Map<string, WebGLTexture>();
+  private readonly hdMidTextures = new Map<string, WebGLTexture>();
   private readonly ownedTextures = new Set<WebGLTexture>();
 
   constructor(gl: WebGL2RenderingContext, program: WebGLProgram) {
@@ -359,6 +371,7 @@ export class ParallaxBackdropPass {
     this.uHasOverlayTex = gl.getUniformLocation(program, 'u_hasOverlayTex');
     this.uScrollerOverlayTex = gl.getUniformLocation(program, 'u_scrollerOverlayTex');
     this.uOverlayAdditive = gl.getUniformLocation(program, 'u_overlayAdditive');
+    this.uHdBackdropMode = gl.getUniformLocation(program, 'u_hdBackdropMode');
 
     const tex = gl.createTexture();
     if (!tex) throw new Error('Failed to create dummy scroller texture');
@@ -460,6 +473,11 @@ export class ParallaxBackdropPass {
     }
   }
 
+  setHdBackdropTextures(key: string, farTex: WebGLTexture, midTex: WebGLTexture): void {
+    this.hdFarTextures.set(key, farTex);
+    this.hdMidTextures.set(key, midTex);
+  }
+
   render(
     gl: WebGL2RenderingContext,
     vao: WebGLVertexArrayObject,
@@ -504,6 +522,7 @@ export class ParallaxBackdropPass {
     let nearTex: WebGLTexture | undefined;
     let overlayTex: WebGLTexture | undefined;
     let overlayAdd = false;
+    let useHdPainted = false;
 
     if (useCustomScroller) {
       let resolvedKey = theme.scrollerKey;
@@ -535,6 +554,18 @@ export class ParallaxBackdropPass {
       nearTex = this.nearTextures.get(resolvedKey);
       overlayTex = this.overlayTextures.get(resolvedKey);
       overlayAdd = this.overlayAdditiveFlags.get(resolvedKey) ?? false;
+    } else {
+      const hdFar = this.hdFarTextures.get(theme.hdBackdropKey) ?? this.hdFarTextures.get('prison');
+      const hdMid = this.hdMidTextures.get(theme.hdBackdropKey) ?? this.hdMidTextures.get('prison');
+      if (hdFar) {
+        farTex = hdFar;
+        midTex = hdMid;
+        useHdPainted = true;
+      }
+    }
+
+    if (this.uHdBackdropMode) {
+      gl.uniform1f(this.uHdBackdropMode, useHdPainted ? 1.0 : 0.0);
     }
 
     gl.activeTexture(gl.TEXTURE0);

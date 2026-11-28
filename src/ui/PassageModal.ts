@@ -70,9 +70,9 @@ export class PassageModal {
     this.callbacks = callbacks;
     this.catalog = catalog;
 
-    // Non-blocking quick access strip while standing inside The Passage safe room
+    // Non-blocking quick access strip centered cleanly at bottom-center in The Passage
     this.quickBarEl = document.createElement('div');
-    this.quickBarEl.className = 'kc-passage-quickbar kc-iron-panel kc-hidden';
+    this.quickBarEl.className = 'kc-passage-quickbar kc-hidden';
     this.renderQuickBar();
     uiRoot.appendChild(this.quickBarEl);
 
@@ -235,13 +235,13 @@ export class PassageModal {
     this.quickBarEl.innerHTML = `
       <button class="kc-btn kc-btn-sm kc-btn-cyan kc-btn-icon" data-open-tab="collector">${cellIcon}<span>Collector</span></button>
       <button class="kc-btn kc-btn-sm kc-btn-icon" data-open-tab="guillain">${mutIcon}<span>Guillain</span></button>
-      <button class="kc-btn kc-btn-sm kc-btn-icon" data-open-tab="forge">${forgeIcon}<span>Minor Forge</span></button>
+      <button class="kc-btn kc-btn-sm kc-btn-icon" data-open-tab="forge">${forgeIcon}<span>Forge</span></button>
       ${
         showLegendaryForge
-          ? `<button class="kc-btn kc-btn-sm kc-btn-gold kc-btn-icon" data-open-tab="legendaryForge">${starIcon}<span>Legendary Forge</span></button>`
+          ? `<button class="kc-btn kc-btn-sm kc-btn-gold kc-btn-icon" data-open-tab="legendaryForge">${starIcon}<span>Leg. Forge</span></button>`
           : ''
       }
-      <button class="kc-btn kc-btn-sm kc-btn-emerald kc-btn-icon" data-open-tab="exits">${exitIcon}<span>Fountain & Exits</span></button>
+      <button class="kc-btn kc-btn-sm kc-btn-emerald kc-btn-icon" data-open-tab="exits">${exitIcon}<span>Exits</span></button>
     `;
     this.quickBarEl.querySelectorAll<HTMLButtonElement>('[data-open-tab]').forEach((btn) => {
       btn.addEventListener('click', () => {

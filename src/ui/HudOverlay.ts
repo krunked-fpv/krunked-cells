@@ -25,7 +25,6 @@ import {
   GearQuality,
   ItemColor,
   KeyBindings,
-  MAX_BOSS_CELLS,
   MetaBlueprintDef,
   MutationDef,
   PickupState,
@@ -98,6 +97,24 @@ export const FALLBACK_BIOME_NAMES: Record<BiomeId, string> = {
   Throne: 'Throne Room',
   Passage: 'The Passage',
 };
+
+export const SHORT_BIOME_NAMES: Record<BiomeId, string> = {
+  PrisonStart: 'Prison',
+  PrisonCourtyard: 'Promenade',
+  Sewer: 'Sewers',
+  PrisonRoof: 'Ramparts',
+  Bridge: 'Black Bridge',
+  StiltVillage: 'Stilt Village',
+  ClockTower: 'Clock Tower',
+  TopClockTower: 'Clock Room',
+  Castle: 'High Peak',
+  Throne: 'Throne Room',
+  Passage: 'Passage',
+};
+
+export function getBiomeShortName(id: BiomeId): string {
+  return SHORT_BIOME_NAMES[id] ?? humanizeId(id);
+}
 
 export const FALLBACK_BOSS_INFO: Record<BossId, { name: string; subtitle: string }> = {
   Behemoth: { name: 'The Iron Concierge', subtitle: 'Warden of the Black Bridge' },
@@ -265,6 +282,13 @@ export function formatTimer(ticks: number): string {
   const mins = Math.floor(totalSec / 60);
   const secs = totalSec % 60;
   return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
+export function formatRunTimerCompact(ticks: number): string {
+  const totalSec = Math.max(0, Math.floor(ticks / SIM_HZ));
+  const mins = Math.floor(totalSec / 60);
+  const secs = totalSec % 60;
+  return `${mins}m ${String(secs).padStart(2, '0')}s`;
 }
 
 export function formatKeyCode(code: string): string {
@@ -1272,9 +1296,16 @@ export function renderUiGlyphSvg(
     case 'amulet':
     default:
       shapes = `
-        <rect x="6" y="2" width="4" height="2" fill="#fbbf24"/>
-        <rect x="5" y="5" width="6" height="7" fill="${accent}"/>
-        <rect x="6" y="6" width="4" height="5" fill="#ffffff"/>
+        <rect x="6" y="1" width="4" height="1" fill="${accent}"/>
+        <rect x="4" y="2" width="2" height="2" fill="${accent}"/>
+        <rect x="10" y="2" width="2" height="2" fill="${accent}"/>
+        <rect x="5" y="4" width="1" height="2" fill="${accent}"/>
+        <rect x="10" y="4" width="1" height="2" fill="${accent}"/>
+        <rect x="6" y="5" width="4" height="2" fill="${accent}"/>
+        <rect x="5" y="7" width="6" height="5" fill="${accent}"/>
+        <rect x="6" y="12" width="4" height="2" fill="${accent}"/>
+        <rect x="7" y="14" width="2" height="1" fill="${accent}"/>
+        <rect x="7" y="8" width="2" height="3" fill="#e2e8f0" opacity="0.65"/>
       `;
       break;
   }
@@ -1323,6 +1354,8 @@ interface FloatingTextItem {
   vy: number;
   gravity: number;
   punchScale: boolean;
+  spawnTimeSec: number;
+  minGap: number;
   text: string;
   className: string;
   color: string;
@@ -1364,20 +1397,24 @@ export class HudOverlay {
   private lootCardEl: HTMLDivElement;
   private interactEl: HTMLDivElement;
 
-  // Dynamic cached regions (Top-Right)
+  // Dynamic cached regions (Bottom-Right Minimap & Counters Cluster)
   private biomeNameEl!: HTMLSpanElement;
   private bcPipsEl!: HTMLDivElement;
+  private bcCountEl!: HTMLSpanElement;
+  private bcIconEl!: HTMLSpanElement;
   private cellsIconEl!: HTMLSpanElement;
   private goldIconEl!: HTMLSpanElement;
-  private timerIconEl!: HTMLSpanElement;
+  private timerIconEl: HTMLSpanElement | null = null;
   private goldEl!: HTMLSpanElement;
   private cellsEl!: HTMLSpanElement;
   private timerEl!: HTMLSpanElement;
   private streakEl!: HTMLDivElement;
   private curseEl!: HTMLDivElement;
 
-  // Dynamic cached regions (Bottom-Left)
+  // Dynamic cached regions (Bottom-Left Action Strip + Health & Scroll Strip)
   private flaskWidgetEl!: HTMLButtonElement;
+  private flaskIconEl!: HTMLSpanElement;
+  private flaskCountEl!: HTMLSpanElement;
   private flaskLiquidEl!: HTMLDivElement;
   private flaskPipsEl!: HTMLDivElement;
   private flaskKeyEl!: HTMLSpanElement;
@@ -1397,6 +1434,7 @@ export class HudOverlay {
     { icon: HTMLSpanElement; count: HTMLSpanElement; wrap: HTMLDivElement }
   > = {} as Record<ScrollStat, { icon: HTMLSpanElement; count: HTMLSpanElement; wrap: HTMLDivElement }>;
   private mutationEls: HTMLDivElement[] = [];
+  private mutationsBarEl!: HTMLDivElement;
 
   // Dynamic cached regions (Boss Bar + smooth damage-drain trail + Boss Intro Splash)
   private bossTitleEl!: HTMLSpanElement;
@@ -1440,6 +1478,7 @@ export class HudOverlay {
   private floaters: FloatingTextItem[] = [];
   private seenParticleUids = new Set<number>();
   private nextFloaterId = 1;
+  private elapsedSec = 0;
   private toastTimer = 0;
 
   private lastLootSignature = '';
@@ -1492,7 +1531,7 @@ export class HudOverlay {
     this.hudRoot.appendChild(this.toastBanner);
 
     this.trContainer = document.createElement('div');
-    this.trContainer.className = 'kc-hud-tr';
+    this.trContainer.className = 'kc-hud-tr kc-hud-br';
     this.minimapHost = document.createElement('div');
     this.buildTopRight();
     this.hudRoot.appendChild(this.trContainer);
@@ -1927,17 +1966,66 @@ export class HudOverlay {
     for (const p of state.particlesSim) {
       if (p.kind === 'text' && p.text && !this.seenParticleUids.has(p.uid)) {
         this.seenParticleUids.add(p.uid);
-        const isCrit = p.text.includes('CRIT') || p.text.includes('!');
-        this.spawnFloater(
-          p.pos.x,
-          p.pos.y,
-          p.text,
-          isCrit ? 'kc-float-num is-crit' : 'kc-float-num',
-          p.color || '#ffffff',
-          Math.max(0.5, p.ttlTicks / SIM_HZ),
-          p.uid,
-          { awayFromX: heroX, vy: -66, gravity: 135, punchScale: isCrit }
-        );
+        const raw = p.text.trim();
+        const isScrollPop = /^\+\d+\s+(BRUTALITY|TACTICS|SURVIVAL)/i.test(raw);
+        const isCurseLifted = /CURSE\s+LIFTED/i.test(raw);
+        const isCursed = /^CURSED/i.test(raw);
+        const isStun = /STUNNED/i.test(raw);
+        const isCrit = raw.includes('CRIT');
+
+        let cls = 'kc-float-num';
+        let color = p.color || '#ffffff';
+        let vx: number | undefined = undefined;
+        let vy = -60;
+        let gravity = 115;
+        let dur = Math.max(0.65, p.ttlTicks / SIM_HZ);
+        let punch = isCrit;
+
+        if (isScrollPop) {
+          cls = 'kc-float-num is-scroll-pop';
+          if (/BRUTALITY/i.test(raw)) color = '#ff4b55';
+          else if (/TACTICS/i.test(raw)) color = '#b470ff';
+          else if (/SURVIVAL/i.test(raw)) color = '#38e06c';
+          vx = 0;
+          vy = -30;
+          gravity = 14;
+          dur = Math.max(1.15, dur);
+          punch = false;
+        } else if (isCurseLifted) {
+          cls = 'kc-float-num is-curse-lifted';
+          color = '#4ade80';
+          vx = 0;
+          vy = -48;
+          gravity = 45;
+          dur = Math.max(1.15, dur);
+          punch = true;
+        } else if (isCursed) {
+          cls = 'kc-float-num is-player-dmg';
+          color = '#ff4757';
+          vx = 0;
+          vy = -44;
+          gravity = 45;
+          dur = Math.max(1.0, dur);
+          punch = true;
+        } else if (isStun) {
+          cls = 'kc-float-num is-status';
+          color = '#fbbf24';
+          vx = 0;
+          vy = -48;
+          gravity = 60;
+        } else if (isCrit) {
+          cls = 'kc-float-num is-crit';
+          color = '#ffe24a';
+        }
+
+        this.spawnFloater(p.pos.x, p.pos.y, raw, cls, color, dur, p.uid, {
+          awayFromX: vx === undefined ? heroX : undefined,
+          vx,
+          vy,
+          gravity,
+          punchScale: punch,
+          staggerVertical: true,
+        });
       }
     }
     if (this.seenParticleUids.size > 256) {
@@ -1952,6 +2040,7 @@ export class HudOverlay {
     interpAlpha = 1,
     inputSnapshot?: ActiveInputSnapshot
   ): void {
+    this.elapsedSec += dtSec;
     this.lastState = state;
     this.lastBindings = bindings;
     this.lastInputSnapshot = inputSnapshot ?? null;
@@ -2015,20 +2104,34 @@ export class HudOverlay {
   private refreshStaticIcons(): void {
     if (this.cellsIconEl) {
       this.cellsIconEl.innerHTML = renderItemIconHtml('Cell', this.artPackMode, this.customPackResolver, {
-        size: 16,
+        size: 18,
         fallbackKind: 'cell',
         alt: 'Cells',
       });
     }
     if (this.goldIconEl) {
       this.goldIconEl.innerHTML = renderItemIconHtml('Gold', this.artPackMode, this.customPackResolver, {
-        size: 16,
+        size: 18,
         fallbackKind: 'gold',
         alt: 'Gold',
       });
     }
     if (this.timerIconEl) {
-      this.timerIconEl.innerHTML = renderUiGlyphSvg('timer', 14, '#d1c6b4');
+      this.timerIconEl.innerHTML = renderUiGlyphSvg('timer', 13, '#d1c6b4');
+    }
+    if (this.bcIconEl) {
+      this.bcIconEl.innerHTML = renderItemIconHtml('BossCell', this.artPackMode, this.customPackResolver, {
+        size: 15,
+        fallbackKind: 'bossCell',
+        alt: 'Boss Stem Cells',
+      });
+    }
+    if (this.flaskIconEl) {
+      this.flaskIconEl.innerHTML = renderItemIconHtml('HealthFlask', this.artPackMode, this.customPackResolver, {
+        size: 34,
+        fallbackKind: 'flask',
+        alt: 'Health Flask',
+      });
     }
     if (this.malaiseIconEl) {
       this.malaiseIconEl.innerHTML = renderUiGlyphSvg('malaise', 13, '#d946ef');
@@ -2042,7 +2145,7 @@ export class HudOverlay {
       const slot = this.scrollSlotEls[stat];
       if (slot?.icon) {
         slot.icon.innerHTML = renderItemIconHtml(scrollIcons[stat], this.artPackMode, this.customPackResolver, {
-          size: 16,
+          size: 13,
           fallbackKind: 'scroll',
           alt: stat,
         });
@@ -2107,93 +2210,95 @@ export class HudOverlay {
   }
 
   private buildTopRight(): void {
-    // Frameless Biome title + glowing Boss Cell pips
-    const biomeRow = document.createElement('div');
-    biomeRow.className = 'kc-biome-header';
-    this.biomeNameEl = document.createElement('span');
-    this.biomeNameEl.className = 'kc-biome-name';
-    this.bcPipsEl = document.createElement('div');
-    this.bcPipsEl.className = 'kc-bc-pips';
-    for (let i = 0; i < MAX_BOSS_CELLS; i++) {
-      const pip = document.createElement('span');
-      pip.className = 'kc-bc-pip';
-      this.bcPipsEl.appendChild(pip);
-    }
-    biomeRow.append(this.biomeNameEl, this.bcPipsEl);
-    this.trContainer.appendChild(biomeRow);
+    // Authentic Dead Cells Bottom-Right Cluster:
+    // Left Column = stacked right-aligned counters (Curse / Kill-Streak / Cells / Gold)
+    // Right Column = Metadata strip (Timer + Biome short name | Boss Cells) directly ABOVE Minimap
+    const cluster = document.createElement('div');
+    cluster.className = 'kc-br-cluster';
 
-    // Translucent Minimap mount directly underneath
-    this.trContainer.appendChild(this.minimapHost);
+    const countersCol = document.createElement('div');
+    countersCol.className = 'kc-br-counters';
 
-    // Razor-sharp translucent Resource Strip (Cells, Gold, Timer) with pixel icons
+    this.curseEl = document.createElement('div');
+    this.curseEl.className = 'kc-curse-banner kc-hidden';
+
+    this.streakEl = document.createElement('div');
+    this.streakEl.className = 'kc-streak-badge kc-hidden';
+
     const resBar = document.createElement('div');
     resBar.className = 'kc-resource-bar';
     resBar.innerHTML = `
-      <span class="kc-res-item kc-res-cells" aria-label="Cells"><span class="kc-res-icon" data-icon="cells"></span><span data-el="cells">0</span></span>
-      <span class="kc-res-sep"></span>
-      <span class="kc-res-item kc-res-gold" aria-label="Gold"><span class="kc-res-icon" data-icon="gold"></span><span data-el="gold">0</span></span>
-      <span class="kc-res-sep"></span>
-      <span class="kc-res-item kc-res-timer" aria-label="Run Timer"><span class="kc-res-icon" data-icon="timer"></span><span data-el="timer">00:00</span></span>
+      <span class="kc-res-item kc-res-cells" aria-label="Cells"><span class="kc-res-val" data-el="cells">0</span><span class="kc-res-icon" data-icon="cells"></span></span>
+      <span class="kc-res-item kc-res-gold" aria-label="Gold"><span class="kc-res-val" data-el="gold">0</span><span class="kc-res-icon" data-icon="gold"></span></span>
     `;
     this.cellsIconEl = resBar.querySelector('[data-icon="cells"]') as HTMLSpanElement;
     this.goldIconEl = resBar.querySelector('[data-icon="gold"]') as HTMLSpanElement;
-    this.timerIconEl = resBar.querySelector('[data-icon="timer"]') as HTMLSpanElement;
     this.goldEl = resBar.querySelector('[data-el="gold"]') as HTMLSpanElement;
     this.cellsEl = resBar.querySelector('[data-el="cells"]') as HTMLSpanElement;
-    this.timerEl = resBar.querySelector('[data-el="timer"]') as HTMLSpanElement;
-    this.trContainer.appendChild(resBar);
 
-    // Kill Streak + Curse Counter row
-    const badgesRow = document.createElement('div');
-    badgesRow.className = 'kc-tr-badges';
-    this.streakEl = document.createElement('div');
-    this.streakEl.className = 'kc-streak-badge kc-hidden';
-    this.curseEl = document.createElement('div');
-    this.curseEl.className = 'kc-curse-banner kc-hidden';
-    badgesRow.append(this.streakEl, this.curseEl);
-    this.trContainer.appendChild(badgesRow);
+    countersCol.append(this.curseEl, this.streakEl, resBar);
+
+    const mapCol = document.createElement('div');
+    mapCol.className = 'kc-br-map-col';
+
+    // Metadata Strip right ABOVE Minimap: Run Timer + Biome short name (left), Boss Stem Cells (right)
+    const biomeRow = document.createElement('div');
+    biomeRow.className = 'kc-biome-header';
+
+    const metaLeft = document.createElement('div');
+    metaLeft.className = 'kc-br-meta-left';
+
+    this.timerEl = document.createElement('span');
+    this.timerEl.className = 'kc-res-timer';
+    this.timerEl.textContent = '0m 00s';
+
+    this.biomeNameEl = document.createElement('span');
+    this.biomeNameEl.className = 'kc-biome-name';
+
+    metaLeft.append(this.timerEl, this.biomeNameEl);
+
+    this.bcPipsEl = document.createElement('div');
+    this.bcPipsEl.className = 'kc-bc-pips';
+    this.bcPipsEl.innerHTML = `<span class="kc-bc-count">0</span><span class="kc-bc-icon"></span>`;
+    this.bcCountEl = this.bcPipsEl.querySelector('.kc-bc-count') as HTMLSpanElement;
+    this.bcIconEl = this.bcPipsEl.querySelector('.kc-bc-icon') as HTMLSpanElement;
+
+    biomeRow.append(metaLeft, this.bcPipsEl);
+
+    mapCol.append(biomeRow, this.minimapHost);
+    cluster.append(countersCol, mapCol);
+    this.trContainer.appendChild(cluster);
   }
 
   private buildBottomLeft(): void {
+    // Authentic Dead Cells Bottom-Left Stack:
+    // Band 0 (Top): Equipped Mutation Badges + Active Status Tags (+ 5BC Malaise if active)
+    // Band 1 (Middle): Uniform Action Strip [Flask] [W1] [W2] [S1] [S2] [Amulet]
+    // Band 2 (Bottom): Scroll Stat Numbers (Brutality / Tactics / Survival) + Iconic Emerald-Green HP & Amber Rally Bar
     const cluster = document.createElement('div');
     cluster.className = 'kc-bl-cluster';
 
-    // Far-left: Sculpted Glass Health Flask Vessel (clicking drinks!)
-    this.flaskWidgetEl = document.createElement('button');
-    this.flaskWidgetEl.type = 'button';
-    this.flaskWidgetEl.className = 'kc-flask-widget';
-    this.flaskWidgetEl.setAttribute('aria-label', 'Drink Health Flask');
-    this.flaskWidgetEl.innerHTML = `
-      <div class="kc-flask-vessel">
-        <div class="kc-flask-stopper"></div>
-        <div class="kc-flask-neck"></div>
-        <div class="kc-flask-body">
-          <div class="kc-flask-liquid">
-            <span class="kc-flask-meniscus"></span>
-          </div>
-          <div class="kc-flask-glint"></div>
-        </div>
-      </div>
-      <div class="kc-flask-pips"></div>
-      <span class="kc-flask-key kc-keycap">R</span>
-    `;
-    this.flaskWidgetEl.addEventListener('click', (e) => {
-      e.stopPropagation();
-      this.callbacks.onPlayUiClick?.('select');
-      this.callbacks.onTriggerHeal?.();
-    });
-    this.flaskLiquidEl = this.flaskWidgetEl.querySelector('.kc-flask-liquid') as HTMLDivElement;
-    this.flaskPipsEl = this.flaskWidgetEl.querySelector('.kc-flask-pips') as HTMLDivElement;
-    this.flaskKeyEl = this.flaskWidgetEl.querySelector('.kc-flask-key') as HTMLSpanElement;
-
-    // Right column extending from Flask collar: Status Chips + 5BC Malaise + HP Bar + Gear/Amulet Slots + Scrolls/Mutations
     const mainCol = document.createElement('div');
     mainCol.className = 'kc-bl-main';
 
-    // Floating status chips right above HP/Malaise bar
+    // Band 0: Mutations row + Status tags (cleanly hidden when empty — zero grey dots!)
+    const topMetaRow = document.createElement('div');
+    topMetaRow.className = 'kc-bl-top-row';
+
+    this.mutationsBarEl = document.createElement('div');
+    this.mutationsBarEl.className = 'kc-mutations-bar kc-hidden';
+    for (let i = 0; i < 3; i++) {
+      const mut = document.createElement('div');
+      mut.className = 'kc-mut-slot kc-hidden';
+      this.mutationsBarEl.appendChild(mut);
+      this.mutationEls.push(mut);
+    }
+
     this.hpStatusEl = document.createElement('div');
     this.hpStatusEl.className = 'kc-hp-status-tags';
-    mainCol.appendChild(this.hpStatusEl);
+
+    topMetaRow.append(this.mutationsBarEl, this.hpStatusEl);
+    mainCol.appendChild(topMetaRow);
 
     // 5BC Segmented Crimson-Violet Malaise Gauge (shown only at bossStemCells >= 5)
     this.malaiseWrapEl = document.createElement('div');
@@ -2210,26 +2315,34 @@ export class HudOverlay {
     this.malaiseTextEl = this.malaiseWrapEl.querySelector('.kc-malaise-text') as HTMLSpanElement;
     mainCol.appendChild(this.malaiseWrapEl);
 
-    // Beveled Crimson HP + Glowing Orange Rally + Translucent Temp Overheal Shield Bar
-    const hpWrap = document.createElement('div');
-    hpWrap.className = 'kc-hp-block';
-    hpWrap.innerHTML = `
-      <div class="kc-hp-track">
-        <div class="kc-hp-rally"></div>
-        <div class="kc-hp-fill"></div>
-        <div class="kc-hp-shield"></div>
-        <span class="kc-hp-numbers">100 / 100</span>
-      </div>
-    `;
-    this.hpTextEl = hpWrap.querySelector('.kc-hp-numbers') as HTMLSpanElement;
-    this.hpRallyEl = hpWrap.querySelector('.kc-hp-rally') as HTMLDivElement;
-    this.hpFillEl = hpWrap.querySelector('.kc-hp-fill') as HTMLDivElement;
-    this.hpShieldEl = hpWrap.querySelector('.kc-hp-shield') as HTMLDivElement;
-    mainCol.appendChild(hpWrap);
-
-    // Gear Bar (4 Weapon/Skill slots + Amulet slot) + Diamond Scroll Medallions & Mutations
+    // Band 1: Uniform Crisp Square Action Strip (Flask + W1 + W2 + S1 + S2 + Amulet)
     const loadoutRow = document.createElement('div');
     loadoutRow.className = 'kc-loadout-row';
+
+    // Health Flask Tile (exact 48x48 matching slot height)
+    this.flaskWidgetEl = document.createElement('button');
+    this.flaskWidgetEl.type = 'button';
+    this.flaskWidgetEl.className = 'kc-flask-widget';
+    this.flaskWidgetEl.setAttribute('aria-label', 'Drink Health Flask');
+    this.flaskWidgetEl.innerHTML = `
+      <div class="kc-flask-body">
+        <div class="kc-flask-liquid"></div>
+        <span class="kc-flask-icon-wrap"></span>
+        <span class="kc-flask-count">1</span>
+        <div class="kc-flask-pips"></div>
+      </div>
+      <span class="kc-flask-key kc-keycap">R</span>
+    `;
+    this.flaskWidgetEl.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.callbacks.onPlayUiClick?.('select');
+      this.callbacks.onTriggerHeal?.();
+    });
+    this.flaskLiquidEl = this.flaskWidgetEl.querySelector('.kc-flask-liquid') as HTMLDivElement;
+    this.flaskIconEl = this.flaskWidgetEl.querySelector('.kc-flask-icon-wrap') as HTMLSpanElement;
+    this.flaskCountEl = this.flaskWidgetEl.querySelector('.kc-flask-count') as HTMLSpanElement;
+    this.flaskPipsEl = this.flaskWidgetEl.querySelector('.kc-flask-pips') as HTMLDivElement;
+    this.flaskKeyEl = this.flaskWidgetEl.querySelector('.kc-flask-key') as HTMLSpanElement;
 
     const gearGroup = document.createElement('div');
     gearGroup.className = 'kc-gear-group';
@@ -2247,7 +2360,7 @@ export class HudOverlay {
       this.gearSlotEls.push(slot);
     }
 
-    // Amulet slot (index 4)
+    // Amulet slot (index 4) — sleek dark tile with subtle pendant silhouette, zero duplicate AMU text!
     const amuSep = document.createElement('span');
     amuSep.className = 'kc-gear-divider';
     gearGroup.appendChild(amuSep);
@@ -2258,10 +2371,14 @@ export class HudOverlay {
     this.bindSlotTooltipEvents(this.amuletSlotEl, 4);
     gearGroup.appendChild(this.amuletSlotEl);
 
-    // Scrolls & Mutations stacked beside gear bar
-    const statsSide = document.createElement('div');
-    statsSide.className = 'kc-stats-side';
+    loadoutRow.append(this.flaskWidgetEl, gearGroup);
+    mainCol.appendChild(loadoutRow);
 
+    // Band 2: Health & Scroll Strip DIRECTLY UNDERNEATH THE SLOTS (iconic Dead Cells signature!)
+    const vitalsRow = document.createElement('div');
+    vitalsRow.className = 'kc-vitals-row';
+
+    // Left: 3 Scroll Stat Numbers (Brutality Red, Tactics Purple, Survival Green) with tiny clean pixel scroll emblems
     const scrollsBar = document.createElement('div');
     scrollsBar.className = 'kc-scrolls-bar';
     const stats: ScrollStat[] = ['brutality', 'tactics', 'survival'];
@@ -2269,7 +2386,7 @@ export class HudOverlay {
       const med = document.createElement('div');
       med.className = `kc-scroll-medallion kc-color-${stat}`;
       med.innerHTML = `
-        <span class="kc-scroll-diamond"><span class="kc-scroll-icon"></span></span>
+        <span class="kc-scroll-icon"></span>
         <span class="kc-scroll-count">1</span>
       `;
       this.scrollSlotEls[stat] = {
@@ -2280,20 +2397,26 @@ export class HudOverlay {
       scrollsBar.appendChild(med);
     }
 
-    const mutsBar = document.createElement('div');
-    mutsBar.className = 'kc-mutations-bar';
-    for (let i = 0; i < 3; i++) {
-      const mut = document.createElement('div');
-      mut.className = 'kc-mut-slot';
-      mutsBar.appendChild(mut);
-      this.mutationEls.push(mut);
-    }
+    // Right: Vibrant Emerald-Green Health Bar + Glowing Amber-Orange Rally Bar + Centered HP / MAX (PCT%)
+    const hpWrap = document.createElement('div');
+    hpWrap.className = 'kc-hp-block';
+    hpWrap.innerHTML = `
+      <div class="kc-hp-track">
+        <div class="kc-hp-rally"></div>
+        <div class="kc-hp-fill"></div>
+        <div class="kc-hp-shield"></div>
+        <span class="kc-hp-numbers">100 / 100 (100%)</span>
+      </div>
+    `;
+    this.hpTextEl = hpWrap.querySelector('.kc-hp-numbers') as HTMLSpanElement;
+    this.hpRallyEl = hpWrap.querySelector('.kc-hp-rally') as HTMLDivElement;
+    this.hpFillEl = hpWrap.querySelector('.kc-hp-fill') as HTMLDivElement;
+    this.hpShieldEl = hpWrap.querySelector('.kc-hp-shield') as HTMLDivElement;
 
-    statsSide.append(scrollsBar, mutsBar);
-    loadoutRow.append(gearGroup, statsSide);
-    mainCol.appendChild(loadoutRow);
+    vitalsRow.append(scrollsBar, hpWrap);
+    mainCol.appendChild(vitalsRow);
 
-    cluster.append(this.flaskWidgetEl, mainCol);
+    cluster.append(mainCol);
     this.blContainer.appendChild(cluster);
   }
 
@@ -2393,6 +2516,15 @@ export class HudOverlay {
 
     if (sig !== this.lastTooltipSig) {
       this.lastTooltipSig = sig;
+      this.slotTooltipEl.classList.remove(
+        'kc-color-brutality',
+        'kc-color-tactics',
+        'kc-color-survival',
+        'kc-color-colorless'
+      );
+      if (g) {
+        this.slotTooltipEl.classList.add(g.quality === 'L' ? 'kc-color-colorless' : `kc-color-${g.color}`);
+      }
       if (!g) {
         const bindSuffix = slot.hint.html
           ? ` · Bind: ${mode === 'gamepad' ? slot.hint.html : `<span class="kc-keycap">${escapeHtml(slot.hint.text)}</span>`}`
@@ -2412,16 +2544,19 @@ export class HudOverlay {
       }
     }
 
-    // Position anchored directly above the hovered/focused slot, clamped cleanly inside stage
+    // Position anchored cleanly above the entire bottom-left HUD cluster (including mutations row),
+    // clamped horizontally inside the stage so there is ZERO overlap with mutations or status tags!
     const stageRect = this.hudRoot.getBoundingClientRect();
     const slotRect = anchorEl.getBoundingClientRect();
+    const blRect = this.blContainer.getBoundingClientRect();
     if (stageRect.width > 0 && slotRect.width > 0) {
       const tipRect = this.slotTooltipEl.getBoundingClientRect();
-      const tipW = tipRect.width || 276;
+      const tipW = tipRect.width || 288;
       const slotCenterX = slotRect.left - stageRect.left + slotRect.width * 0.5;
       const rawLeft = slotCenterX - tipW * 0.5;
       const clampedLeft = Math.max(12, Math.min(stageRect.width - tipW - 12, rawLeft));
-      const bottomPx = Math.max(82, stageRect.bottom - slotRect.top + 12);
+      const anchorTop = blRect.height > 0 ? Math.min(slotRect.top, blRect.top) : slotRect.top;
+      const bottomPx = Math.max(92, stageRect.bottom - anchorTop + 10);
       const arrowX = Math.max(16, Math.min(tipW - 16, slotCenterX - clampedLeft));
 
       this.slotTooltipEl.style.left = `${clampedLeft.toFixed(1)}px`;
@@ -2497,34 +2632,32 @@ export class HudOverlay {
       alt: info.name,
     });
 
-    // Primary DPS / Crit / Skill / Shield stat strip
+    // Primary DPS / Crit / Skill / Shield stat strip (authentic Dead Cells: 966 (3517) DPS)
     const statChips: string[] = [];
     if (summary.isAmulet) {
       if (summary.blockDrPct !== null && summary.blockDrPct > 0) {
-        statChips.push(`<span class="kc-stat-dps">DR <strong>-${summary.blockDrPct}%</strong></span>`);
+        statChips.push(`<span class="kc-stat-dps"><strong>-${summary.blockDrPct}%</strong> DMG TAKEN</span>`);
       } else {
         statChips.push('<span class="kc-stat-dps">PASSIVE <strong>AMULET</strong></span>');
       }
     } else if (summary.isSkill) {
       if (summary.dps > 0) {
-        statChips.push(`<span class="kc-stat-dps">DMG <strong>${summary.dps}</strong></span>`);
+        statChips.push(`<span class="kc-stat-dps"><strong>${summary.dps}</strong> DMG</span>`);
       }
       if (summary.cooldownSec !== null) {
-        statChips.push(`<span class="kc-stat-cd">CD <strong>${summary.cooldownSec.toFixed(1)}s</strong></span>`);
+        statChips.push(`<span class="kc-stat-cd"><strong>${summary.cooldownSec.toFixed(1)}s</strong> CD</span>`);
       }
     } else if (summary.isShield) {
-      statChips.push(`<span class="kc-stat-dps">PARRY <strong>${summary.dps}</strong></span>`);
-      if (summary.critDps !== null) {
-        statChips.push(`<span class="kc-stat-crit">CRIT <strong>${summary.critDps}</strong></span>`);
-      }
+      const critPart =
+        summary.critDps !== null ? ` <span class="kc-stat-crit">(${summary.critDps})</span>` : '';
+      statChips.push(`<span class="kc-stat-dps"><strong>${summary.dps}</strong>${critPart} PARRY</span>`);
       if (summary.blockDrPct !== null) {
-        statChips.push(`<span class="kc-stat-cd">BLOCK <strong>${summary.blockDrPct}%</strong></span>`);
+        statChips.push(`<span class="kc-stat-cd"><strong>${summary.blockDrPct}%</strong> BLOCK</span>`);
       }
     } else {
-      statChips.push(`<span class="kc-stat-dps">DPS <strong>${summary.dps}</strong></span>`);
-      if (summary.critDps !== null) {
-        statChips.push(`<span class="kc-stat-crit">CRIT <strong>${summary.critDps}</strong></span>`);
-      }
+      const critPart =
+        summary.critDps !== null ? ` <span class="kc-stat-crit">(${summary.critDps})</span>` : '';
+      statChips.push(`<span class="kc-stat-dps"><strong>${summary.dps}</strong>${critPart} DPS</span>`);
     }
 
     const critLineHtml = summary.critConditionLabel
@@ -2582,17 +2715,15 @@ export class HudOverlay {
   }
 
   private updateTopRight(state: SimState): void {
-    this.biomeNameEl.textContent = getBiomeDisplayName(state.activeBiomeId, this.catalog);
+    this.biomeNameEl.textContent = getBiomeShortName(state.activeBiomeId);
 
-    const pips = this.bcPipsEl.children;
-    for (let i = 0; i < pips.length; i++) {
-      pips[i]!.classList.toggle('is-active', i < state.bossStemCells);
-    }
+    this.bcCountEl.textContent = String(state.bossStemCells);
+    this.bcPipsEl.classList.toggle('is-active', state.bossStemCells > 0);
     this.bcPipsEl.setAttribute('aria-label', `Boss Stem Cells: ${state.bossStemCells}BC`);
 
     this.goldEl.textContent = String(Math.floor(state.player.gold));
     this.cellsEl.textContent = String(Math.floor(state.player.cells));
-    this.timerEl.textContent = formatTimer(state.player.runTimerTicks);
+    this.timerEl.textContent = formatRunTimerCompact(state.player.runTimerTicks);
 
     // Track per-biome Kill-Streak state, milestone celebration & break shake
     const biomeId = state.activeBiomeId;
@@ -2650,17 +2781,18 @@ export class HudOverlay {
             ? '#fde047'
             : isDimmed
               ? '#64748b'
-              : '#cbd5e1';
-        const iconHtml = renderUiGlyphSvg(iconKind, 14, iconAccent);
+              : '#f1f5f9';
+        const iconHtml =
+          !isBroken && !hitTarget
+            ? renderItemIconHtml('Skull', this.artPackMode, this.customPackResolver, {
+                size: 18,
+                fallbackKind: 'skull',
+                accentColor: iconAccent,
+                alt: 'Kill Streak',
+              })
+            : renderUiGlyphSvg(iconKind, 16, iconAccent);
         const countText = target > 0 ? `${streak}<span class="kc-streak-target">/${target}</span>` : `${streak}`;
-        const badgeLabel = isBroken
-          ? 'BROKEN'
-          : hitTarget
-            ? 'DOOR OPEN'
-            : target > 0
-              ? 'NO-HIT'
-              : 'STREAK';
-        this.streakEl.innerHTML = `${iconHtml}<span class="kc-streak-num">${countText}</span><span class="kc-streak-tag">${badgeLabel}</span>`;
+        this.streakEl.innerHTML = `<span class="kc-streak-num">${countText}</span><span class="kc-res-icon">${iconHtml}</span>`;
       }
     }
 
@@ -2672,42 +2804,61 @@ export class HudOverlay {
       if (curseLeft > 0) {
         this.curseEl.classList.remove('kc-hidden');
         const skullHtml = renderItemIconHtml('Skull', this.artPackMode, this.customPackResolver, {
-          size: 18,
+          size: 17,
           fallbackKind: 'skull',
           alt: 'Curse',
         });
-        this.curseEl.innerHTML = `${skullHtml}<span class="kc-curse-count">${curseLeft}</span><span class="kc-curse-label">CURSED</span>`;
+        this.curseEl.innerHTML = `<span class="kc-curse-label">CURSE</span><span class="kc-curse-count">${curseLeft}</span>${skullHtml}`;
       } else {
         this.curseEl.classList.add('kc-hidden');
       }
     }
   }
 
+  private resolveGearBorderClasses(gear: GearInstance): string[] {
+    if (gear.quality === 'L') return ['kc-color-colorless'];
+    const weaponDef = gear.slotKind === 'weapon' ? this.catalog?.getWeapon?.(gear.defId) : undefined;
+    const skillDef = gear.slotKind === 'skill' ? this.catalog?.getSkill?.(gear.defId) : undefined;
+    const colors = weaponDef?.colors ?? skillDef?.colors;
+    const out = [`kc-color-${gear.color}`];
+    if (colors && colors.length >= 2) {
+      const sorted = [...colors].slice(0, 2).sort();
+      const key = `${sorted[0]}_${sorted[1]}`;
+      if (key === 'brutality_tactics') out.push('kc-dual-bt');
+      else if (key === 'brutality_survival') out.push('kc-dual-bs');
+      else if (key === 'survival_tactics') out.push('kc-dual-ts');
+    }
+    return out;
+  }
+
   private updateBottomLeft(state: SimState, bindings: KeyBindings): void {
     const p = state.player;
     const maxHp = Math.max(1, p.maxHp);
     const hpPct = Math.max(0, Math.min(100, (p.hp / maxHp) * 100));
+    const hpPctRound = Math.round(hpPct);
     const rallyPct = Math.max(hpPct, Math.min(100, ((p.hp + p.rallyHp) / maxHp) * 100));
     const tempShield = Math.max(0, p.tempShieldHp ?? 0);
+    const isLowHp = hpPct < 22;
 
     if (tempShield > 0) {
-      this.hpTextEl.innerHTML = `${Math.max(0, Math.ceil(p.hp))} / ${Math.ceil(maxHp)} <span class="kc-hp-shield-num">+${Math.ceil(tempShield)}</span>`;
+      this.hpTextEl.innerHTML = `${Math.max(0, Math.ceil(p.hp))} / ${Math.ceil(maxHp)} (${hpPctRound}%) <span class="kc-hp-shield-num">+${Math.ceil(tempShield)}</span>`;
       const shieldWidthPct = Math.max(4, Math.min(100, (tempShield / maxHp) * 100));
       const shieldLeftPct = Math.max(0, Math.min(100 - shieldWidthPct, hpPct));
       this.hpShieldEl.style.left = `${shieldLeftPct.toFixed(2)}%`;
       this.hpShieldEl.style.width = `${shieldWidthPct.toFixed(2)}%`;
       this.hpShieldEl.classList.add('is-active');
     } else {
-      this.hpTextEl.textContent = `${Math.max(0, Math.ceil(p.hp))} / ${Math.ceil(maxHp)}`;
+      this.hpTextEl.textContent = `${Math.max(0, Math.ceil(p.hp))} / ${Math.ceil(maxHp)} (${hpPctRound}%)`;
       this.hpShieldEl.style.width = '0%';
       this.hpShieldEl.classList.remove('is-active');
     }
 
     this.hpFillEl.style.width = `${hpPct.toFixed(2)}%`;
+    this.hpFillEl.classList.toggle('is-low-hp', isLowHp);
     this.hpFillEl.classList.toggle('is-cursed', p.curseKillsLeft > 0);
     this.hpRallyEl.style.width = `${rallyPct.toFixed(2)}%`;
 
-    // 5BC Segmented Malaise Bar right above HP bar
+    // 5BC Segmented Malaise Bar right above Action Strip
     const showMalaise = state.bossStemCells >= 5;
     this.malaiseWrapEl.classList.toggle('kc-hidden', !showMalaise);
     if (showMalaise) {
@@ -2726,12 +2877,12 @@ export class HudOverlay {
       this.malaiseTextEl.textContent = `MALAISE ${Math.round(malaise)}%`;
     }
 
-    // Active status chips above HP bar
+    // Active status chips above Action Strip (compact, subtle GOD pill when active)
     const chipKeys: string[] = [];
     const chipHtml: string[] = [];
     if (p.godMode) {
       chipKeys.push('god');
-      chipHtml.push('<span class="kc-status-pill is-cyan">GOD</span>');
+      chipHtml.push('<span class="kc-status-pill is-cyan is-god">GOD</span>');
     }
     if (tempShield > 0) {
       chipKeys.push(`shd${Math.ceil(tempShield)}`);
@@ -2781,13 +2932,14 @@ export class HudOverlay {
       this.hpStatusEl.innerHTML = chipHtml.join('');
     }
 
-    // Sculpted Glass Health Flask
+    // Crisp Dead Cells Health Flask Tile (exact 48x48 matching slot height)
     const mode = this.lastInputSnapshot?.mode ?? 'keyboard';
     const glyphFamily = this.lastInputSnapshot?.glyphFamily ?? 'keyboard';
 
     const maxFlask = Math.max(1, p.maxFlaskCharges);
     const flaskPct = Math.max(0, Math.min(100, (p.flaskCharges / maxFlask) * 100));
     this.flaskLiquidEl.style.height = `${flaskPct.toFixed(0)}%`;
+    this.flaskCountEl.textContent = String(p.flaskCharges);
     this.flaskWidgetEl.classList.toggle('is-empty', p.flaskCharges <= 0);
     this.flaskWidgetEl.classList.toggle('is-low-hp', p.flaskCharges > 0 && hpPct < 45);
     if (mode === 'gamepad') {
@@ -2814,7 +2966,7 @@ export class HudOverlay {
       this.flaskPipsEl.children[i]!.classList.toggle('is-full', i < p.flaskCharges);
     }
 
-    // Diamond Scroll Medallions
+    // Crisp Scroll Stat Counters directly underneath Flask
     const scrollStats: ScrollStat[] = ['brutality', 'tactics', 'survival'];
     for (const stat of scrollStats) {
       const count = p.scrolls[stat];
@@ -2823,7 +2975,7 @@ export class HudOverlay {
       slot.wrap.setAttribute('aria-label', `${stat.toUpperCase()} ${count} (${getScrollDamagePct(count)}% Damage)`);
     }
 
-    // Four Crisp Square Gear Slots + Amulet Slot (anchored hover/focus tooltip cards, ZERO native title=""!)
+    // Uniform 48x48 Square Gear Slots + Clean Amulet Slot (anchored hover/focus tooltip cards, ZERO native title=""!)
     const w1KeyLabel =
       bindings.weapon1 === DEFAULT_KEY_BINDINGS.weapon1 ? 'LMB' : formatKeyCode(bindings.weapon1);
     const w2KeyLabel =
@@ -2854,11 +3006,12 @@ export class HudOverlay {
       gear: GearInstance | null;
       badge: { sigKey: string; html: string };
       emptyTag: string;
+      emptyIconKind: IconFallbackKind;
     }> = [
-      { gear: p.loadout.weapon1, badge: resolveSlotBadge('weapon1', w1KeyLabel), emptyTag: 'W1' },
-      { gear: p.loadout.weapon2, badge: resolveSlotBadge('weapon2', w2KeyLabel), emptyTag: 'W2' },
-      { gear: p.loadout.skill1, badge: resolveSlotBadge('skill1', formatKeyCode(bindings.skill1)), emptyTag: 'S1' },
-      { gear: p.loadout.skill2, badge: resolveSlotBadge('skill2', formatKeyCode(bindings.skill2)), emptyTag: 'S2' },
+      { gear: p.loadout.weapon1, badge: resolveSlotBadge('weapon1', w1KeyLabel), emptyTag: 'W1', emptyIconKind: 'melee' },
+      { gear: p.loadout.weapon2, badge: resolveSlotBadge('weapon2', w2KeyLabel), emptyTag: 'W2', emptyIconKind: 'shield' },
+      { gear: p.loadout.skill1, badge: resolveSlotBadge('skill1', formatKeyCode(bindings.skill1)), emptyTag: 'S1', emptyIconKind: 'power' },
+      { gear: p.loadout.skill2, badge: resolveSlotBadge('skill2', formatKeyCode(bindings.skill2)), emptyTag: 'S2', emptyIconKind: 'power' },
     ];
     const amulet = p.loadout.amulet;
 
@@ -2885,7 +3038,7 @@ export class HudOverlay {
       this.lastLoadoutSignature = sig;
       for (let i = 0; i < 4; i++) {
         const el = this.gearSlotEls[i]!;
-        const { gear, badge: keyBadge, emptyTag } = slots[i]!;
+        const { gear, badge: keyBadge, emptyTag, emptyIconKind } = slots[i]!;
         const casting = this.slotFlashSec[i]! > 0;
 
         el.className = 'kc-gear-slot';
@@ -2895,25 +3048,27 @@ export class HudOverlay {
         if (!gear) {
           el.classList.add('is-empty');
           el.setAttribute('aria-label', `Empty ${emptyTag} Slot`);
+          const silhouette = renderUiGlyphSvg(emptyIconKind, 20, '#4a5772', 'kc-empty-silhouette');
           el.innerHTML = `
-            <span class="kc-gear-empty-mark">${emptyTag}</span>
+            <div class="kc-gear-icon-wrap">${silhouette}</div>
             ${keyBadge.html}
           `;
           continue;
         }
 
-        const colorClass = gear.quality === 'L' ? 'kc-color-colorless' : `kc-color-${gear.color}`;
-        el.classList.add(colorClass);
+        const borderClasses = this.resolveGearBorderClasses(gear);
+        el.classList.add(...borderClasses);
         const info = getGearDisplayInfo(gear, this.catalog);
         const badge = formatGearBadge(gear.level, gear.quality);
         const qClass = getQualityCssClass(gear.quality);
         const isLeg = gear.quality === 'L';
         const maxCd = Math.max(1, info.cooldownTicks || 300);
         const cdPct = gear.cooldownTicks > 0 ? Math.min(100, (gear.cooldownTicks / maxCd) * 100) : 0;
-        const cdSec = (gear.cooldownTicks / SIM_HZ).toFixed(1);
+        const cdSecNum = gear.cooldownTicks / SIM_HZ;
+        const cdLabel = cdSecNum >= 2 ? String(Math.ceil(cdSecNum)) : cdSecNum.toFixed(1);
 
         const iconHtml = renderItemIconHtml(gear.defId, this.artPackMode, this.customPackResolver, {
-          size: 36,
+          size: 34,
           className: 'kc-gear-art',
           alt: info.name,
         });
@@ -2934,32 +3089,33 @@ export class HudOverlay {
 
         el.setAttribute('aria-label', `${info.name} ${badge}`);
         el.innerHTML = `
+          <span class="kc-slot-caret" aria-hidden="true"></span>
           <div class="kc-gear-icon-wrap">${iconHtml}</div>
           <span class="kc-gear-badge ${qClass} ${isLeg ? 'is-legendary' : ''}">${escapeHtml(badge)}</span>
           ${ammoHtml}
           ${keyBadge.html}
           ${
             gear.cooldownTicks > 0
-              ? `<div class="kc-cd-overlay"><div class="kc-cd-curtain" style="height:${cdPct.toFixed(1)}%"></div><span class="kc-cd-text">${cdSec}s</span></div>`
+              ? `<div class="kc-cd-overlay"><div class="kc-cd-curtain" style="height:${cdPct.toFixed(1)}%"></div><span class="kc-cd-text">${cdLabel}</span></div>`
               : ''
           }
         `;
       }
 
-      // Render Amulet Slot (no native title="")
+      // Render Amulet Slot — sleek dark tile with subtle pendant silhouette when empty (NO duplicate AMU/AMU text!)
       const amuEl = this.amuletSlotEl;
       amuEl.className = 'kc-gear-slot kc-amulet-slot';
       amuEl.removeAttribute('title');
       if (!amulet) {
         amuEl.classList.add('is-empty');
         amuEl.setAttribute('aria-label', 'Empty Amulet Slot');
+        const pendantSilhouette = renderUiGlyphSvg('amulet', 22, '#5a6a88', 'kc-empty-silhouette');
         amuEl.innerHTML = `
-          <span class="kc-gear-empty-mark">AMU</span>
-          <span class="kc-gear-key">AMU</span>
+          <div class="kc-gear-icon-wrap">${pendantSilhouette}</div>
         `;
       } else {
-        const amuColorClass = amulet.quality === 'L' ? 'kc-color-colorless' : `kc-color-${amulet.color}`;
-        amuEl.classList.add(amuColorClass);
+        const amuBorderClasses = this.resolveGearBorderClasses(amulet);
+        amuEl.classList.add(...amuBorderClasses);
         const amuInfo = getGearDisplayInfo(amulet, this.catalog);
         const amuBadge = formatGearBadge(amulet.level, amulet.quality);
         const amuQClass = getQualityCssClass(amulet.quality);
@@ -2971,26 +3127,29 @@ export class HudOverlay {
         });
         const drTag =
           amulet.dmgReductionPct && amulet.dmgReductionPct > 0
-            ? `<span class="kc-gear-ammo">-${amulet.dmgReductionPct}%</span>`
+            ? `<span class="kc-gear-key kc-amulet-dr">-${amulet.dmgReductionPct}%</span>`
             : '';
         amuEl.setAttribute('aria-label', `${amuInfo.name} ${amuBadge}`);
         amuEl.innerHTML = `
+          <span class="kc-slot-caret" aria-hidden="true"></span>
           <div class="kc-gear-icon-wrap">${amuIcon}</div>
           <span class="kc-gear-badge ${amuQClass} ${amulet.quality === 'L' ? 'is-legendary' : ''}">${escapeHtml(amuBadge)}</span>
           ${drTag}
-          <span class="kc-gear-key">AMU</span>
         `;
       }
 
-      // Mutation Badges (real pixel-art icons!)
+      // Mutation Badges directly above action strip — ONLY render equipped mutations (zero empty grey dots!)
+      let filledMutCount = 0;
       for (let i = 0; i < 3; i++) {
         const mutEl = this.mutationEls[i]!;
         const mutId = p.mutations[i];
         mutEl.className = 'kc-mut-slot';
         if (!mutId) {
-          mutEl.innerHTML = '<span class="kc-mut-empty"></span>';
-          mutEl.setAttribute('aria-label', `Empty Mutation Slot ${i + 1}`);
+          mutEl.classList.add('kc-hidden');
+          mutEl.innerHTML = '';
+          mutEl.removeAttribute('aria-label');
         } else {
+          filledMutCount++;
           const m = getMutationDisplayInfo(mutId, this.catalog);
           mutEl.classList.add('is-filled', `kc-color-${m.color}`);
           mutEl.innerHTML = renderItemIconHtml(mutId, this.artPackMode, this.customPackResolver, {
@@ -3001,6 +3160,7 @@ export class HudOverlay {
           mutEl.setAttribute('aria-label', `${m.name}: ${m.description}`);
         }
       }
+      this.mutationsBarEl.classList.toggle('kc-hidden', filledMutCount === 0);
     }
   }
 
@@ -3784,45 +3944,71 @@ export class HudOverlay {
       staggerVertical?: boolean;
     }
   ): void {
+    const now = this.elapsedSec;
+
+    // Deduplicate identical event + sim-particle text emitted simultaneously at the same spot
+    const isDuplicate = this.floaters.some(
+      (f) =>
+        f.text === text &&
+        now - f.spawnTimeSec < 0.14 &&
+        Math.abs(f.worldX - worldX) < 28 &&
+        Math.abs(f.worldY - worldY) < 28
+    );
+    if (isDuplicate) return;
+
     if (this.floaters.length >= MAX_FLOATERS) {
       const oldest = this.floaters.shift();
       oldest?.el.remove();
     }
     const el = document.createElement('div');
     el.className = className;
-    if (className.includes('is-crit') && !text.includes('CRIT')) {
-      el.innerHTML = `<span class="kc-crit-super">CRIT</span>${escapeHtml(text)}`;
-    } else {
-      el.textContent = text;
-    }
+    el.textContent = text;
     el.style.color = color;
     this.floatLayer.appendChild(el);
 
     const id = this.nextFloaterId++;
-    const jitter = ((id * 37) % 19) - 9;
-    let spawnX = opts?.staggerVertical ? worldX : worldX + jitter * 0.45;
+    const jitter = ((id * 37) % 15) - 7;
+    const isScrollOrBanner =
+      className.includes('is-scroll-pop') ||
+      className.includes('is-curse-lifted') ||
+      className.includes('is-micro');
+    const spawnX = opts?.staggerVertical || isScrollOrBanner ? worldX : worldX + jitter * 0.35;
     let spawnY = worldY;
 
-    if (opts?.staggerVertical) {
-      for (let step = 0; step < 6; step++) {
-        const collides = this.floaters.some(
-          (f) =>
-            f.ttl > f.maxTtl - 0.45 &&
-            Math.abs(f.worldX - spawnX) < 26 &&
-            Math.abs(f.worldY - spawnY) < 13
-        );
-        if (!collides) break;
-        spawnY -= 13;
-      }
+    // Universal spatial + temporal vertical staggering across ALL nearby floaters (0.50s window)
+    // Prevents simultaneous +1 BRUTALITY / +1 TACTICS / +1 SURVIVAL, gold/cell pops,
+    // and rapid multi-hit combat numbers from ever overlapping into garbled text!
+    const estimateHalfWidth = (txt: string, cls: string): number => {
+      const charW = cls.includes('is-crit') ? 4.4 : cls.includes('is-micro') ? 2.5 : 3.3;
+      return Math.max(14, txt.length * charW);
+    };
+    const minGap = className.includes('is-crit')
+      ? 14
+      : className.includes('is-micro')
+        ? 9.5
+        : className.includes('is-scroll-pop')
+          ? 12
+          : 11.5;
+    const myHalfW = estimateHalfWidth(text, className);
+
+    for (let step = 0; step < 12; step++) {
+      const collides = this.floaters.some((f) => {
+        if (now - f.spawnTimeSec > 0.5) return false;
+        const horizThresh = Math.max(24, myHalfW + estimateHalfWidth(f.text, f.className) * 0.72);
+        const vertThresh = Math.max(minGap, f.minGap);
+        return Math.abs(f.worldX - spawnX) < horizThresh && Math.abs(f.worldY - spawnY) < vertThresh;
+      });
+      if (!collides) break;
+      spawnY -= minGap;
     }
 
     let vx = opts?.vx;
     if (vx === undefined) {
       if (opts?.awayFromX !== undefined) {
         const dir = worldX >= opts.awayFromX ? 1 : -1;
-        vx = dir * (22 + ((id * 17) % 16));
+        vx = dir * (20 + ((id * 17) % 14));
       } else {
-        vx = opts?.staggerVertical ? 0 : jitter * 1.8;
+        vx = opts?.staggerVertical || isScrollOrBanner ? 0 : jitter * 1.4;
       }
     }
 
@@ -3835,6 +4021,8 @@ export class HudOverlay {
       vy: opts?.vy ?? -68,
       gravity: opts?.gravity ?? 140,
       punchScale: opts?.punchScale ?? false,
+      spawnTimeSec: now,
+      minGap,
       text,
       className,
       color,

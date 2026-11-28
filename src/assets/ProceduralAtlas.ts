@@ -2723,57 +2723,58 @@ function paintHeroPose(
 }
 
 function paintHomunculusHeadFrames(b: PixelAtlasBuilder): void {
-  const smokeVoid = hexRgb('#11182e');
-  const smokeDark = hexRgb('#1a2b4a');
-  const smokeTeal = hexRgb('#1e6b8a');
-  const plasmaCyan = hexRgb('#3de2ff');
-  const flameAmber = hexRgb('#ff801f');
-  const eyeGold = hexRgb('#fff078');
+  // Authentic Dead Cells Beheaded Homunculus Head (ref_01 & ref_16):
+  // Compact smoky dark-charcoal/mossy-emerald shadow cloud with a PIERCING
+  // bright golden-yellow 4-point star eye — ZERO giant cyan lightbulb!
+  const smokeVoid = hexRgb('#0b1114');
+  const smokeCharcoal = hexRgb('#121f1c');
+  const smokeMoss = hexRgb('#1e362c');
+  const smokeMossHi = hexRgb('#2e5240');
+  const eyeAmber = hexRgb('#ff9624');
+  const eyeGold = hexRgb('#ffe047');
+  const eyeCore: RGB = [255, 253, 224];
 
   for (let f = 0; f < 4; f++) {
-    b.alloc(`hero:head_flame_${f}`, 16, 18, 0.5, 0.88);
-    const sway = Math.sin((f / 4) * Math.PI * 2) * 1.5;
-    const sway2 = Math.cos((f / 4) * Math.PI * 2) * 1.2;
-    // Tapered smoky dark-indigo gothic flame envelope (crisp Dead Cells homunculus silhouette!)
-    b.polygon(
-      [
-        [8 + sway * 1.3, 1],
-        [12 + sway * 0.6, 7],
-        [12.5, 13],
-        [8, 16],
-        [3.5, 13],
-        [4 + sway * 0.5, 7],
-      ],
-      smokeVoid,
-      0.62,
-      0.24,
-      smokeDark,
-      105
-    );
-    b.ellipse(8 + sway * 0.5, 10, 4.4, 5.4, smokeDark, 0.72, 0.22, smokeTeal, 145);
-    // Swirling cyan plasma flame plume
-    b.polygon(
-      [
-        [8 + sway * 1.2, 2],
-        [10.5 + sway2 * 0.6, 8],
-        [8, 11],
-        [5.5 + sway2 * 0.5, 8],
-      ],
-      plasmaCyan,
-      0.82,
-      0.16,
-      plasmaCyan,
-      215
-    );
-    // Rich amber-orange inner furnace core
-    b.ellipse(8 + sway * 0.25, 11.2, 3.1, 3.6, flameAmber, 0.88, 0.14, flameAmber, 235);
-    // Fierce piercing golden homunculus eye + white glint
-    b.rect(9, 10, 3, 2, eyeGold, 0.98, 0, eyeGold, 255);
-    b.pxRgb(11, 10, [255, 255, 255], 1.0, [255, 255, 255], 255);
-    // Dancing stray plasma embers
-    b.pxRgb(6 + ((f * 2) % 5), 1, flameAmber, 0.92, flameAmber, 230);
-    b.pxRgb(11 - ((f * 2) % 4), 3 + (f % 2), plasmaCyan, 0.92, plasmaCyan, 225);
-    b.bakeRegionNormals(2.2, false);
+    b.alloc(`hero:head_flame_${f}`, 14, 16, 0.5, 0.85);
+    const phase = (f / 4) * Math.PI * 2;
+    const sway = Math.sin(phase) * 1.1;
+    const wisp = Math.cos(phase) * 1.2;
+
+    // Trailing wispy shadow smoke tail drifting slightly up-left behind head
+    b.ellipse(4.4 + sway * 0.6, 5.2 + wisp * 0.4, 2.3, 2.0, smokeVoid, 0.45, 0.14);
+    b.ellipse(5.8 + sway * 0.5, 3.6 + wisp * 0.3, 1.8, 1.9, smokeCharcoal, 0.5, 0.12);
+    b.pxRgb(Math.round(3 + sway * 0.7), Math.round(3 + (f & 1)), smokeVoid, 0.35);
+    b.pxRgb(Math.round(5 + wisp * 0.5), 2, smokeCharcoal, 0.4);
+
+    // Compact dark smoky charcoal-moss head core sitting cleanly on the crimson collar
+    b.ellipse(7.3, 9.4, 3.7, 4.1, smokeVoid, 0.62, 0.12);
+    b.ellipse(7.4 + sway * 0.25, 8.8, 3.1, 3.5, smokeCharcoal, 0.72, 0.14, smokeVoid, 25);
+    b.ellipse(7.8 + sway * 0.2, 8.6, 2.2, 2.5, smokeMoss, 0.8, 0.12, smokeMoss, 45);
+    b.ellipse(8.2, 8.2, 1.3, 1.5, smokeMossHi, 0.84, 0.1, smokeMossHi, 68);
+
+    // Subtle organic top tuft
+    b.pxRgb(Math.round(7 + sway * 0.6), 4, smokeCharcoal, 0.65);
+    b.pxRgb(Math.round(8 + sway * 0.4), 5, smokeMoss, 0.72);
+
+    // Piercing Golden-Yellow 4-Point Star Eye (facing right, emissive!)
+    const ex = 9;
+    const ey = 9;
+    // Soft warm amber outer tips of the 4-point star
+    b.pxRgb(ex, ey - 3, eyeAmber, 0.95, eyeAmber, 190);
+    b.pxRgb(ex, ey + 3, eyeAmber, 0.95, eyeAmber, 180);
+    b.pxRgb(ex - 2, ey, eyeAmber, 0.95, eyeAmber, 185);
+    b.pxRgb(ex + 2, ey, eyeAmber, 0.95, eyeAmber, 210);
+    // Crisp bright golden star arms
+    b.pxRgb(ex, ey - 2, eyeGold, 1.0, eyeGold, 245);
+    b.pxRgb(ex, ey - 1, eyeGold, 1.0, eyeGold, 255);
+    b.pxRgb(ex, ey + 1, eyeGold, 1.0, eyeGold, 255);
+    b.pxRgb(ex, ey + 2, eyeGold, 1.0, eyeGold, 240);
+    b.pxRgb(ex - 1, ey, eyeGold, 1.0, eyeGold, 255);
+    b.pxRgb(ex + 1, ey, eyeGold, 1.0, eyeGold, 255);
+    // Incandescent pure white-cream star center
+    b.pxRgb(ex, ey, eyeCore, 1.0, eyeCore, 255);
+
+    b.bakeRegionNormals(1.8, false);
   }
 }
 
@@ -3460,18 +3461,19 @@ function paintVfxAndPixelFont(b: PixelAtlasBuilder): void {
   paintSlash('vfx:slash_2', 52, 40, 0.52, -1.4, 1.25);
   paintSlash('vfx:slash_heavy', 64, 44, 0.56, -1.5, 1.4);
 
-  // Iconic Golden `!` Enemy Attack Telegraph Glyph (16x22)
+  // Iconic Golden `!` Enemy Attack Telegraph Glyph (16x22) — crisp separated shaft & diamond dot!
   b.alloc('vfx:telegraph', 16, 22, 0.5, 1.0);
-  const goldCore = hexRgb('#fff7a8');
-  const goldMid = hexRgb('#ffbb24');
-  const goldOut = hexRgb('#ff5e1a');
-  // Starburst outer halo
-  b.line(8, 1, 8, 20, goldOut, 5, 0.9, goldOut, 200);
-  b.rect(6, 3, 4, 10, goldMid, 0.95, 0, goldMid, 255);
-  b.rect(7, 4, 2, 8, goldCore, 1.0, 0, goldCore, 255);
-  b.rect(6, 15, 4, 4, goldMid, 0.95, 0, goldMid, 255);
-  b.rect(7, 16, 2, 2, goldCore, 1.0, 0, goldCore, 255);
-  b.addOutline([24, 12, 8]);
+  const goldCore = hexRgb('#fffbe0');
+  const goldMid = hexRgb('#ffcf38');
+  const goldOut = hexRgb('#ff7a1a');
+  // Tapered upper exclamation shaft (strictly y=2..12, clean gap y=13..15 before dot!)
+  b.polygon([[5, 2], [11, 2], [9, 12], [7, 12]], goldOut, 0.92, 0, goldOut, 230);
+  b.rect(6, 3, 4, 8, goldMid, 0.96, 0, goldMid, 255);
+  b.rect(7, 4, 2, 6, goldCore, 1.0, 0, goldCore, 255);
+  // Separated diamond dot (y=16..20)
+  b.rect(6, 16, 4, 4, goldMid, 0.96, 0, goldMid, 255);
+  b.rect(7, 17, 2, 2, goldCore, 1.0, 0, goldCore, 255);
+  b.addOutline([20, 8, 10]);
   b.bakeRegionNormals(2.0, false);
 
   // Concentric Golden Parry Starburst Ring (48x48)
@@ -3513,22 +3515,24 @@ function paintVfxAndPixelFont(b: PixelAtlasBuilder): void {
     }
   }
 
-  // Hexagonal Cyan Shield Dome (48x48)
+  // Hexagonal Cyan Shield Dome (48x48) — airy thin rim with delicate translucent interior
   b.alloc('vfx:shield_dome', 48, 48, 0.5, 0.5);
   for (let y = 0; y < 48; y++) {
     for (let x = 0; x < 48; x++) {
       const dx = x - 23.5;
       const dy = y - 23.5;
       const r = Math.hypot(dx, dy);
-      if (r <= 22.5 && r >= 18.0) {
-        const k = 1 - Math.abs(r - 20.5) / 2.5;
-        const grid = ((x + y) % 6 === 0 || (x - y + 64) % 6 === 0) ? 1.25 : 0.85;
-        const a = clampByte(Math.min(1, k * grid) * 215);
-        b.px(x, y, 100, 240, 255, a, 0.9, 80, 235, 255, a);
-        b.setNormalDirect(x, y, 0, 0, 1);
-      } else if (r < 18.0) {
-        const grid = ((x + y) % 8 === 0) ? 45 : 18;
-        b.px(x, y, 80, 225, 255, grid, 0.7, 60, 210, 255, grid);
+      if (r <= 22.5 && r >= 19.6) {
+        const k = Math.exp(-Math.pow((r - 21.1) / 1.15, 2));
+        const grid = ((x + y) % 6 === 0 || (x - y + 64) % 6 === 0) ? 1.15 : 0.9;
+        const a = clampByte(Math.min(1, k * grid) * 195);
+        if (a > 12) {
+          b.px(x, y, 130, 244, 255, a, 0.9, 105, 238, 255, a);
+          b.setNormalDirect(x, y, 0, 0, 1);
+        }
+      } else if (r < 19.6) {
+        const grid = ((x + y) % 9 === 0) ? 20 : 6;
+        b.px(x, y, 90, 225, 255, grid, 0.7, 70, 210, 255, grid);
         b.setNormalDirect(x, y, 0, 0, 1);
       }
     }
@@ -3625,28 +3629,64 @@ function paintVfxAndPixelFont(b: PixelAtlasBuilder): void {
     }
   }
 
-  // 3. Shockwave Ring (56x56) — kinetic Wave-of-Denial / Dive-Slam pressure wave ring
+  // 3. Shockwave Ring (56x56) — ULTRA-CLEAN RAZOR-THIN 2-3px glowing energy ring (ZERO thick donut!)
   b.alloc('vfx:shockwave_ring', 56, 56, 0.5, 0.5);
   for (let y = 0; y < 56; y++) {
     for (let x = 0; x < 56; x++) {
       const dx = x - 27.5;
       const dy = y - 27.5;
       const r = Math.hypot(dx, dy);
-      const ang = Math.atan2(dy, dx);
-      const outer = Math.exp(-Math.pow((r - 23.5) / 2.4, 2));
-      const inner = Math.exp(-Math.pow((r - 16.5) / 1.7, 2)) * 0.7;
-      const streaks = Math.pow(Math.abs(Math.cos(ang * 8)), 6) * Math.exp(-Math.pow((r - 20.5) / 4.2, 2)) * 0.55;
-      const intensity = Math.min(1, outer + inner + streaks);
-      if (intensity > 0.1) {
-        const cr = clampByte(150 + intensity * 105);
-        const cg = clampByte(228 + intensity * 27);
+      if (r < 20.5 || r > 27.2) continue;
+      const core = Math.exp(-Math.pow((r - 24.6) / 1.05, 2));
+      const halo = Math.exp(-Math.pow((r - 24.4) / 2.1, 2)) * 0.28;
+      const intensity = Math.min(1, core + halo);
+      if (intensity > 0.08) {
+        const cr = clampByte(205 + core * 50);
+        const cg = clampByte(235 + core * 20);
         const cb = 255;
-        const alpha = clampByte(intensity * 245);
-        b.px(x, y, cr, cg, cb, alpha, 0.92, cr, cg, cb, alpha);
+        const alpha = clampByte(intensity * 230);
+        b.px(x, y, cr, cg, cb, alpha, 0.94, cr, cg, cb, alpha);
         b.setNormalDirect(x, y, 0, 0, 1);
       }
     }
   }
+
+  // 4. Orbiting Stun Stars Halo (24x12) — Dead Cells dual 4-point golden stun stars (ref_05 & ref_12)
+  b.alloc('vfx:stun_stars', 24, 12, 0.5, 0.5);
+  const stunDark: RGB = [16, 12, 22];
+  const stunGold: RGB = [255, 222, 68];
+  const stunWhite: RGB = [255, 253, 228];
+  // Delicate tilted orbital ring connecting the two stars
+  for (let i = 0; i < 36; i++) {
+    const a = (i / 36) * Math.PI * 2;
+    const ox = Math.round(12 + Math.cos(a) * 8.5);
+    const oy = Math.round(6 + Math.sin(a) * 3.1);
+    b.px(ox, oy, 255, 224, 120, 130, 0.85, 255, 210, 90, 110);
+  }
+  const paintStunStar = (sx: number, sy: number): void => {
+    // 1px dark outline behind star arms for crisp readability on bright VFX
+    b.pxRgb(sx, sy - 3, stunDark, 0.9);
+    b.pxRgb(sx, sy + 3, stunDark, 0.9);
+    b.pxRgb(sx - 3, sy, stunDark, 0.9);
+    b.pxRgb(sx + 3, sy, stunDark, 0.9);
+    b.pxRgb(sx - 1, sy - 1, stunDark, 0.9);
+    b.pxRgb(sx + 1, sy - 1, stunDark, 0.9);
+    b.pxRgb(sx - 1, sy + 1, stunDark, 0.9);
+    b.pxRgb(sx + 1, sy + 1, stunDark, 0.9);
+    // Golden 4-point arms
+    b.pxRgb(sx, sy - 2, stunGold, 1.0, stunGold, 245);
+    b.pxRgb(sx, sy - 1, stunGold, 1.0, stunGold, 255);
+    b.pxRgb(sx, sy + 1, stunGold, 1.0, stunGold, 255);
+    b.pxRgb(sx, sy + 2, stunGold, 1.0, stunGold, 245);
+    b.pxRgb(sx - 2, sy, stunGold, 1.0, stunGold, 245);
+    b.pxRgb(sx - 1, sy, stunGold, 1.0, stunGold, 255);
+    b.pxRgb(sx + 1, sy, stunGold, 1.0, stunGold, 255);
+    b.pxRgb(sx + 2, sy, stunGold, 1.0, stunGold, 245);
+    b.pxRgb(sx, sy, stunWhite, 1.0, stunWhite, 255);
+  };
+  paintStunStar(5, 5);
+  paintStunStar(18, 7);
+  b.bakeRegionNormals(1.5, false);
 
   // ===========================================================================
   // Painterly Weapon Slash Smears, Shield Guard, Parry Burst, Splinters, Gibs,
@@ -4295,7 +4335,8 @@ export function getAtlasKeys(): string[] {
     'vfx:cog',
     'vfx:fireball_burst',
     'vfx:ice_burst',
-    'vfx:shockwave_ring'
+    'vfx:shockwave_ring',
+    'vfx:stun_stars'
   );
 
   for (const id of WEAPON_ICON_IDS) keys.push(`weapon:${id}`, id);
